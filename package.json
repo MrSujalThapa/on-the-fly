@@ -8,7 +8,8 @@
     "build": "node scripts/build.mjs",
     "build:public": "cross-env PUBLIC_AGENT_ENABLED=false PUBLIC_BACKEND_ENABLED=false node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@eslint/js": "^9.28.0",
@@ -16,7 +17,9 @@
     "cross-env": "^7.0.3",
     "esbuild": "^0.25.5",
     "eslint": "^9.28.0",
+    "happy-dom": "^20.0.10",
     "typescript": "^5.8.3",
-    "typescript-eslint": "^8.34.0"
+    "typescript-eslint": "^8.34.0",
+    "vitest": "^3.2.4"
   }
 }
