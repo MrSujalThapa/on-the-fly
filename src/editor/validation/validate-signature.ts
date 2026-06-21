@@ -1,17 +1,28 @@
 import type { BoundingBoxHint, ElementSignature } from "../element-signature.js";
 import { isDangerousCssPath, isDangerousTagName } from "./dangerous-selectors.js";
 
+import type { ValidationErrorCode } from "./validation-codes.js";
+import { inferValidationErrorCodes } from "./validation-codes.js";
+
 export interface ValidationResult {
   ok: boolean;
   errors: string[];
+  codes?: ValidationErrorCode[];
 }
 
 export function createValidationSuccess(): ValidationResult {
   return { ok: true, errors: [] };
 }
 
-export function createValidationFailure(errors: string[]): ValidationResult {
-  return { ok: false, errors };
+export function createValidationFailure(
+  errors: string[],
+  codes?: ValidationErrorCode[],
+): ValidationResult {
+  return {
+    ok: false,
+    errors,
+    codes: codes ?? inferValidationErrorCodes(errors),
+  };
 }
 
 function isFiniteNumber(value: unknown): value is number {

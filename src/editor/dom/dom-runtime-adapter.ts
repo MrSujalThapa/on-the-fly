@@ -1,6 +1,6 @@
 import type { OperationId } from "../ids.js";
 import type { EditorOperation } from "../operations.js";
-import { assertValidOperation } from "../validation/validate-operation.js";
+import { validateOperationForDom } from "../validation/validate-dom-operation.js";
 import { ElementSnapshotStore } from "./element-snapshot.js";
 import {
   applyHideOperation,
@@ -26,17 +26,12 @@ import {
   revertZIndexChange,
 } from "./handlers/z-index-handler.js";
 import { resolveTargetElement } from "./resolve-target.js";
-import type { AppliedDomEffect, DomApplyResult } from "./types.js";
-
-const SUPPORTED_DOM_OPERATIONS = new Set<EditorOperation["type"]>([
-  "style",
-  "text",
-  "hide",
-  "zIndex",
-  "move",
-  "resize",
-  "rotate",
-]);
+import {
+  createDomApplyFailure,
+  createDomApplySuccess,
+  type AppliedDomEffect,
+  type DomApplyResult,
+} from "./types.js";
 
 interface StoredDomEffect extends AppliedDomEffect {
   element: HTMLElement;
@@ -56,50 +51,64 @@ export class DomRuntimeAdapter {
   }
 
   applyOperation(operation: EditorOperation): DomApplyResult {
+    const validation = validateOperationForDom(operation);
+    if (!validation.ok) {
+      return createDomApplyFailure(
+        validation.codes.includes("unsupported_dom_operation")
+          ? "unsupported_dom_operation"
+          : "validation_failed",
+        validation.errors.join("; "),
+        validation.errors,
+      );
+    }
+
     try {
-      assertValidOperation(operation);
-
-      if (!SUPPORTED_DOM_OPERATIONS.has(operation.type)) {
-        return { ok: false, error: `unsupported_dom_operation:${operation.type}` };
-      }
-
       if (this.effects.has(operation.id)) {
-        return { ok: false, error: `operation_already_applied:${operation.id}` };
+        return createDomApplyFailure(
+          "operation_already_applied",
+          `operation_already_applied:${operation.id}`,
+        );
       }
 
       const element = resolveTargetElement(this.root, operation.target);
       if (!element) {
-        return { ok: false, error: "target_not_found" };
+        return createDomApplyFailure("target_not_found", "target_not_found");
       }
 
-      const effect = this.applyToElement(element, operation);
+      const effect = this.applyToElement(element, validation.operation);
       this.effects.set(operation.id, { ...effect, element });
-      return { ok: true };
+      return createDomApplySuccess();
     } catch (error) {
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : "dom_apply_failed",
-      };
+      return createDomApplyFailure(
+        "dom_apply_failed",
+        error instanceof Error ? error.message : "dom_apply_failed",
+      );
     }
   }
 
   revertOperation(operation: EditorOperation): DomApplyResult {
-    try {
-      assertValidOperation(operation);
+    const validation = validateOperationForDom(operation);
+    if (!validation.ok) {
+      return createDomApplyFailure("validation_failed", validation.errors.join("; "), validation.errors);
+    }
 
+    try {
       const stored = this.effects.get(operation.id);
       if (!stored) {
-        return { ok: false, error: `operation_not_applied:${operation.id}` };
+        return createDomApplyFailure(
+          "operation_not_applied",
+          `operation_not_applied:${operation.id}`,
+        );
       }
 
       this.revertEffect(stored);
       this.effects.delete(operation.id);
-      return { ok: true };
+      return createDomApplySuccess();
     } catch (error) {
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : "dom_revert_failed",
-      };
+      return createDomApplyFailure(
+        "dom_revert_failed",
+        error instanceof Error ? error.message : "dom_revert_failed",
+      );
     }
   }
 

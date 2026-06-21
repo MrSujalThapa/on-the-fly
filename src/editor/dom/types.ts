@@ -30,9 +30,35 @@ export interface AppliedDomEffect {
   changes: DomChange[];
 }
 
-export interface DomApplyResult {
-  ok: boolean;
-  error?: string;
+import type { DomErrorCode } from "../validation/validation-codes.js";
+
+export interface DomApplySuccess {
+  ok: true;
+}
+
+export interface DomApplyFailure {
+  ok: false;
+  error: string;
+  code: DomErrorCode;
+  validationErrors?: string[];
+}
+
+export type DomApplyResult = DomApplySuccess | DomApplyFailure;
+
+export function createDomApplySuccess(): DomApplySuccess {
+  return { ok: true };
+}
+
+export function createDomApplyFailure(
+  code: DomErrorCode,
+  error: string,
+  validationErrors?: string[],
+): DomApplyFailure {
+  const failure: DomApplyFailure = { ok: false, code, error };
+  if (validationErrors && validationErrors.length > 0) {
+    failure.validationErrors = validationErrors;
+  }
+  return failure;
 }
 
 export interface StoredTransformState {

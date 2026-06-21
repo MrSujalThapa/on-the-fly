@@ -69,9 +69,29 @@ export {
 export { validateEditorTarget } from "./validation/validate-target.js";
 export {
   assertValidOperation,
+  OperationValidationError,
   validateOperation,
   validateOperations,
 } from "./validation/validate-operation.js";
+export {
+  validateOperationForDom,
+  validateOperationsForDom,
+} from "./validation/validate-dom-operation.js";
+export {
+  validateUnknownOperation,
+  validateUnknownOperations,
+} from "./validation/validate-unknown-operation.js";
+export type {
+  OperationValidationFailure,
+  OperationValidationResult,
+  OperationValidationSuccess,
+} from "./validation/operation-validation-result.js";
+export type { DomErrorCode, SupportedDomOperationType, ValidationErrorCode } from "./validation/validation-codes.js";
+export {
+  inferValidationErrorCodes,
+  isSupportedDomOperationType,
+  SUPPORTED_DOM_OPERATION_TYPES,
+} from "./validation/validation-codes.js";
 
 export {
   approveDraftOperations,
@@ -102,13 +122,20 @@ export {
 
 export type {
   AppliedDomEffect,
+  DomApplyFailure,
   DomApplyResult,
+  DomApplySuccess,
   DomChange,
   ElementStyleSnapshot,
   MatchViewport,
   StoredTransformState,
 } from "./dom/types.js";
-export { OTF_MANAGED_ATTR, OTF_TRANSFORM_ATTR } from "./dom/types.js";
+export {
+  OTF_MANAGED_ATTR,
+  OTF_TRANSFORM_ATTR,
+  createDomApplyFailure,
+  createDomApplySuccess,
+} from "./dom/types.js";
 export { ElementSnapshotStore, captureElementSnapshot } from "./dom/element-snapshot.js";
 export { matchElementBySignature, getMatchViewport } from "./dom/signature-matcher.js";
 export { resolveTargetElement } from "./dom/resolve-target.js";
