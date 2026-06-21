@@ -1,0 +1,139 @@
+import type { ExtensionSettingsUpdate } from "./settings.js";
+
+export const OTF_MESSAGE = {
+  SET_EDIT_MODE: "OTF_SET_EDIT_MODE",
+  GET_EDIT_MODE: "OTF_GET_EDIT_MODE",
+  EDIT_MODE_CHANGED: "OTF_EDIT_MODE_CHANGED",
+  GET_SETTINGS: "OTF_GET_SETTINGS",
+  SET_SETTINGS: "OTF_SET_SETTINGS",
+} as const;
+
+export type EditModeStatus = "inactive" | "active" | "unavailable";
+
+export type OtfSetEditModeMessage = {
+  type: typeof OTF_MESSAGE.SET_EDIT_MODE;
+  enabled: boolean;
+  tabId?: number;
+};
+
+export type OtfGetEditModeMessage = {
+  type: typeof OTF_MESSAGE.GET_EDIT_MODE;
+  tabId?: number;
+};
+
+export type OtfEditModeChangedMessage = {
+  type: typeof OTF_MESSAGE.EDIT_MODE_CHANGED;
+  enabled: boolean;
+};
+
+export type OtfGetSettingsMessage = {
+  type: typeof OTF_MESSAGE.GET_SETTINGS;
+};
+
+export type OtfSetSettingsMessage = {
+  type: typeof OTF_MESSAGE.SET_SETTINGS;
+  settings: ExtensionSettingsUpdate;
+};
+
+export type ExtensionRequestMessage =
+  | OtfSetEditModeMessage
+  | OtfGetEditModeMessage
+  | OtfGetSettingsMessage
+  | OtfSetSettingsMessage;
+
+export type ExtensionPushMessage = OtfEditModeChangedMessage;
+
+export interface EditModeResponse {
+  ok: boolean;
+  enabled: boolean;
+  status: EditModeStatus;
+  error?: string;
+}
+
+export function isSetEditModeMessage(value: unknown): value is OtfSetEditModeMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === OTF_MESSAGE.SET_EDIT_MODE &&
+    "enabled" in value &&
+    typeof value.enabled === "boolean"
+  );
+}
+
+export function isGetEditModeMessage(value: unknown): value is OtfGetEditModeMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === OTF_MESSAGE.GET_EDIT_MODE
+  );
+}
+
+export function isEditModeChangedMessage(value: unknown): value is OtfEditModeChangedMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === OTF_MESSAGE.EDIT_MODE_CHANGED &&
+    "enabled" in value &&
+    typeof value.enabled === "boolean"
+  );
+}
+
+export function isGetSettingsMessage(value: unknown): value is OtfGetSettingsMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === OTF_MESSAGE.GET_SETTINGS
+  );
+}
+
+export function isSetSettingsMessage(value: unknown): value is OtfSetSettingsMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === OTF_MESSAGE.SET_SETTINGS &&
+    "settings" in value &&
+    typeof value.settings === "object" &&
+    value.settings !== null
+  );
+}
+
+export function createEditModeChangedMessage(enabled: boolean): OtfEditModeChangedMessage {
+  return { type: OTF_MESSAGE.EDIT_MODE_CHANGED, enabled };
+}
+
+export function parseEditModeResponse(value: unknown): EditModeResponse {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "ok" in value &&
+    typeof value.ok === "boolean" &&
+    "enabled" in value &&
+    typeof value.enabled === "boolean" &&
+    "status" in value &&
+    (value.status === "inactive" || value.status === "active" || value.status === "unavailable")
+  ) {
+    const response: EditModeResponse = {
+      ok: value.ok,
+      enabled: value.enabled,
+      status: value.status,
+    };
+
+    if ("error" in value && typeof value.error === "string") {
+      response.error = value.error;
+    }
+
+    return response;
+  }
+
+  return {
+    ok: false,
+    enabled: false,
+    status: "unavailable",
+    error: "invalid_response",
+  };
+}

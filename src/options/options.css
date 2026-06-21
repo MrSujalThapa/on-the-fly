@@ -1,40 +1,143 @@
 :root {
   color-scheme: light dark;
-  font-family: system-ui, sans-serif;
+  font-family: system-ui, -apple-system, sans-serif;
+  --surface: #ffffff;
+  --text: #111827;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --accent: #111827;
+  --accent-text: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #111827;
+    --text: #f9fafb;
+    --muted: #9ca3af;
+    --border: #374151;
+    --accent: #f9fafb;
+    --accent-text: #111827;
+  }
 }
 
 body {
   margin: 0;
+  background: var(--surface);
+  color: var(--text);
 }
 
 .options {
-  max-width: 560px;
+  max-width: 640px;
   padding: 24px;
-}
-
-.options h1 {
-  font-size: 20px;
-  margin: 0 0 12px;
-}
-
-.placeholder {
-  font-size: 14px;
-  margin: 0 0 16px;
-  opacity: 0.85;
-}
-
-.build-info {
   display: grid;
-  grid-template-columns: 120px 1fr;
+  gap: 20px;
+}
+
+.options-header h1 {
+  font-size: 22px;
+  margin: 0 0 6px;
+}
+
+.lede {
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.panel h2 {
+  font-size: 15px;
+  margin: 0;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.checkbox-field {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px;
+}
+
+.field-label {
+  font-weight: 600;
+}
+
+.field-hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+select,
+input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font: inherit;
+  color: inherit;
+  background: color-mix(in srgb, var(--surface) 92%, var(--text) 8%);
+}
+
+.actions {
+  display: grid;
+  gap: 8px;
+}
+
+#save-settings {
+  appearance: none;
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font: 600 13px/1 system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+#save-settings:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.save-status {
+  margin: 0;
+  min-height: 18px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.save-status.is-success {
+  color: #059669;
+}
+
+.save-status.is-error {
+  color: #dc2626;
+}
+
+.diagnostics {
+  display: grid;
+  grid-template-columns: 160px 1fr;
   gap: 8px 12px;
   font-size: 14px;
   margin: 0;
 }
 
-.build-info dt {
+.diagnostics dt {
   font-weight: 600;
 }
 
-.build-info dd {
+.diagnostics dd {
   margin: 0;
 }

@@ -8,14 +8,62 @@
   </head>
   <body>
     <main class="options">
-      <h1>On the Fly Settings</h1>
-      <p class="placeholder">Settings will be added in a later phase.</p>
-      <dl class="build-info">
-        <dt>Build</dt>
-        <dd id="build-mode">—</dd>
-        <dt>Agent</dt>
-        <dd id="agent-mode">—</dd>
-      </dl>
+      <header class="options-header">
+        <h1>On the Fly Settings</h1>
+        <p class="lede">Local preferences are stored in your browser only.</p>
+      </header>
+
+      <section class="panel" aria-labelledby="preferences-heading">
+        <h2 id="preferences-heading">Preferences</h2>
+
+        <label class="field checkbox-field">
+          <input id="restore-edit-mode" type="checkbox" />
+          <span>Restore edit mode when revisiting pages</span>
+        </label>
+
+        <label class="field">
+          <span class="field-label">Toolbar placement</span>
+          <select id="toolbar-placement">
+            <option value="auto">Auto</option>
+            <option value="top">Top</option>
+            <option value="bottom">Bottom</option>
+            <option value="near-selection">Near selection</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span class="field-label">Interact mode shortcut</span>
+          <input
+            id="interact-shortcut"
+            type="text"
+            maxlength="48"
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <span class="field-hint">Placeholder for a future interact-mode shortcut.</span>
+        </label>
+
+        <div class="actions">
+          <button id="save-settings" type="button">Save settings</button>
+          <p class="save-status" id="save-status" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="diagnostics-heading">
+        <h2 id="diagnostics-heading">Diagnostics</h2>
+        <dl class="diagnostics">
+          <dt>Extension version</dt>
+          <dd id="extension-version">—</dd>
+          <dt>Build mode</dt>
+          <dd id="build-mode">—</dd>
+          <dt>Agent</dt>
+          <dd id="agent-mode">—</dd>
+          <dt>Backend</dt>
+          <dd id="backend-mode">—</dd>
+          <dt>Settings schema</dt>
+          <dd id="schema-version">—</dd>
+        </dl>
+      </section>
     </main>
     <script type="module" src="options.js"></script>
   </body>

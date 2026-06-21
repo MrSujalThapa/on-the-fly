@@ -1,0 +1,159 @@
+import {
+  createEditModeChangedMessage,
+  type EditModeResponse,
+  type EditModeStatus,
+  isGetEditModeMessage,
+  isGetSettingsMessage,
+  isSetEditModeMessage,
+  isSetSettingsMessage,
+  OTF_MESSAGE,
+} from "../shared/messages.js";
+import { isRestrictedUrl } from "../shared/restricted-url.js";
+import { getEditModeForTab, setEditModeForTab } from "./edit-mode-state.js";
+import {
+  getSettingsResponse,
+  setLastEditModeEnabled,
+  shouldRestoreEditModeForTab,
+  updateExtensionSettings,
+} from "./settings-storage.js";
+
+function toStatus(enabled: boolean): EditModeStatus {
+  return enabled ? "active" : "inactive";
+}
+
+function unavailableResponse(error: string): EditModeResponse {
+  return {
+    ok: false,
+    enabled: false,
+    status: "unavailable",
+    error,
+  };
+}
+
+async function resolveTab(tabId: number | undefined): Promise<chrome.tabs.Tab | undefined> {
+  if (tabId !== undefined) {
+    try {
+      return await chrome.tabs.get(tabId);
+    } catch {
+      return undefined;
+    }
+  }
+
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tabs[0];
+}
+
+async function pushEditModeToTab(tabId: number, enabled: boolean): Promise<void> {
+  try {
+    await chrome.tabs.sendMessage(tabId, createEditModeChangedMessage(enabled));
+  } catch {
+    // Content scripts cannot run on restricted pages; state is still tracked in memory.
+  }
+}
+
+async function resolveEditModeEnabled(tabId: number): Promise<boolean> {
+  const inMemoryEnabled = getEditModeForTab(tabId);
+  if (inMemoryEnabled) {
+    return true;
+  }
+
+  if (await shouldRestoreEditModeForTab(tabId)) {
+    setEditModeForTab(tabId, true);
+    return true;
+  }
+
+  return false;
+}
+
+async function handleGetEditMode(tabId: number | undefined): Promise<EditModeResponse> {
+  const tab = await resolveTab(tabId);
+  if (!tab?.id) {
+    return unavailableResponse("no_active_tab");
+  }
+
+  if (isRestrictedUrl(tab.url)) {
+    return unavailableResponse("restricted_page");
+  }
+
+  const enabled = await resolveEditModeEnabled(tab.id);
+  if (enabled && !getEditModeForTab(tab.id)) {
+    await pushEditModeToTab(tab.id, true);
+  }
+
+  return {
+    ok: true,
+    enabled,
+    status: toStatus(enabled),
+  };
+}
+
+async function handleSetEditMode(
+  enabled: boolean,
+  tabId: number | undefined,
+): Promise<EditModeResponse> {
+  const tab = await resolveTab(tabId);
+  if (!tab?.id) {
+    return unavailableResponse("no_active_tab");
+  }
+
+  if (isRestrictedUrl(tab.url)) {
+    return unavailableResponse("restricted_page");
+  }
+
+  setEditModeForTab(tab.id, enabled);
+  await setLastEditModeEnabled(enabled);
+  await pushEditModeToTab(tab.id, enabled);
+
+  return {
+    ok: true,
+    enabled,
+    status: toStatus(enabled),
+  };
+}
+
+export function registerBackgroundMessageHandler(): void {
+  chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
+    void (async () => {
+      if (isGetEditModeMessage(message)) {
+        const tabId = message.tabId ?? sender.tab?.id;
+        sendResponse(await handleGetEditMode(tabId));
+        return;
+      }
+
+      if (isSetEditModeMessage(message)) {
+        const tabId = message.tabId ?? sender.tab?.id;
+        sendResponse(await handleSetEditMode(message.enabled, tabId));
+        return;
+      }
+
+      if (isGetSettingsMessage(message)) {
+        sendResponse(await getSettingsResponse());
+        return;
+      }
+
+      if (isSetSettingsMessage(message)) {
+        sendResponse(await updateExtensionSettings(message.settings));
+        return;
+      }
+
+      const messageType =
+        typeof message === "object" &&
+        message !== null &&
+        "type" in message &&
+        typeof message.type === "string"
+          ? message.type
+          : "invalid";
+
+      sendResponse({
+        ok: false,
+        enabled: false,
+        status: "unavailable",
+        error: `unknown_message:${messageType}`,
+      });
+    })();
+
+    return true;
+  });
+}
+
+export { OTF_MESSAGE };
