@@ -1,5 +1,6 @@
 import { getMatchViewport } from "../dom/signature-matcher.js";
 import { scanVisualNodes } from "../measurement/dom-scanner.js";
+import { enrichNodeContainerMetadata } from "./container-detection.js";
 import type { InvalidationReason } from "./types.js";
 import type { GeometryCacheOptions, GeometryCacheState } from "./types.js";
 import { VisualLayoutGraph } from "./visual-layout-graph.js";
@@ -49,6 +50,7 @@ export class GeometryCache {
   rebuild(): VisualLayoutGraph {
     const result = scanVisualNodes(this.root, this.scanOptions ?? {});
     const viewport = this.scanOptions?.viewport ?? getMatchViewport(this.root);
+    enrichNodeContainerMetadata(result.nodes, viewport);
     this.version += 1;
     this.lastBuiltAt = this.now();
     this.graph = VisualLayoutGraph.fromScanResult(

@@ -1,0 +1,185 @@
+import { isExtensionRoot } from "../editor/measurement/scan-guards.js";
+import {
+  getEventComposedPath,
+  shouldHandleEditModeClickEvent,
+  shouldHandleEditModePointerEvent,
+  suppressPageInteractionEvent,
+} from "../editor/selection/pointer-interaction.js";
+
+export interface EditModeEventWindow {
+  addEventListener(
+    type: string,
+    listener: EventListener,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  removeEventListener(
+    type: string,
+    listener: EventListener,
+    options?: boolean | EventListenerOptions,
+  ): void;
+  dispatchEvent(event: Event): boolean;
+}
+
+export interface EditModePointerPipelineOptions {
+  window: EditModeEventWindow;
+  document: Document;
+  onPointerDown: (event: PointerEvent) => void;
+  onPointerMove: (event: PointerEvent) => void;
+  onPointerUp: (event: PointerEvent) => void;
+  onPointerCancel: (event: PointerEvent) => void;
+  onDebug?: (message: string, data?: unknown) => void;
+}
+
+export interface EditModePointerPipeline {
+  detach: () => void;
+}
+
+function applyInteractionStyles(document: Document): () => void {
+  const html = document.documentElement;
+  const body = document.body;
+  const previousHtmlUserSelect = html.style.userSelect;
+  const previousBodyUserSelect = body.style.userSelect;
+  const previousHtmlTouchAction = html.style.touchAction;
+
+  html.style.userSelect = "none";
+  body.style.userSelect = "none";
+  html.style.touchAction = "none";
+
+  return () => {
+    html.style.userSelect = previousHtmlUserSelect;
+    body.style.userSelect = previousBodyUserSelect;
+    html.style.touchAction = previousHtmlTouchAction;
+  };
+}
+
+export function attachEditModePointerPipeline(
+  options: EditModePointerPipelineOptions,
+): EditModePointerPipeline {
+  const restoreStyles = applyInteractionStyles(options.document);
+  // Capture phase so the editor owns the gesture before the page can react,
+  // while the overlay itself stays click-through (pointer-events: none) so
+  // document.elementsFromPoint keeps resolving the real page underneath.
+  const listenerOptions: AddEventListenerOptions = { capture: true, passive: false };
+
+  const pointerDownHandler = (event: PointerEvent): void => {
+    if (!shouldHandleEditModePointerEvent(event, isExtensionRoot)) {
+      return;
+    }
+
+    options.onDebug?.("pointerdown", {
+      x: event.clientX,
+      y: event.clientY,
+      pathLength: getEventComposedPath(event).length,
+    });
+    options.onPointerDown(event);
+    suppressPageInteractionEvent(event);
+  };
+
+  const pointerMoveHandler = (event: PointerEvent): void => {
+    options.onPointerMove(event);
+    if (shouldHandleEditModePointerEvent(event, isExtensionRoot)) {
+      suppressPageInteractionEvent(event);
+    }
+  };
+
+  const pointerUpHandler = (event: PointerEvent): void => {
+    if (!shouldHandleEditModePointerEvent(event, isExtensionRoot)) {
+      return;
+    }
+
+    options.onDebug?.("pointerup", {
+      x: event.clientX,
+      y: event.clientY,
+    });
+    options.onPointerUp(event);
+    suppressPageInteractionEvent(event);
+  };
+
+  const pointerCancelHandler = (event: PointerEvent): void => {
+    options.onPointerCancel(event);
+    if (shouldHandleEditModePointerEvent(event, isExtensionRoot)) {
+      suppressPageInteractionEvent(event);
+    }
+  };
+
+  const mouseDownHandler = (event: MouseEvent): void => {
+    if (!shouldHandleEditModeClickEvent(event, isExtensionRoot)) {
+      return;
+    }
+
+    suppressPageInteractionEvent(event);
+  };
+
+  const mouseUpHandler = (event: MouseEvent): void => {
+    if (!shouldHandleEditModeClickEvent(event, isExtensionRoot)) {
+      return;
+    }
+
+    suppressPageInteractionEvent(event);
+  };
+
+  const clickHandler = (event: MouseEvent): void => {
+    if (!shouldHandleEditModeClickEvent(event, isExtensionRoot)) {
+      return;
+    }
+
+    suppressPageInteractionEvent(event);
+  };
+
+  const selectStartHandler = (event: Event): void => {
+    if (isExtensionRootInEventPath(event)) {
+      return;
+    }
+
+    suppressPageInteractionEvent(event);
+  };
+
+  const dragStartHandler = (event: Event): void => {
+    if (isExtensionRootInEventPath(event)) {
+      return;
+    }
+
+    suppressPageInteractionEvent(event);
+  };
+
+  const pointerDownListener = pointerDownHandler as EventListener;
+  const pointerMoveListener = pointerMoveHandler as EventListener;
+  const pointerUpListener = pointerUpHandler as EventListener;
+  const pointerCancelListener = pointerCancelHandler as EventListener;
+  const mouseDownListener = mouseDownHandler as EventListener;
+  const mouseUpListener = mouseUpHandler as EventListener;
+  const clickListener = clickHandler as EventListener;
+  const selectStartListener = selectStartHandler;
+  const dragStartListener = dragStartHandler;
+
+  options.window.addEventListener("pointerdown", pointerDownListener, listenerOptions);
+  options.window.addEventListener("pointermove", pointerMoveListener, listenerOptions);
+  options.window.addEventListener("pointerup", pointerUpListener, listenerOptions);
+  options.window.addEventListener("pointercancel", pointerCancelListener, listenerOptions);
+  options.window.addEventListener("mousedown", mouseDownListener, listenerOptions);
+  options.window.addEventListener("mouseup", mouseUpListener, listenerOptions);
+  options.window.addEventListener("click", clickListener, listenerOptions);
+  options.window.addEventListener("selectstart", selectStartListener, listenerOptions);
+  options.window.addEventListener("dragstart", dragStartListener, listenerOptions);
+
+  return {
+    detach: () => {
+      options.window.removeEventListener("pointerdown", pointerDownListener, true);
+      options.window.removeEventListener("pointermove", pointerMoveListener, true);
+      options.window.removeEventListener("pointerup", pointerUpListener, true);
+      options.window.removeEventListener("pointercancel", pointerCancelListener, true);
+      options.window.removeEventListener("mousedown", mouseDownListener, true);
+      options.window.removeEventListener("mouseup", mouseUpListener, true);
+      options.window.removeEventListener("click", clickListener, true);
+      options.window.removeEventListener("selectstart", selectStartListener, true);
+      options.window.removeEventListener("dragstart", dragStartListener, true);
+      restoreStyles();
+    },
+  };
+}
+
+function isExtensionRootInEventPath(event: Event): boolean {
+  return getEventComposedPath(event).some(
+    (target) => target instanceof Element && isExtensionRoot(target),
+  );
+}

@@ -3,9 +3,11 @@ import {
   OTF_MESSAGE,
   parseEditModeResponse,
 } from "../shared/messages.js";
+import { createEditSession, type EditSession } from "./edit-session.js";
 import { EditorShell } from "./editor-shell.js";
 
 const shell = new EditorShell();
+let editSession: EditSession | null = null;
 
 async function requestEditModeDisable(): Promise<void> {
   const response = parseEditModeResponse(
@@ -16,18 +18,32 @@ async function requestEditModeDisable(): Promise<void> {
   );
 
   if (response.ok && !response.enabled) {
+    editSession?.stop();
+    editSession = null;
     shell.unmount();
   }
 }
 
 function applyEditMode(enabled: boolean): void {
   if (enabled) {
-    shell.mount(() => {
-      void requestEditModeDisable();
+    const session = createEditSession({
+      shell,
+      root: document,
     });
+
+    shell.mount({
+      onDeactivate: () => {
+        void requestEditModeDisable();
+      },
+      onEscape: () => session.handleEscape(),
+    });
+    session.start();
+    editSession = session;
     return;
   }
 
+  editSession?.stop();
+  editSession = null;
   shell.unmount();
 }
 

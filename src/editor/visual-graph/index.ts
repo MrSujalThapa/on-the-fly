@@ -44,3 +44,15 @@ export {
   createGeometryCacheBundle,
   createGeometryCacheController,
 } from "./dom-invalidation-listener.js";
+
+export {
+  CARD_CONTAINER_SCORE_THRESHOLD,
+  enrichNodeContainerMetadata,
+  findBestCardContainerAncestor,
+  getNodeChildren,
+  isLikelyCardContainer,
+  isPageWrapperNode,
+  promoteSelectionTarget,
+  scoreContainerLikelihood,
+  shouldPromoteChildToContainer,
+} from "./container-detection.js";
