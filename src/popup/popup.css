@@ -1,0 +1,24 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  min-width: 240px;
+}
+
+.popup {
+  padding: 12px 14px;
+}
+
+.popup h1 {
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+
+.popup .status {
+  font-size: 12px;
+  margin: 0;
+  opacity: 0.8;
+}

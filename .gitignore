@@ -1,0 +1,14 @@
+# On the Fly local-only planning / coding-agent files
+docs/
+AGENTS.md
+.cursor/skills/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Extension build outputs
+dist/
+build/
+*.zip

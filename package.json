@@ -1,0 +1,22 @@
+{
+  "name": "on-the-fly",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first Chrome extension for visually editing live websites",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:public": "cross-env PUBLIC_AGENT_ENABLED=false PUBLIC_BACKEND_ENABLED=false node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.28.0",
+    "@types/chrome": "^0.0.323",
+    "cross-env": "^7.0.3",
+    "esbuild": "^0.25.5",
+    "eslint": "^9.28.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.34.0"
+  }
+}

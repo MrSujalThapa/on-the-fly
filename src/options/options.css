@@ -1,0 +1,40 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+.options {
+  max-width: 560px;
+  padding: 24px;
+}
+
+.options h1 {
+  font-size: 20px;
+  margin: 0 0 12px;
+}
+
+.placeholder {
+  font-size: 14px;
+  margin: 0 0 16px;
+  opacity: 0.85;
+}
+
+.build-info {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px 12px;
+  font-size: 14px;
+  margin: 0;
+}
+
+.build-info dt {
+  font-weight: 600;
+}
+
+.build-info dd {
+  margin: 0;
+}
