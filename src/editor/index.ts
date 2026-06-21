@@ -182,3 +182,33 @@ export {
   shouldSkipSubtree,
   snapshotComputedStyles,
 } from "./measurement/index.js";
+
+export type {
+  CancelFn,
+  DomInvalidationListenerOptions,
+  GeometryCacheOptions,
+  GeometryCacheState,
+  GraphQueryOptions,
+  InvalidationReason,
+  InvalidationSchedulerOptions,
+  RectQueryOptions,
+  ScheduleFn,
+  VisualLayoutGraphSnapshot,
+} from "./visual-graph/index.js";
+export {
+  GeometryCache,
+  InvalidationScheduler,
+  VisualLayoutGraph,
+  attachDomInvalidationListeners,
+  createGeometryCache,
+  createGeometryCacheBundle,
+  createGeometryCacheController,
+  createInvalidationScheduler,
+  filterSelectableNodes,
+  findNearestContainer,
+  findNearestParent,
+  findNodesInRect,
+  getNodeById,
+  isSelectableNode,
+  resolvePrimaryInvalidationReason,
+} from "./visual-graph/index.js";
