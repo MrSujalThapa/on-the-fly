@@ -82,3 +82,19 @@ export {
   SelectionController,
   createSelectionController,
 } from "./selection-controller.js";
+
+export {
+  computeUnionRect,
+  createGroupId,
+  createVirtualGroup,
+  isGroupableMember,
+  memberToVisualNode,
+  recomputeGroupRect,
+  toGroupMember,
+  MIN_GROUP_MEMBERS,
+  type CreateVirtualGroupOptions,
+  type GroupMemberSource,
+  type GroupSource,
+  type VirtualGroup,
+  type VirtualGroupMember,
+} from "./virtual-group.js";

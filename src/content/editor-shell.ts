@@ -3,6 +3,8 @@ import type { MeasurementRect } from "../editor/measurement/types.js";
 
 const ROOT_HOST_ID = "on-the-fly-root-host";
 
+export type SelectionOutlineVariant = "node" | "group";
+
 export interface EditorShellMountOptions {
   onDeactivate: () => void;
   onEscape?: () => boolean;
@@ -64,14 +66,17 @@ export class EditorShell {
     this.onEscape = null;
   }
 
-  renderSelectionOutlines(rects: VisualNodeRect[]): void {
+  renderSelectionOutlines(
+    rects: VisualNodeRect[],
+    variant: SelectionOutlineVariant = "node",
+  ): void {
     if (!this.overlayLayer) {
       return;
     }
 
     this.overlayLayer.replaceChildren();
     for (const rect of rects) {
-      this.overlayLayer.appendChild(createOutlineElement(rect));
+      this.overlayLayer.appendChild(createOutlineElement(rect, variant));
     }
   }
 
@@ -175,6 +180,12 @@ function createShellStyles(): HTMLStyleElement {
       pointer-events: none;
     }
 
+    .otf-group-outline {
+      border: 2px solid #7c3aed;
+      border-radius: 6px;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85), 0 0 0 5px rgba(124, 58, 237, 0.2);
+    }
+
     .otf-lasso {
       position: fixed;
       box-sizing: border-box;
@@ -201,9 +212,13 @@ function createOverlayLayer(): HTMLElement {
   return layer;
 }
 
-function createOutlineElement(rect: VisualNodeRect): HTMLElement {
+function createOutlineElement(
+  rect: VisualNodeRect,
+  variant: SelectionOutlineVariant,
+): HTMLElement {
   const outline = document.createElement("div");
-  outline.className = "otf-selection-outline";
+  outline.className =
+    variant === "group" ? "otf-selection-outline otf-group-outline" : "otf-selection-outline";
   outline.style.left = `${String(rect.x)}px`;
   outline.style.top = `${String(rect.y)}px`;
   outline.style.width = `${String(rect.width)}px`;

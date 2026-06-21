@@ -22,6 +22,7 @@ import {
   isWholePageLassoRect,
   isWholePageSelection,
 } from "./selection-guards.js";
+import type { VirtualGroup } from "./virtual-group.js";
 
 export interface SelectionResolveResult {
   selection: EditorSelection;
@@ -29,6 +30,7 @@ export interface SelectionResolveResult {
   rejectedWholePage: boolean;
   rejectionReason?: string;
   rectangleStats?: DomRectangleStats;
+  group?: VirtualGroup;
 }
 
 export interface ClickResolveOptions {

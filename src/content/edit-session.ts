@@ -33,6 +33,7 @@ export class EditSession {
   private pointerPipeline: EditModePointerPipeline | null = null;
   private activeGesture: PointerGestureState | null = null;
   private captureTarget: HTMLElement | null = null;
+  private keyHandler: ((event: KeyboardEvent) => void) | null = null;
 
   constructor(options: EditSessionOptions) {
     this.shell = options.shell;
@@ -62,7 +63,11 @@ export class EditSession {
       },
       getDocument: () => this.root,
       onSelectionChange: (_selection, result) => {
-        this.shell.renderSelectionOutlines(result.resolvedNodes.map((node) => node.rect));
+        if (result.group) {
+          this.shell.renderSelectionOutlines([result.group.unionRect], "group");
+        } else {
+          this.shell.renderSelectionOutlines(result.resolvedNodes.map((node) => node.rect));
+        }
         this.shell.renderLassoBox(null);
       },
     });
@@ -90,18 +95,79 @@ export class EditSession {
       onDebug: this.onDebug,
     });
 
+    this.attachKeyHandler(windowRef);
     this.cacheController.cache.ensureFresh();
   }
 
   stop(): void {
     this.pointerPipeline?.detach();
     this.pointerPipeline = null;
+    this.detachKeyHandler();
     this.cacheController?.dispose();
     this.cacheController = null;
     this.selectionController = null;
     this.shell.clearOverlays();
     this.activeGesture = null;
     this.captureTarget = null;
+  }
+
+  groupSelection(): void {
+    const result = this.selectionController?.groupSelection();
+    if (result) {
+      this.onDebug("group", {
+        grouped: result.group !== undefined,
+        memberCount: result.group?.memberIds.length ?? 0,
+        rejectionReason: result.rejectionReason,
+      });
+    }
+  }
+
+  ungroupSelection(): void {
+    const result = this.selectionController?.ungroupSelection();
+    if (result) {
+      this.onDebug("ungroup", {
+        memberCount: result.resolvedNodes.length,
+        rejectionReason: result.rejectionReason,
+      });
+    }
+  }
+
+  private attachKeyHandler(windowRef: Window): void {
+    if (this.keyHandler) {
+      return;
+    }
+
+    this.keyHandler = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "g" || !(event.ctrlKey || event.metaKey)) {
+        return;
+      }
+
+      const selection = this.selectionController?.getSelection();
+      if (!selection) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (event.shiftKey) {
+        this.ungroupSelection();
+      } else {
+        this.groupSelection();
+      }
+    };
+
+    windowRef.addEventListener("keydown", this.keyHandler, true);
+  }
+
+  private detachKeyHandler(): void {
+    if (!this.keyHandler) {
+      return;
+    }
+
+    const windowRef = this.root.defaultView;
+    windowRef?.removeEventListener("keydown", this.keyHandler, true);
+    this.keyHandler = null;
   }
 
   handleEscape(): boolean {
