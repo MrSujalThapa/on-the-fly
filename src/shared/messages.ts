@@ -1,5 +1,20 @@
 import type { ExtensionSettingsUpdate } from "./settings.js";
 
+export {
+  OTF_STORAGE_MESSAGE,
+  type OtfClearPageMessage,
+  type OtfExportDataMessage,
+  type OtfImportDataMessage,
+  type OtfLoadPageStateMessage,
+  type OtfSaveOperationsMessage,
+  type PageStateResponse,
+  type StorageMutationResponse,
+  type StorageRequestMessage,
+  isClearPageMessage,
+  isLoadPageStateMessage,
+  isSaveOperationsMessage,
+} from "./storage-messages.js";
+
 export const OTF_MESSAGE = {
   SET_EDIT_MODE: "OTF_SET_EDIT_MODE",
   GET_EDIT_MODE: "OTF_GET_EDIT_MODE",
