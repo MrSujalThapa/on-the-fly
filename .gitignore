@@ -3,6 +3,9 @@ docs/
 AGENTS.md
 .cursor/skills/
 
+# Dependencies
+node_modules/
+
 # Environment files
 .env
 .env.*
