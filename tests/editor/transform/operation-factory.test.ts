@@ -45,7 +45,7 @@ describe("transform operation factory", () => {
     expect(op.payload).toEqual({ dx: 24, dy: -8 });
     expect(op.target.signature).toBe(target.signature);
     expect(op.source).toBe("manual");
-    expect(op.status).toBe("approved");
+    expect(op.status).toBe("draft");
     expect(validateOperationForDom(op).ok).toBe(true);
   });
 

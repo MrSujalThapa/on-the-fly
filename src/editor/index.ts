@@ -28,6 +28,7 @@ export type {
   CommandAppliesTo,
   CommandContext,
   CommandGroup,
+  CommandShortcut,
   EditorCommand,
 } from "./editor-command.js";
 
@@ -92,6 +93,19 @@ export {
   isSupportedDomOperationType,
   SUPPORTED_DOM_OPERATION_TYPES,
 } from "./validation/validation-codes.js";
+
+export {
+  CommandRegistry,
+  createCommandRegistry,
+  findCommandForKeyboardEvent,
+  matchCommandShortcut,
+  commandAppliesToSelection,
+  hasActiveSelection,
+  isSingleHandleTarget,
+  isSingleTextLikeSelection,
+  resolveSelectionTags,
+  type ResolvedCommand,
+} from "./commands/index.js";
 
 export {
   approveDraftOperations,
@@ -240,6 +254,9 @@ export {
   buildMoveOperations,
   buildResizeOperation,
   buildRotateOperation,
+  buildStyleOperation,
+  buildStyleOperations,
+  buildTextOperation,
   buildZIndexOperation,
   computeNextLayer,
   computeResize,

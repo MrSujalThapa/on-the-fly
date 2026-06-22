@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEditSession } from "../../src/content/edit-session.js";
+import { createTestPageCustomization } from "./edit-session-test-helpers.js";
 import { EditorShell } from "../../src/content/editor-shell.js";
 import { layoutElement } from "../editor/measurement/layout-helpers.js";
 
@@ -28,7 +29,7 @@ describe("EditSession transform integration", () => {
     globalThis.document.getElementById("on-the-fly-root-host")?.remove();
   });
 
-  it("moves a selected element and still resolves a later rectangle selection", () => {
+  it("moves a selected element and still resolves a later rectangle selection", async () => {
     const doc = globalThis.document;
     const win = globalThis.window;
 
@@ -60,8 +61,8 @@ describe("EditSession transform integration", () => {
     shell.mount({ onDeactivate: () => undefined });
     const outlineSpy = vi.spyOn(shell, "renderSelectionOutlines");
 
-    const session = createEditSession({ shell, root: doc });
-    session.start();
+    const session = createEditSession({ shell, root: doc, pageCustomization: createTestPageCustomization(doc) });
+    await session.start();
 
     // Select element A with a click.
     dispatchPointer(win, copyA, "pointerdown", { clientX: 40, clientY: 45, buttons: 1 });
@@ -93,7 +94,7 @@ describe("EditSession transform integration", () => {
     shell.unmount();
   });
 
-  it("layer shortcuts prevent default and re-stack the selected element", () => {
+  it("layer shortcuts prevent default and re-stack the selected element", async () => {
     const doc = globalThis.document;
     const win = globalThis.window;
 
@@ -116,8 +117,8 @@ describe("EditSession transform integration", () => {
     const shell = new EditorShell();
     shell.mount({ onDeactivate: () => undefined });
 
-    const session = createEditSession({ shell, root: doc });
-    session.start();
+    const session = createEditSession({ shell, root: doc, pageCustomization: createTestPageCustomization(doc) });
+    await session.start();
 
     dispatchPointer(win, copyA, "pointerdown", { clientX: 40, clientY: 45, buttons: 1 });
     dispatchPointer(win, copyA, "pointerup", { clientX: 40, clientY: 45, buttons: 0 });
@@ -155,7 +156,7 @@ describe("EditSession transform integration", () => {
     shell.unmount();
   });
 
-  it("ignores repeated Delete keydown and clears selection after hide", () => {
+  it("ignores repeated Delete keydown and clears selection after hide", async () => {
     const doc = globalThis.document;
     const win = globalThis.window;
 
@@ -183,13 +184,14 @@ describe("EditSession transform integration", () => {
     const session = createEditSession({
       shell,
       root: doc,
+      pageCustomization: createTestPageCustomization(doc),
       onDebug: (message, data) => {
         if (message === "transform-hide" || message === "hide-noop") {
           hideDebug.push({ message, data });
         }
       },
     });
-    session.start();
+    await session.start();
 
     dispatchPointer(win, copyA, "pointerdown", { clientX: 40, clientY: 45, buttons: 1 });
     dispatchPointer(win, copyA, "pointerup", { clientX: 40, clientY: 45, buttons: 0 });

@@ -10,22 +10,29 @@ import {
 } from "../shared/messages.js";
 import {
   isClearPageMessage,
+  isExportDataMessage,
   isGetPageOperationCountMessage,
+  isGetStorageUsageMessage,
+  isImportDataMessage,
   isLoadPageStateMessage,
+  isReplacePageOperationsMessage,
   isSaveOperationsMessage,
 } from "../shared/storage-messages.js";
 import { isRestrictedUrl } from "../shared/restricted-url.js";
 import { getEditModeForTab, setEditModeForTab } from "./edit-mode-state.js";
 import {
   handleClearPage,
+  handleExportData,
   handleGetPageOperationCount,
+  handleGetStorageUsage,
+  handleImportData,
   handleLoadPageState,
+  handleReplacePageOperations,
   handleSaveOperations,
 } from "./storage/storage-gateway.js";
 import {
   getSettingsResponse,
   setLastEditModeEnabled,
-  shouldRestoreEditModeForTab,
   updateExtensionSettings,
 } from "./settings-storage.js";
 
@@ -63,20 +70,6 @@ async function pushEditModeToTab(tabId: number, enabled: boolean): Promise<void>
   }
 }
 
-async function resolveEditModeEnabled(tabId: number): Promise<boolean> {
-  const inMemoryEnabled = getEditModeForTab(tabId);
-  if (inMemoryEnabled) {
-    return true;
-  }
-
-  if (await shouldRestoreEditModeForTab(tabId)) {
-    setEditModeForTab(tabId, true);
-    return true;
-  }
-
-  return false;
-}
-
 async function handleGetEditMode(tabId: number | undefined): Promise<EditModeResponse> {
   const tab = await resolveTab(tabId);
   if (!tab?.id) {
@@ -87,10 +80,7 @@ async function handleGetEditMode(tabId: number | undefined): Promise<EditModeRes
     return unavailableResponse("restricted_page");
   }
 
-  const enabled = await resolveEditModeEnabled(tab.id);
-  if (enabled && !getEditModeForTab(tab.id)) {
-    await pushEditModeToTab(tab.id, true);
-  }
+  const enabled = getEditModeForTab(tab.id);
 
   return {
     ok: true,
@@ -158,6 +148,11 @@ export function registerBackgroundMessageHandler(): void {
         return;
       }
 
+      if (isReplacePageOperationsMessage(message)) {
+        sendResponse(await handleReplacePageOperations(message.pageKey, message.operations));
+        return;
+      }
+
       if (isClearPageMessage(message)) {
         sendResponse(await handleClearPage(message.pageKey));
         return;
@@ -165,6 +160,21 @@ export function registerBackgroundMessageHandler(): void {
 
       if (isGetPageOperationCountMessage(message)) {
         sendResponse(await handleGetPageOperationCount(message.pageKey));
+        return;
+      }
+
+      if (isExportDataMessage(message)) {
+        sendResponse(await handleExportData());
+        return;
+      }
+
+      if (isImportDataMessage(message)) {
+        sendResponse(await handleImportData(message.payload));
+        return;
+      }
+
+      if (isGetStorageUsageMessage(message)) {
+        sendResponse(await handleGetStorageUsage());
         return;
       }
 

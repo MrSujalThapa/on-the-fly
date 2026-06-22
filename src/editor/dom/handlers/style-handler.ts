@@ -28,7 +28,7 @@ export function applyStyleOperation(
   element: HTMLElement,
   operation: StyleOperation,
   snapshotStore: ElementSnapshotStore,
-): AppliedDomEffect {
+): AppliedDomEffect["changes"] {
   snapshotStore.captureIfNeeded(element);
 
   const cssProperty = STYLE_PROPERTY_MAP[operation.payload.property];
@@ -38,10 +38,7 @@ export function applyStyleOperation(
 
   element.style.setProperty(cssProperty, operation.payload.value);
 
-  return {
-    operationId: operation.id,
-    changes: [{ kind: "style", property: cssProperty, previousValue }],
-  };
+  return [{ kind: "style", property: cssProperty, previousValue }];
 }
 
 export function revertStyleChange(

@@ -6,9 +6,13 @@ import {
 } from "../shared/messages.js";
 import { createEditSession, type EditSession } from "./edit-session.js";
 import { EditorShell } from "./editor-shell.js";
+import { PageCustomizationController } from "./page-customization-controller.js";
 
 const shell = new EditorShell();
+const pageCustomization = new PageCustomizationController(document);
 let editSession: EditSession | null = null;
+
+void pageCustomization.ensureReplayed();
 
 async function requestEditModeDisable(): Promise<void> {
   const response = parseEditModeResponse(
@@ -27,9 +31,14 @@ async function requestEditModeDisable(): Promise<void> {
 
 function applyEditMode(enabled: boolean): void {
   if (enabled) {
+    if (editSession) {
+      return;
+    }
+
     const session = createEditSession({
       shell,
       root: document,
+      pageCustomization,
     });
 
     shell.mount({
@@ -38,7 +47,7 @@ function applyEditMode(enabled: boolean): void {
       },
       onEscape: () => session.handleEscape(),
     });
-    session.start();
+    void session.start();
     editSession = session;
     return;
   }
@@ -46,22 +55,6 @@ function applyEditMode(enabled: boolean): void {
   editSession?.stop();
   editSession = null;
   shell.unmount();
-}
-
-async function syncEditModeFromBackground(): Promise<void> {
-  try {
-    const response = parseEditModeResponse(
-      await chrome.runtime.sendMessage({
-        type: OTF_MESSAGE.GET_EDIT_MODE,
-      }),
-    );
-
-    if (response.ok) {
-      applyEditMode(response.enabled);
-    }
-  } catch {
-    // Background may be unavailable during extension reload.
-  }
 }
 
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
@@ -72,13 +65,9 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   }
 
   if (isClearPageRequestMessage(message)) {
-    if (!editSession) {
-      sendResponse({ ok: false, error: "edit_mode_inactive" });
-      return true;
-    }
-
-    void editSession.clearPage().then(
+    void pageCustomization.clearPage().then(
       () => {
+        editSession?.afterExternalClearPage();
         sendResponse({ ok: true });
       },
       () => {
@@ -91,6 +80,8 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   return undefined;
 });
 
-void syncEditModeFromBackground();
+// Refresh/navigation always starts with edit mode off. Saved customizations
+// replay above; only explicit popup toggles may activate the edit session.
+applyEditMode(false);
 
 export {};

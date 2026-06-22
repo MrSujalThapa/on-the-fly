@@ -25,6 +25,7 @@ export class InvalidationScheduler {
   private readonly pendingReasons = new Set<InvalidationReason>();
   private throttleTimer: number | null = null;
   private debounceTimer: number | null = null;
+  private suspended = false;
 
   constructor(options: InvalidationSchedulerOptions) {
     this.onFlush = options.onFlush;
@@ -35,6 +36,11 @@ export class InvalidationScheduler {
   }
 
   request(reason: InvalidationReason): void {
+    if (this.suspended) {
+      this.pendingReasons.add(reason);
+      return;
+    }
+
     if (reason === "manual") {
       this.pendingReasons.add(reason);
       this.flush();
@@ -63,6 +69,21 @@ export class InvalidationScheduler {
     const reasons = Array.from(this.pendingReasons);
     this.pendingReasons.clear();
     this.onFlush(reasons);
+  }
+
+  suspend(): void {
+    this.suspended = true;
+  }
+
+  resume(): void {
+    this.suspended = false;
+    if (this.pendingReasons.size > 0) {
+      this.flush();
+    }
+  }
+
+  isSuspended(): boolean {
+    return this.suspended;
   }
 
   dispose(): void {

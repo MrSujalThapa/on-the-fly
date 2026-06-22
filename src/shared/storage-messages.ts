@@ -4,10 +4,12 @@ import type { EditorOperation } from "../editor/operations.js";
 export const OTF_STORAGE_MESSAGE = {
   LOAD_PAGE_STATE: "OTF_LOAD_PAGE_STATE",
   SAVE_OPERATIONS: "OTF_SAVE_OPERATIONS",
+  REPLACE_PAGE_OPERATIONS: "OTF_REPLACE_PAGE_OPERATIONS",
   CLEAR_PAGE: "OTF_CLEAR_PAGE",
   GET_PAGE_OPERATION_COUNT: "OTF_GET_PAGE_OPERATION_COUNT",
   EXPORT_DATA: "OTF_EXPORT_DATA",
   IMPORT_DATA: "OTF_IMPORT_DATA",
+  GET_STORAGE_USAGE: "OTF_GET_STORAGE_USAGE",
 } as const;
 
 export type OtfLoadPageStateMessage = {
@@ -17,6 +19,12 @@ export type OtfLoadPageStateMessage = {
 
 export type OtfSaveOperationsMessage = {
   type: typeof OTF_STORAGE_MESSAGE.SAVE_OPERATIONS;
+  pageKey: PageKey;
+  operations: EditorOperation[];
+};
+
+export type OtfReplacePageOperationsMessage = {
+  type: typeof OTF_STORAGE_MESSAGE.REPLACE_PAGE_OPERATIONS;
   pageKey: PageKey;
   operations: EditorOperation[];
 };
@@ -38,15 +46,22 @@ export type OtfExportDataMessage = {
 export type OtfImportDataMessage = {
   type: typeof OTF_STORAGE_MESSAGE.IMPORT_DATA;
   payload: unknown;
+  replace?: boolean;
+};
+
+export type OtfGetStorageUsageMessage = {
+  type: typeof OTF_STORAGE_MESSAGE.GET_STORAGE_USAGE;
 };
 
 export type StorageRequestMessage =
   | OtfLoadPageStateMessage
   | OtfSaveOperationsMessage
+  | OtfReplacePageOperationsMessage
   | OtfClearPageMessage
   | OtfGetPageOperationCountMessage
   | OtfExportDataMessage
-  | OtfImportDataMessage;
+  | OtfImportDataMessage
+  | OtfGetStorageUsageMessage;
 
 export interface PageStateResponse {
   ok: boolean;
@@ -59,11 +74,45 @@ export interface PageStateResponse {
 export interface StorageMutationResponse {
   ok: boolean;
   error?: string;
+  userMessage?: string;
   operationCount?: number;
   trimmed?: number;
   capReached?: boolean;
   saved?: number;
   skipped?: number;
+}
+
+export interface ExportDataResponse {
+  ok: boolean;
+  json?: string;
+  byteLength?: number;
+  warning?: string;
+  error?: string;
+  userMessage?: string;
+}
+
+export interface ImportDataResponse {
+  ok: boolean;
+  imported?: {
+    sites: number;
+    pages: number;
+    customizations: number;
+    operations: number;
+    assets: number;
+  };
+  warning?: string;
+  error?: string;
+  userMessage?: string;
+}
+
+export interface StorageUsageResponse {
+  ok: boolean;
+  operationCount?: number;
+  pageCount?: number;
+  assetCount?: number;
+  estimatedBytes?: number;
+  warning?: string;
+  error?: string;
 }
 
 export function isLoadPageStateMessage(value: unknown): value is OtfLoadPageStateMessage {
@@ -83,6 +132,21 @@ export function isSaveOperationsMessage(value: unknown): value is OtfSaveOperati
     value !== null &&
     "type" in value &&
     value.type === OTF_STORAGE_MESSAGE.SAVE_OPERATIONS &&
+    "pageKey" in value &&
+    typeof value.pageKey === "string" &&
+    "operations" in value &&
+    Array.isArray(value.operations)
+  );
+}
+
+export function isReplacePageOperationsMessage(
+  value: unknown,
+): value is OtfReplacePageOperationsMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === OTF_STORAGE_MESSAGE.REPLACE_PAGE_OPERATIONS &&
     "pageKey" in value &&
     typeof value.pageKey === "string" &&
     "operations" in value &&
@@ -111,5 +175,33 @@ export function isGetPageOperationCountMessage(
     value.type === OTF_STORAGE_MESSAGE.GET_PAGE_OPERATION_COUNT &&
     "pageKey" in value &&
     typeof value.pageKey === "string"
+  );
+}
+
+export function isExportDataMessage(value: unknown): value is OtfExportDataMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === OTF_STORAGE_MESSAGE.EXPORT_DATA
+  );
+}
+
+export function isImportDataMessage(value: unknown): value is OtfImportDataMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === OTF_STORAGE_MESSAGE.IMPORT_DATA &&
+    "payload" in value
+  );
+}
+
+export function isGetStorageUsageMessage(value: unknown): value is OtfGetStorageUsageMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === OTF_STORAGE_MESSAGE.GET_STORAGE_USAGE
   );
 }

@@ -50,12 +50,22 @@ function simulateResize(
   startY: number,
   endX: number,
   endY: number,
+  options: { altKey?: boolean; endType?: "pointerup" | "pointercancel" } = {},
 ): void {
   const view = document.defaultView as unknown as typeof globalThis;
-  const down = new view.PointerEvent("pointerdown", { clientX: startX, clientY: startY });
+  const down = new view.PointerEvent("pointerdown", {
+    clientX: startX,
+    clientY: startY,
+    pointerId: 1,
+    altKey: options.altKey === true,
+  });
   handleHandler?.(handleId, down);
-  view.dispatchEvent(new view.PointerEvent("pointermove", { clientX: endX, clientY: endY }));
-  view.dispatchEvent(new view.PointerEvent("pointerup", { clientX: endX, clientY: endY }));
+  view.dispatchEvent(new view.PointerEvent("pointermove", { clientX: endX, clientY: endY, pointerId: 1 }));
+  view.dispatchEvent(new view.PointerEvent(options.endType ?? "pointerup", {
+    clientX: endX,
+    clientY: endY,
+    pointerId: 1,
+  }));
 }
 
 function layoutResizable(element: HTMLElement, base: VisualNodeRect): void {
@@ -540,6 +550,310 @@ describe("TransformController", () => {
     // Crop must not stretch/resize the element.
     expect(image.style.width).toBe("");
     expect(image.style.height).toBe("");
+  });
+
+  it("updates the outline to the visible cropped rect after crop", () => {
+    const { document } = createTestDocument(
+      `<main><img class="photo" alt="x" /></main>`,
+    );
+    const image = document.querySelector(".photo") as HTMLElement;
+    layoutResizable(image, { x: 0, y: 0, width: 200, height: 160 });
+
+    const { shell, outlineCalls } = createFakeShell();
+    const adapter = new DomRuntimeAdapter(document);
+    const controller = createTransformController({
+      shell,
+      document,
+      adapter,
+      getPageKey: () => "https://example.com/",
+    });
+
+    const target: TransformTarget = {
+      nodeId: "photo",
+      signature: signatureFor("photo", ""),
+      rect: { x: 0, y: 0, width: 200, height: 160 },
+      element: image,
+    };
+    controller.setSelection({
+      targets: [target],
+      outlineRects: [{ ...target.rect }],
+      variant: "node",
+      handleTarget: target,
+    });
+
+    controller.cropSelection({ top: 10, right: 20, bottom: 5, left: 15 });
+
+    const lastOutline = outlineCalls.at(-1);
+    expect(lastOutline?.rects[0]).toEqual({ x: 15, y: 10, width: 165, height: 145 });
+  });
+
+  it("repeated crop composes from the current stored crop state", () => {
+    const { document } = createTestDocument(
+      `<main><img class="photo" alt="x" /></main>`,
+    );
+    const image = document.querySelector(".photo") as HTMLElement;
+    layoutResizable(image, { x: 0, y: 0, width: 200, height: 160 });
+
+    const { shell, outlineCalls, getHandleHandler } = createFakeShell();
+    const adapter = new DomRuntimeAdapter(document);
+    const controller = createTransformController({
+      shell,
+      document,
+      adapter,
+      getPageKey: () => "https://example.com/",
+    });
+
+    const target: TransformTarget = {
+      nodeId: "photo",
+      signature: signatureFor("photo", ""),
+      rect: { x: 0, y: 0, width: 200, height: 160 },
+      element: image,
+    };
+    controller.setSelection({
+      targets: [target],
+      outlineRects: [{ ...target.rect }],
+      variant: "node",
+      handleTarget: target,
+    });
+    controller.cropSelection({ top: 0, right: 20, bottom: 0, left: 10 });
+
+    controller.setCropMode(true);
+    simulateResize(document, getHandleHandler(), "e", 180, 80, 170, 80);
+
+    expect(image.style.clipPath).toBe("inset(0px 30px 0px 10px)");
+    const lastOutline = outlineCalls.at(-1);
+    expect(lastOutline?.rects[0]).toEqual({ x: 10, y: 0, width: 160, height: 160 });
+  });
+
+  it("does not crop from an Alt resize handle drag unless crop mode is active", () => {
+    const { document } = createTestDocument(
+      `<main><img class="photo" alt="x" /></main>`,
+    );
+    const image = document.querySelector(".photo") as HTMLElement;
+    layoutResizable(image, { x: 0, y: 0, width: 200, height: 160 });
+
+    const { shell, getHandleHandler } = createFakeShell();
+    const adapter = new DomRuntimeAdapter(document);
+    const controller = createTransformController({
+      shell,
+      document,
+      adapter,
+      getPageKey: () => "https://example.com/",
+    });
+
+    const target: TransformTarget = {
+      nodeId: "photo",
+      signature: signatureFor("photo", ""),
+      rect: { x: 0, y: 0, width: 200, height: 160 },
+      element: image,
+    };
+    controller.setSelection({
+      targets: [target],
+      outlineRects: [{ ...target.rect }],
+      variant: "node",
+      handleTarget: target,
+    });
+
+    simulateResize(document, getHandleHandler(), "e", 200, 80, 180, 80, { altKey: true });
+
+    expect(image.style.clipPath).toBe("");
+    expect(image.style.width).toBe("180px");
+  });
+
+  it("exits crop mode after pointerup", () => {
+    const { document } = createTestDocument(
+      `<main><img class="photo" alt="x" /></main>`,
+    );
+    const image = document.querySelector(".photo") as HTMLElement;
+    layoutResizable(image, { x: 0, y: 0, width: 200, height: 160 });
+
+    const { shell, getHandleHandler } = createFakeShell();
+    const adapter = new DomRuntimeAdapter(document);
+    const controller = createTransformController({
+      shell,
+      document,
+      adapter,
+      getPageKey: () => "https://example.com/",
+    });
+
+    const target: TransformTarget = {
+      nodeId: "photo",
+      signature: signatureFor("photo", ""),
+      rect: { x: 0, y: 0, width: 200, height: 160 },
+      element: image,
+    };
+    controller.setSelection({
+      targets: [target],
+      outlineRects: [{ ...target.rect }],
+      variant: "node",
+      handleTarget: target,
+    });
+
+    expect(controller.setCropMode(true)).toBe(true);
+    simulateResize(document, getHandleHandler(), "e", 200, 80, 180, 80);
+
+    expect(controller.isCropMode()).toBe(false);
+  });
+
+  it("exits crop mode and restores preview on pointercancel", () => {
+    const { document } = createTestDocument(
+      `<main><img class="photo" alt="x" /></main>`,
+    );
+    const image = document.querySelector(".photo") as HTMLElement;
+    layoutResizable(image, { x: 0, y: 0, width: 200, height: 160 });
+
+    const { shell, getHandleHandler } = createFakeShell();
+    const adapter = new DomRuntimeAdapter(document);
+    const controller = createTransformController({
+      shell,
+      document,
+      adapter,
+      getPageKey: () => "https://example.com/",
+    });
+
+    const target: TransformTarget = {
+      nodeId: "photo",
+      signature: signatureFor("photo", ""),
+      rect: { x: 0, y: 0, width: 200, height: 160 },
+      element: image,
+    };
+    controller.setSelection({
+      targets: [target],
+      outlineRects: [{ ...target.rect }],
+      variant: "node",
+      handleTarget: target,
+    });
+
+    controller.setCropMode(true);
+    simulateResize(document, getHandleHandler(), "e", 200, 80, 180, 80, { endType: "pointercancel" });
+
+    expect(controller.isCropMode()).toBe(false);
+    expect(image.style.clipPath).toBe("");
+  });
+
+  it("cancels resize preview on pointercancel", () => {
+    const { document } = createTestDocument(
+      `<main><section class="card">Card</section></main>`,
+    );
+    const card = document.querySelector(".card") as HTMLElement;
+    layoutResizable(card, { x: 0, y: 0, width: 200, height: 160 });
+
+    const { shell, getHandleHandler } = createFakeShell();
+    const adapter = new DomRuntimeAdapter(document);
+    const controller = createTransformController({
+      shell,
+      document,
+      adapter,
+      getPageKey: () => "https://example.com/",
+    });
+
+    const target: TransformTarget = {
+      nodeId: "card",
+      signature: signatureFor("card", "Card"),
+      rect: { x: 0, y: 0, width: 200, height: 160 },
+      element: card,
+    };
+    controller.setSelection({
+      targets: [target],
+      outlineRects: [{ ...target.rect }],
+      variant: "node",
+      handleTarget: target,
+    });
+
+    simulateResize(document, getHandleHandler(), "e", 200, 80, 240, 80, { endType: "pointercancel" });
+
+    expect(controller.isTransforming()).toBe(false);
+    expect(card.style.width).toBe("");
+    expect(card.style.height).toBe("");
+  });
+
+  it("cancels an active crop preview on window blur", () => {
+    const { document } = createTestDocument(
+      `<main><img class="photo" alt="x" /></main>`,
+    );
+    const image = document.querySelector(".photo") as HTMLElement;
+    layoutResizable(image, { x: 0, y: 0, width: 200, height: 160 });
+
+    const { shell, getHandleHandler } = createFakeShell();
+    const adapter = new DomRuntimeAdapter(document);
+    const controller = createTransformController({
+      shell,
+      document,
+      adapter,
+      getPageKey: () => "https://example.com/",
+    });
+
+    const target: TransformTarget = {
+      nodeId: "photo",
+      signature: signatureFor("photo", ""),
+      rect: { x: 0, y: 0, width: 200, height: 160 },
+      element: image,
+    };
+    controller.setSelection({
+      targets: [target],
+      outlineRects: [{ ...target.rect }],
+      variant: "node",
+      handleTarget: target,
+    });
+
+    controller.setCropMode(true);
+    const view = document.defaultView as unknown as typeof globalThis;
+    const down = new view.PointerEvent("pointerdown", {
+      clientX: 200,
+      clientY: 80,
+      pointerId: 1,
+    });
+    getHandleHandler()?.("e", down);
+    view.dispatchEvent(new view.PointerEvent("pointermove", { clientX: 180, clientY: 80, pointerId: 1 }));
+    view.dispatchEvent(new view.Event("blur"));
+
+    expect(controller.isCropMode()).toBe(false);
+    expect(controller.isTransforming()).toBe(false);
+    expect(image.style.clipPath).toBe("");
+  });
+
+  it("disables crop for group and giant wrapper selections", () => {
+    const { document } = createTestDocument(
+      `<main><section class="giant">Large</section><section class="card">Card</section></main>`,
+    );
+    const giant = document.querySelector(".giant") as HTMLElement;
+    const card = document.querySelector(".card") as HTMLElement;
+    Object.defineProperty(document.defaultView, "innerWidth", { configurable: true, value: 1000 });
+    Object.defineProperty(document.defaultView, "innerHeight", { configurable: true, value: 800 });
+    layoutResizable(giant, { x: 0, y: 0, width: 960, height: 900 });
+    layoutResizable(card, { x: 20, y: 20, width: 200, height: 120 });
+
+    const { shell } = createFakeShell();
+    const adapter = new DomRuntimeAdapter(document);
+    const controller = createTransformController({
+      shell,
+      document,
+      adapter,
+      getPageKey: () => "https://example.com/",
+    });
+
+    const groupTarget = makeTarget("card", "Card", { x: 20, y: 20, width: 200, height: 120 });
+    controller.setSelection({
+      targets: [groupTarget],
+      outlineRects: [{ ...groupTarget.rect }],
+      variant: "group",
+      handleTarget: null,
+    });
+    expect(controller.setCropMode(true)).toBe(false);
+
+    const giantTarget: TransformTarget = {
+      nodeId: "giant",
+      signature: signatureFor("giant", "Large"),
+      rect: { x: 0, y: 0, width: 960, height: 900 },
+      element: giant,
+    };
+    controller.setSelection({
+      targets: [giantTarget],
+      outlineRects: [{ ...giantTarget.rect }],
+      variant: "node",
+      handleTarget: giantTarget,
+    });
+    expect(controller.setCropMode(true)).toBe(false);
   });
 
   it("recomputes the outline after a resize", () => {

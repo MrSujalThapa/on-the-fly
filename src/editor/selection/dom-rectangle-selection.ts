@@ -29,6 +29,9 @@ export const MAX_CONTAINER_VIEWPORT_RATIO = 0.85;
 export const MAX_CONTAINER_TO_RECT_RATIO = 9;
 export const MIN_RECT_OVERLAP_SELF = 0.08;
 export const MIN_RECT_OVERLAP_RECT = 0.04;
+export const MAX_TALL_CONTAINER_VIEWPORT_HEIGHT_RATIO = 1.1;
+export const MAX_LOW_DENSITY_CONTAINER_HEIGHT_RATIO = 0.9;
+export const MIN_LOW_DENSITY_OVERLAP_SELF = 0.45;
 export const ANCESTOR_WALK_LIMIT = 8;
 export const WHOLE_PAGE_UNION_RATIO = 0.9;
 export const SECONDARY_SCORE_RATIO = 0.45;
@@ -275,6 +278,23 @@ export function scoreRectangleCandidate(
   }
 
   const containedSamples = countContainedSamples(element, sampledLeaves);
+  const heightRatio = elementRect.height / Math.max(1, viewport.height);
+  const sizeRatio = elementArea / rectAreaValue;
+
+  if (
+    heightRatio > MAX_TALL_CONTAINER_VIEWPORT_HEIGHT_RATIO &&
+    (sizeRatio > 2 || overlapSelf < 0.75)
+  ) {
+    return null;
+  }
+
+  if (
+    heightRatio > MAX_LOW_DENSITY_CONTAINER_HEIGHT_RATIO &&
+    overlapSelf < MIN_LOW_DENSITY_OVERLAP_SELF &&
+    containedSamples < sampledLeaves.length
+  ) {
+    return null;
+  }
 
   let score = 0;
   score += containedSamples * 12;
@@ -282,7 +302,6 @@ export function scoreRectangleCandidate(
   score += overlapRect * 16;
   score += containerUsefulnessScore(element);
 
-  const sizeRatio = elementArea / rectAreaValue;
   if (sizeRatio > 4) {
     score -= Math.min(20, (sizeRatio - 4) * 3);
   }

@@ -16,6 +16,16 @@ export function findAnchorInComposedPath(path: EventTarget[]): HTMLAnchorElement
   return null;
 }
 
+export function findImageInComposedPath(path: EventTarget[]): HTMLImageElement | null {
+  for (const target of path) {
+    if (target instanceof HTMLImageElement) {
+      return target;
+    }
+  }
+
+  return null;
+}
+
 export function findDirectClickableInComposedPath(path: EventTarget[]): HTMLElement | null {
   for (const target of path) {
     if (!(target instanceof HTMLElement)) {
@@ -142,6 +152,21 @@ export function resolveVisualNodeForAnchor(
   return hits.find((hit) => hit.signature.tagName === "a");
 }
 
+function resolveVisualNodeForImage(
+  graph: VisualLayoutGraph,
+  image: HTMLImageElement,
+  x: number,
+  y: number,
+): VisualNode | undefined {
+  const imageNode = resolveVisualNodeForElement(graph, image, x, y);
+  if (imageNode && isSelectableForInteraction(imageNode)) {
+    return imageNode;
+  }
+
+  const node = buildDomSelectionTarget(image, "otf-click-img", graph.getViewport());
+  return isSelectableForInteraction(node) ? node : undefined;
+}
+
 export function shouldSkipContainerPromotion(
   node: VisualNode,
   path: EventTarget[],
@@ -155,7 +180,7 @@ export function shouldSkipContainerPromotion(
   }
 
   if (findAnchorInComposedPath(path)) {
-    return node.signature.tagName === "a" || node.kind === "text";
+    return node.signature.tagName === "a" || node.kind === "text" || node.kind === "image";
   }
 
   if (findDirectClickableInComposedPath(path)) {
@@ -191,6 +216,13 @@ export function resolveClickTargetFromElementsFromPoint(
   const seenTargets = new Set<Element>();
 
   for (const element of elements) {
+    if (element instanceof HTMLImageElement) {
+      const imageNode = resolveVisualNodeForImage(graph, element, x, y);
+      if (imageNode) {
+        return imageNode;
+      }
+    }
+
     const target = findDirectClickableAncestor(element) ?? element;
     if (seenTargets.has(target)) {
       continue;
@@ -241,6 +273,14 @@ export function resolveClickTargetNode(
   }
 
   const anchor = findAnchorInComposedPath(composedPath);
+  const image = findImageInComposedPath(composedPath);
+  if (image) {
+    const imageNode = resolveVisualNodeForImage(graph, image, x, y);
+    if (imageNode) {
+      return imageNode;
+    }
+  }
+
   if (anchor) {
     const anchorNode = resolveVisualNodeForAnchor(graph, anchor, x, y);
     if (anchorNode) {

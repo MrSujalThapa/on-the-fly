@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { createEditSession } from "../../src/content/edit-session.js";
+import { createTestPageCustomization } from "./edit-session-test-helpers.js";
 import { EditorShell } from "../../src/content/editor-shell.js";
 import { layoutElement } from "../editor/measurement/layout-helpers.js";
 
@@ -28,7 +29,7 @@ describe("EditSession gesture pipeline", () => {
     globalThis.document.getElementById("on-the-fly-root-host")?.remove();
   });
 
-  it("resolves a rectangle drag into a selection via elementsFromPoint", () => {
+  it("resolves a rectangle drag into a selection via elementsFromPoint", async () => {
     const doc = globalThis.document;
     const win = globalThis.window;
 
@@ -71,8 +72,8 @@ describe("EditSession gesture pipeline", () => {
     const outlineSpy = vi.spyOn(shell, "renderSelectionOutlines");
     const lassoSpy = vi.spyOn(shell, "renderLassoBox");
 
-    const session = createEditSession({ shell, root: doc });
-    session.start();
+    const session = createEditSession({ shell, root: doc, pageCustomization: createTestPageCustomization(doc) });
+    await session.start();
 
     dispatchPointer(win, copyA, "pointerdown", { clientX: 30, clientY: 30, buttons: 1 });
     dispatchPointer(win, copyA, "pointermove", { clientX: 200, clientY: 220, buttons: 1 });
@@ -88,7 +89,7 @@ describe("EditSession gesture pipeline", () => {
     shell.unmount();
   });
 
-  it("selects a single element on click without activating the page", () => {
+  it("selects a single element on click without activating the page", async () => {
     const doc = globalThis.document;
     const win = globalThis.window;
 
@@ -111,8 +112,8 @@ describe("EditSession gesture pipeline", () => {
     shell.mount({ onDeactivate: () => undefined });
     const outlineSpy = vi.spyOn(shell, "renderSelectionOutlines");
 
-    const session = createEditSession({ shell, root: doc });
-    session.start();
+    const session = createEditSession({ shell, root: doc, pageCustomization: createTestPageCustomization(doc) });
+    await session.start();
 
     dispatchPointer(win, label, "pointerdown", { clientX: 40, clientY: 30, buttons: 1 });
     dispatchPointer(win, label, "pointerup", { clientX: 40, clientY: 30, buttons: 0 });

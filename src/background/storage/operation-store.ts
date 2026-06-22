@@ -5,6 +5,14 @@ import {
 } from "../../editor/persistence/coalesce-page-operations.js";
 import { validateOperation } from "../../editor/validation/validate-operation.js";
 import {
+  buildExportPayload,
+  type OtfExportPayload,
+  type StoredAsset,
+  validateImportAssets,
+  validateImportOperations,
+} from "../../shared/export-import.js";
+import { MAX_OPERATIONS_PER_PAGE } from "../../shared/storage-limits.js";
+import {
   defaultCustomizationId,
   derivePageInfo,
   type StoredCustomization,
@@ -24,8 +32,7 @@ export const STORE = {
   ASSETS: "assets",
 } as const;
 
-/** Local product limit (see docs/04). Keeps a single page from growing huge. */
-export const MAX_OPERATIONS_PER_PAGE = 1000;
+export { MAX_OPERATIONS_PER_PAGE };
 
 export interface SaveOperationsResult {
   saved: number;
@@ -99,6 +106,15 @@ export class OperationStore {
     return this.dbPromise;
   }
 
+  /** Replaces all stored operations for a page (used by undo/clear sync). */
+  async replacePageOperations(
+    pageKey: PageKey,
+    operations: EditorOperation[],
+  ): Promise<{ totalCount: number; trimmed: number }> {
+    const valid = operations.filter((operation) => validateOperation(operation).ok);
+    return this.replacePageOperationsInternal(pageKey, valid);
+  }
+
   /**
    * Merges incoming operations with saved page state (coalescing duplicate hide
    * ops per target), then rewrites the page operation list. Returns diagnostics
@@ -132,7 +148,7 @@ export class OperationStore {
       };
     }
 
-    const { totalCount, trimmed } = await this.replacePageOperations(pageKey, merged);
+    const { totalCount, trimmed } = await this.replacePageOperationsInternal(pageKey, merged);
 
     return {
       saved: applied,
@@ -158,7 +174,7 @@ export class OperationStore {
    * Replaces all operations for a page with the merged list, reassigning
    * monotonic sequence numbers. Trims oldest ops when over the per-page cap.
    */
-  private async replacePageOperations(
+  private async replacePageOperationsInternal(
     pageKey: PageKey,
     operations: EditorOperation[],
   ): Promise<{ totalCount: number; trimmed: number }> {
@@ -226,6 +242,114 @@ export class OperationStore {
       .slice()
       .sort((left, right) => left.sequence - right.sequence)
       .map(toEditorOperation);
+  }
+
+  /** Reads all local stores for export. */
+  async exportAll(): Promise<OtfExportPayload> {
+    const db = await this.openDatabase();
+    const tx = db.transaction(
+      [STORE.SITES, STORE.PAGES, STORE.CUSTOMIZATIONS, STORE.OPERATIONS, STORE.ASSETS],
+      "readonly",
+    );
+
+    const sites = await readAll<StoredSite>(tx.objectStore(STORE.SITES));
+    const pages = await readAll<StoredPage>(tx.objectStore(STORE.PAGES));
+    const customizations = await readAll<StoredCustomization>(tx.objectStore(STORE.CUSTOMIZATIONS));
+    const operations = await readAll<StoredOperation>(tx.objectStore(STORE.OPERATIONS));
+    const assets = await readAll<StoredAsset>(tx.objectStore(STORE.ASSETS));
+    await awaitTransaction(tx);
+
+    return buildExportPayload({
+      dbName: this.dbName,
+      sites,
+      pages,
+      customizations,
+      operations,
+      assets,
+    });
+  }
+
+  /** Replaces all local stores with validated import data. */
+  async importAll(payload: OtfExportPayload): Promise<{
+    sites: number;
+    pages: number;
+    customizations: number;
+    operations: number;
+    assets: number;
+  }> {
+    const operations = payload.operations.map(toEditorOperation);
+    const operationValidation = validateImportOperations(operations);
+    if (!operationValidation.ok) {
+      throw new Error(operationValidation.error);
+    }
+
+    const assetValidation = validateImportAssets(payload.assets);
+    if (!assetValidation.ok) {
+      throw new Error(assetValidation.error);
+    }
+
+    const db = await this.openDatabase();
+    const tx = db.transaction(
+      [STORE.SITES, STORE.PAGES, STORE.CUSTOMIZATIONS, STORE.OPERATIONS, STORE.ASSETS],
+      "readwrite",
+    );
+
+    for (const storeName of [
+      STORE.SITES,
+      STORE.PAGES,
+      STORE.CUSTOMIZATIONS,
+      STORE.OPERATIONS,
+      STORE.ASSETS,
+    ] as const) {
+      const store = tx.objectStore(storeName);
+      const keys = await promisifyRequest<IDBValidKey[]>(store.getAllKeys());
+      for (const key of keys) {
+        store.delete(key);
+      }
+    }
+
+    for (const site of payload.sites) {
+      tx.objectStore(STORE.SITES).put(site);
+    }
+    for (const page of payload.pages) {
+      tx.objectStore(STORE.PAGES).put(page);
+    }
+    for (const customization of payload.customizations) {
+      tx.objectStore(STORE.CUSTOMIZATIONS).put(customization);
+    }
+    for (const operation of payload.operations) {
+      tx.objectStore(STORE.OPERATIONS).put(operation);
+    }
+    for (const asset of payload.assets) {
+      tx.objectStore(STORE.ASSETS).put(asset);
+    }
+
+    await awaitTransaction(tx);
+
+    return {
+      sites: payload.sites.length,
+      pages: payload.pages.length,
+      customizations: payload.customizations.length,
+      operations: payload.operations.length,
+      assets: payload.assets.length,
+    };
+  }
+
+  /** Rough byte estimate for diagnostics and warnings. */
+  async estimateStorageBytes(): Promise<{
+    operationCount: number;
+    pageCount: number;
+    assetCount: number;
+    estimatedBytes: number;
+  }> {
+    const payload = await this.exportAll();
+    const json = JSON.stringify(payload);
+    return {
+      operationCount: payload.operations.length,
+      pageCount: payload.pages.length,
+      assetCount: payload.assets.length,
+      estimatedBytes: new TextEncoder().encode(json).length,
+    };
   }
 
   /** Removes all stored operations, the customization, and the page record. */
@@ -360,4 +484,8 @@ function toEditorOperation(stored: StoredOperation): EditorOperation {
   delete record.customizationId;
   delete record.sequence;
   return record as EditorOperation;
+}
+
+async function readAll<T>(store: IDBObjectStore): Promise<T[]> {
+  return promisifyRequest(store.getAll() as IDBRequest<T[]>);
 }

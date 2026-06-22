@@ -210,6 +210,41 @@ describe("resolveRectangleDomElements", () => {
     expect(result.elements[0]?.id).toBe("post");
   });
 
+  it("prefers visible cards over a tall sparse parent column", () => {
+    const { document, root } = createTestDocument(`
+      <section id="column" class="profile-column">
+        <article id="profile" class="profile-card"><p id="profile-text">Profile</p></article>
+        <article id="notifications" class="notification-card"><p id="notification-text">Manage notifications</p></article>
+      </section>
+    `);
+    const column = root.querySelector("#column") as HTMLElement;
+    const profile = root.querySelector("#profile") as HTMLElement;
+    const notifications = root.querySelector("#notifications") as HTMLElement;
+    const profileText = root.querySelector("#profile-text") as HTMLElement;
+    const notificationText = root.querySelector("#notification-text") as HTMLElement;
+    layoutElement(column, { x: 20, y: 0, width: 420, height: 1300 });
+    layoutElement(profile, { x: 40, y: 40, width: 360, height: 150 });
+    layoutElement(notifications, { x: 40, y: 720, width: 360, height: 120 });
+    layoutElement(profileText, { x: 60, y: 70, width: 260, height: 30 });
+    layoutElement(notificationText, { x: 60, y: 750, width: 260, height: 30 });
+
+    stubPointsToTopElement(document, (_x, y) => {
+      if (y < 220) {
+        return [profileText, profile, column, root, document.body, document.documentElement];
+      }
+      return [notificationText, notifications, column, root, document.body, document.documentElement];
+    });
+
+    const result = resolveRectangleDomElements(
+      document,
+      { x: 30, y: 30, width: 390, height: 830 },
+      VIEWPORT,
+    );
+
+    const ids = result.elements.map((element) => element.id).sort();
+    expect(ids).toEqual(["notifications", "profile"]);
+  });
+
   it("does not reject a small rectangle that selects sparse-page elements", () => {
     const { document, root } = createTestDocument(`
       <main><p id="a">One</p><p id="b">Two</p></main>

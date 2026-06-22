@@ -46,7 +46,7 @@ export async function getSettingsResponse(): Promise<SettingsResponse> {
   return {
     ok: true,
     settings: snapshot.settings,
-    lastEditModeEnabled: snapshot.lastEditModeEnabled,
+    lastEditModeEnabled: false,
     diagnostics: createSettingsDiagnostics(),
   };
 }
@@ -59,7 +59,7 @@ export async function updateExtensionSettings(
 
   const nextSnapshot: SettingsSnapshot = {
     settings: nextSettings,
-    lastEditModeEnabled: snapshot.lastEditModeEnabled,
+    lastEditModeEnabled: false,
     updatedAt: Date.now(),
   };
 
@@ -74,26 +74,22 @@ export async function updateExtensionSettings(
 }
 
 export async function setLastEditModeEnabled(enabled: boolean): Promise<void> {
+  void enabled;
   const snapshot = await loadSettingsSnapshot();
 
-  if (snapshot.lastEditModeEnabled === enabled) {
+  if (!snapshot.lastEditModeEnabled) {
     return;
   }
 
   await writeSnapshot({
     ...snapshot,
-    lastEditModeEnabled: enabled,
+    lastEditModeEnabled: false,
     updatedAt: Date.now(),
   });
 }
 
-export async function shouldRestoreEditModeForTab(tabId: number): Promise<boolean> {
-  if (tabId <= 0) {
-    return false;
-  }
-
-  const snapshot = await loadSettingsSnapshot();
-  return snapshot.settings.restoreEditModeOnLoad && snapshot.lastEditModeEnabled;
+export function shouldRestoreEditModeForTab(): boolean {
+  return false;
 }
 
 export function getSettingsDiagnostics(): SettingsDiagnostics {

@@ -6,7 +6,7 @@ export function applyZIndexOperation(
   element: HTMLElement,
   operation: ZIndexOperation,
   snapshotStore: ElementSnapshotStore,
-): AppliedDomEffect {
+): AppliedDomEffect["changes"] {
   const snapshot = snapshotStore.captureIfNeeded(element);
   const previousValue = element.style.zIndex || snapshot.zIndex;
   const changes: AppliedDomEffect["changes"] = [];
@@ -24,10 +24,7 @@ export function applyZIndexOperation(
   element.style.zIndex = String(operation.payload.layer);
   changes.push({ kind: "zIndex", previousValue });
 
-  return {
-    operationId: operation.id,
-    changes,
-  };
+  return changes;
 }
 
 function readComputedPosition(element: HTMLElement): string {

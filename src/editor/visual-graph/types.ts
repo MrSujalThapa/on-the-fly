@@ -44,6 +44,7 @@ export interface GeometryCacheOptions {
   root: ParentNode;
   scanOptions?: import("../measurement/types.js").ScanOptions;
   now?: () => number;
+  onRebuild?: (detail: { durationMs: number; reason: InvalidationReason | null; nodeCount: number }) => void;
 }
 
 export interface DomInvalidationListenerOptions {

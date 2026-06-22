@@ -24,11 +24,54 @@ export class ElementSnapshotStore {
   }
 }
 
+const PRESENTATION_STYLE_PROPERTIES = [
+  "color",
+  "background-color",
+  "border-color",
+  "border-width",
+  "border-radius",
+  "font-size",
+  "font-weight",
+  "text-align",
+  "opacity",
+  "box-shadow",
+  "filter",
+] as const;
+
+function buildPresentationCssText(element: HTMLElement, computed: CSSStyleDeclaration): string {
+  const merged = new Map<string, string>();
+
+  for (const part of element.style.cssText.split(";")) {
+    const colonIndex = part.indexOf(":");
+    if (colonIndex === -1) {
+      continue;
+    }
+    const key = part.slice(0, colonIndex).trim();
+    const value = part.slice(colonIndex + 1).trim();
+    if (key && value) {
+      merged.set(key, value);
+    }
+  }
+
+  for (const property of PRESENTATION_STYLE_PROPERTIES) {
+    const inline = element.style.getPropertyValue(property);
+    const value = inline || computed.getPropertyValue(property);
+    if (!value || value === "initial" || value === "auto" || value === "normal") {
+      continue;
+    }
+    merged.set(property, value);
+  }
+
+  return [...merged.entries()].map(([key, value]) => `${key}: ${value}`).join("; ");
+}
+
 export function captureElementSnapshot(element: HTMLElement): ElementStyleSnapshot {
   const computed = getComputedStyle(element);
+  const presentationCssText = buildPresentationCssText(element, computed);
 
   return {
     inlineStyle: element.getAttribute("style") ?? "",
+    presentationCssText,
     display: element.style.display || computed.display,
     visibility: element.style.visibility || computed.visibility,
     transform: element.style.transform || computed.transform,
@@ -99,6 +142,10 @@ export function restoreInlineStyleFromSnapshot(
   element: HTMLElement,
   snapshot: ElementStyleSnapshot,
 ): void {
+  // Restore the element's exact prior inline style attribute. Anything not set
+  // inline before the operation must fall back to the page's stylesheet rules,
+  // so we never bake computed values back in (that would mutate geometry and
+  // break before/after determinism on undo, redo, and clear).
   if (snapshot.inlineStyle) {
     element.setAttribute("style", snapshot.inlineStyle);
     return;

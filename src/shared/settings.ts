@@ -91,10 +91,7 @@ export function normalizeExtensionSettings(value: unknown): ExtensionSettings {
 
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
-    restoreEditModeOnLoad:
-      typeof candidate.restoreEditModeOnLoad === "boolean"
-        ? candidate.restoreEditModeOnLoad
-        : DEFAULT_EXTENSION_SETTINGS.restoreEditModeOnLoad,
+    restoreEditModeOnLoad: false,
     toolbarPlacement: isToolbarPlacement(candidate.toolbarPlacement)
       ? candidate.toolbarPlacement
       : DEFAULT_EXTENSION_SETTINGS.toolbarPlacement,
@@ -111,8 +108,7 @@ export function normalizeSettingsSnapshot(value: unknown): SettingsSnapshot {
 
   return {
     settings: normalizeExtensionSettings(candidate.settings),
-    lastEditModeEnabled:
-      typeof candidate.lastEditModeEnabled === "boolean" ? candidate.lastEditModeEnabled : false,
+    lastEditModeEnabled: false,
     updatedAt: typeof candidate.updatedAt === "number" ? candidate.updatedAt : Date.now(),
   };
 }
@@ -124,7 +120,7 @@ export function mergeExtensionSettings(
   const next: ExtensionSettings = { ...current };
 
   if (typeof update.restoreEditModeOnLoad === "boolean") {
-    next.restoreEditModeOnLoad = update.restoreEditModeOnLoad;
+    next.restoreEditModeOnLoad = false;
   }
 
   if (update.toolbarPlacement !== undefined) {
@@ -164,9 +160,7 @@ export function parseSettingsResponse(value: unknown): SettingsResponse {
     response.settings = normalizeExtensionSettings(candidate.settings);
   }
 
-  if (typeof candidate.lastEditModeEnabled === "boolean") {
-    response.lastEditModeEnabled = candidate.lastEditModeEnabled;
-  }
+  response.lastEditModeEnabled = false;
 
   if (typeof candidate.diagnostics === "object" && candidate.diagnostics !== null) {
     const diagnostics = candidate.diagnostics as Record<string, unknown>;

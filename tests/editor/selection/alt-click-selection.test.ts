@@ -89,6 +89,21 @@ describe("alt-click child selection", () => {
     expect(result.resolvedNodes[0]?.kind).toBe("image");
   });
 
+  it("selects a linked image on regular click without resolving to the anchor", () => {
+    const graph = createEmptyGraph();
+    const { document, anchor, image } = createLinkedAdDocument();
+    const main = document.querySelector("main") as HTMLElement;
+    const path = [image, anchor, main, document.body];
+    document.elementsFromPoint = () => [image, anchor, main, document.body, document.documentElement];
+
+    const result = resolveClickSelection(graph, 80, 80, false, undefined, path, {
+      document,
+    });
+
+    expect(result.resolvedNodes[0]?.signature.tagName).toBe("img");
+    expect(result.resolvedNodes[0]?.kind).toBe("image");
+  });
+
   it("cycles child → parent link → container on repeated alt-click", () => {
     const graph = createEmptyGraph();
     const { document, anchor, heading } = createLinkedAdDocument();

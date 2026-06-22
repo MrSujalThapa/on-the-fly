@@ -64,6 +64,20 @@ describe("InvalidationScheduler", () => {
     expect(onFlush).toHaveBeenCalledTimes(1);
   });
 
+  it("defers flush while suspended and replays pending reasons on resume", () => {
+    const onFlush = vi.fn();
+    const scheduler = new InvalidationScheduler({ onFlush });
+
+    scheduler.suspend();
+    scheduler.request("mutation");
+    scheduler.request("scroll");
+    expect(onFlush).not.toHaveBeenCalled();
+
+    scheduler.resume();
+    expect(onFlush).toHaveBeenCalledTimes(1);
+    expect(onFlush.mock.calls[0]?.[0]).toEqual(["mutation", "scroll"]);
+  });
+
   it("resolves the primary invalidation reason", () => {
     expect(resolvePrimaryInvalidationReason(["scroll", "mutation"])).toBe("mutation");
     expect(resolvePrimaryInvalidationReason(["scroll", "resize"])).toBe("resize");

@@ -18,9 +18,17 @@ export interface RenderSelectionOptions {
 
 export type HandlePointerDownHandler = (handleId: TransformHandleId, event: PointerEvent) => void;
 
+export type EditorSessionMode = "edit" | "interact";
+
 export interface EditorShellMountOptions {
   onDeactivate: () => void;
   onEscape?: () => boolean;
+}
+
+export interface SaveButtonState {
+  visible: boolean;
+  count?: number;
+  onSave?: () => void;
 }
 
 export class EditorShell {
@@ -32,14 +40,34 @@ export class EditorShell {
   private onEscape: (() => boolean) | null = null;
   private handlePointerDownHandler: HandlePointerDownHandler | null = null;
   private overlayPointerDownListener: ((event: Event) => void) | null = null;
+  private modeIndicatorEl: HTMLElement | null = null;
+  private saveButtonEl: HTMLButtonElement | null = null;
+  private saveButtonHandler: (() => void) | null = null;
+  private saveButtonVisible = false;
+  private saveButtonCount = 0;
+  private sessionMode: EditorSessionMode = "edit";
 
   isMounted(): boolean {
-    return this.rootHost !== null;
+    return this.rootHost !== null && this.rootHost.isConnected;
   }
 
   mount(options: EditorShellMountOptions): void {
-    if (this.rootHost) {
+    if (this.rootHost?.isConnected) {
       return;
+    }
+
+    this.rootHost = null;
+    this.shadow = null;
+    this.overlayLayer = null;
+
+    const existingHosts = Array.from(document.querySelectorAll<HTMLElement>(`#${ROOT_HOST_ID}`));
+    if (existingHosts.length > 0) {
+      console.warn("[On the Fly] Removed duplicate overlay root before mounting.", {
+        count: existingHosts.length,
+      });
+      for (const existingHost of existingHosts) {
+        existingHost.remove();
+      }
     }
 
     this.onDeactivate = options.onDeactivate;
@@ -61,6 +89,7 @@ export class EditorShell {
     shadow.append(
       createShellStyles(),
       createActiveIndicator(),
+      createSaveButton(),
       createOverlayLayer(),
     );
 
@@ -68,6 +97,16 @@ export class EditorShell {
     this.rootHost = host;
     this.shadow = shadow;
     this.overlayLayer = shadow.querySelector(".otf-overlay-layer");
+    this.modeIndicatorEl = shadow.querySelector(".otf-indicator");
+    this.saveButtonEl = shadow.querySelector(".otf-save-button");
+    if (this.saveButtonEl) {
+      this.saveButtonEl.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.saveButtonHandler?.();
+      });
+    }
+    this.setSessionMode("edit");
     this.attachEscapeHandler();
     this.attachOverlayPointerDownListener();
   }
@@ -79,6 +118,12 @@ export class EditorShell {
     this.rootHost = null;
     this.shadow = null;
     this.overlayLayer = null;
+    this.modeIndicatorEl = null;
+    this.saveButtonEl = null;
+    this.saveButtonHandler = null;
+    this.saveButtonVisible = false;
+    this.saveButtonCount = 0;
+    this.sessionMode = "edit";
     this.onDeactivate = null;
     this.onEscape = null;
     this.handlePointerDownHandler = null;
@@ -101,11 +146,73 @@ export class EditorShell {
     }
   }
 
+  setSessionMode(mode: EditorSessionMode): void {
+    this.sessionMode = mode;
+    if (!this.modeIndicatorEl) {
+      return;
+    }
+
+    const label = this.modeIndicatorEl.querySelector(".otf-indicator-label");
+    const dot = this.modeIndicatorEl.querySelector(".otf-indicator-dot");
+    if (!(label instanceof HTMLElement) || !(dot instanceof HTMLElement)) {
+      return;
+    }
+
+    if (mode === "interact") {
+      label.textContent = "Interact mode — site clicks enabled";
+      dot.style.background = "#fbbf24";
+      dot.style.boxShadow = "0 0 0 3px rgba(251, 191, 36, 0.25)";
+      this.modeIndicatorEl.dataset.mode = "interact";
+      this.renderSaveButtonUi();
+      return;
+    }
+
+    label.textContent = "Edit mode — press I to interact";
+    dot.style.background = "#34d399";
+    dot.style.boxShadow = "0 0 0 3px rgba(52, 211, 153, 0.25)";
+    this.modeIndicatorEl.dataset.mode = "edit";
+    this.renderSaveButtonUi();
+  }
+
+  setSaveButton(state: SaveButtonState): void {
+    this.saveButtonVisible = state.visible;
+    this.saveButtonCount = state.count ?? 0;
+    this.saveButtonHandler = state.onSave ?? null;
+    this.renderSaveButtonUi();
+  }
+
+  private renderSaveButtonUi(): void {
+    if (!this.saveButtonEl) {
+      return;
+    }
+
+    const show = this.saveButtonVisible && this.sessionMode === "edit";
+    this.saveButtonEl.hidden = !show;
+    if (!show) {
+      return;
+    }
+
+    const count = this.saveButtonCount;
+    const label =
+      count > 0 ? `Save (${String(count)} unsaved)` : "Save";
+    this.saveButtonEl.textContent = label;
+    this.saveButtonEl.setAttribute("aria-label", label);
+  }
+
+  getSessionMode(): EditorSessionMode {
+    return this.sessionMode;
+  }
+
   renderSelectionOutlines(
     rects: VisualNodeRect[],
     variant: SelectionOutlineVariant = "node",
     options: RenderSelectionOptions = {},
   ): void {
+    if (this.sessionMode === "interact") {
+      this.overlayLayer?.replaceChildren();
+      return;
+    }
+
     if (!this.overlayLayer) {
       return;
     }
@@ -122,6 +229,10 @@ export class EditorShell {
   }
 
   renderLassoBox(rect: MeasurementRect | null): void {
+    if (this.sessionMode === "interact") {
+      return;
+    }
+
     if (!this.overlayLayer) {
       return;
     }
@@ -136,9 +247,32 @@ export class EditorShell {
     this.overlayLayer.appendChild(createLassoElement(rect));
   }
 
+  renderSaveWindowBox(rect: MeasurementRect | null): void {
+    if (this.sessionMode === "interact") {
+      return;
+    }
+
+    if (!this.overlayLayer) {
+      return;
+    }
+
+    const existing = this.overlayLayer.querySelector(".otf-save-window");
+    existing?.remove();
+
+    if (!rect || rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+
+    this.overlayLayer.appendChild(createSaveWindowElement(rect));
+  }
+
   clearOverlays(): void {
     this.overlayLayer?.replaceChildren();
     this.clearOverlayTranslate();
+  }
+
+  getShadowRoot(): ShadowRoot | null {
+    return this.shadow;
   }
 
   private attachOverlayPointerDownListener(): void {
@@ -237,6 +371,43 @@ function createShellStyles(): HTMLStyleElement {
       flex: 0 0 auto;
     }
 
+    .otf-indicator[data-mode="interact"] {
+      background: rgba(30, 41, 59, 0.94);
+    }
+
+    .otf-save-button {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border: none;
+      border-radius: 999px;
+      background: #059669;
+      color: #ecfdf5;
+      font: 600 12px/1 system-ui, -apple-system, sans-serif;
+      letter-spacing: 0.01em;
+      box-shadow: 0 8px 24px rgba(5, 150, 105, 0.35);
+      pointer-events: auto;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .otf-save-button:hover {
+      background: #047857;
+    }
+
+    .otf-save-button:focus-visible {
+      outline: 2px solid #6ee7b7;
+      outline-offset: 2px;
+    }
+
+    .otf-save-button[hidden] {
+      display: none !important;
+    }
+
     .otf-overlay-layer {
       position: fixed;
       inset: 0;
@@ -263,6 +434,15 @@ function createShellStyles(): HTMLStyleElement {
       box-sizing: border-box;
       border: 1px dashed #2563eb;
       background: rgba(37, 99, 235, 0.08);
+      pointer-events: none;
+    }
+
+    .otf-save-window {
+      position: fixed;
+      box-sizing: border-box;
+      border: 2px solid #059669;
+      background: rgba(5, 150, 105, 0.1);
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85), 0 0 0 4px rgba(5, 150, 105, 0.18);
       pointer-events: none;
     }
 
@@ -345,8 +525,18 @@ function createActiveIndicator(): HTMLElement {
   indicator.className = "otf-indicator";
   indicator.setAttribute("role", "status");
   indicator.setAttribute("aria-live", "polite");
-  indicator.innerHTML = `<span class="otf-indicator-dot" aria-hidden="true"></span><span>On the Fly active</span>`;
+  indicator.innerHTML = `<span class="otf-indicator-dot" aria-hidden="true"></span><span class="otf-indicator-label">Edit mode — press I to interact</span>`;
   return indicator;
+}
+
+function createSaveButton(): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "otf-save-button";
+  button.setAttribute("data-otf-ui", "save-button");
+  button.hidden = true;
+  button.textContent = "Save";
+  return button;
 }
 
 function createOverlayLayer(): HTMLElement {
@@ -377,6 +567,16 @@ function createLassoElement(rect: MeasurementRect): HTMLElement {
   lasso.style.width = `${String(rect.width)}px`;
   lasso.style.height = `${String(rect.height)}px`;
   return lasso;
+}
+
+function createSaveWindowElement(rect: MeasurementRect): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "otf-save-window";
+  box.style.left = `${String(rect.x)}px`;
+  box.style.top = `${String(rect.y)}px`;
+  box.style.width = `${String(rect.width)}px`;
+  box.style.height = `${String(rect.height)}px`;
+  return box;
 }
 
 export { ROOT_HOST_ID };

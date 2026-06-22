@@ -6,20 +6,13 @@ export function applyTextOperation(
   element: HTMLElement,
   operation: TextOperation,
   snapshotStore: ElementSnapshotStore,
-): AppliedDomEffect {
-  if (element.children.length > 0) {
-    throw new Error("text operation requires a leaf-like element");
-  }
-
+): AppliedDomEffect["changes"] {
   snapshotStore.captureIfNeeded(element);
   const previousValue = element.textContent;
 
   element.textContent = operation.payload.value;
 
-  return {
-    operationId: operation.id,
-    changes: [{ kind: "text", previousValue }],
-  };
+  return [{ kind: "text", previousValue }];
 }
 
 export function revertTextChange(

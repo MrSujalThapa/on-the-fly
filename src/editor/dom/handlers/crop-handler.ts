@@ -17,7 +17,7 @@ export function applyCropOperation(
   element: HTMLElement,
   operation: CropOperation,
   snapshotStore: ElementSnapshotStore,
-): AppliedDomEffect {
+): AppliedDomEffect["changes"] {
   snapshotStore.captureIfNeeded(element);
 
   const previousClipPath = element.style.clipPath;
@@ -42,17 +42,14 @@ export function applyCropOperation(
     element.setAttribute(OTF_CROP_ATTR, JSON.stringify(insets));
   }
 
-  return {
-    operationId: operation.id,
-    changes: [
-      {
-        kind: "clip",
-        previousClipPath,
-        previousWebkitClipPath,
-        previousCropAttr,
-      },
-    ],
-  };
+  return [
+    {
+      kind: "clip",
+      previousClipPath,
+      previousWebkitClipPath,
+      previousCropAttr,
+    },
+  ];
 }
 
 export function revertClipChange(

@@ -6,12 +6,19 @@ import type {
   ResizeMode,
   ResizeOperation,
   RotateOperation,
+  StyleOperation,
+  StyleProperty,
+  TextOperation,
   ZIndexOperation,
 } from "../operations.js";
 import type { EditorTarget } from "../editor-target.js";
 import { buildPersistableElementSignature } from "../measurement/signature-builder.js";
 import type { CropInsets } from "./crop-geometry.js";
 import { createOperationId } from "./operation-id.js";
+import {
+  buildMetadataFromElement,
+  buildMetadataFromTransformTarget,
+} from "../save-window/operation-metadata.js";
 import {
   transformTargetToEditorTarget,
   type TransformTarget,
@@ -21,6 +28,7 @@ export interface BuildOperationOptions {
   pageKey: PageKey;
   now?: number;
   createId?: () => OperationId;
+  sourceCommand?: string;
 }
 
 function resolveMeta(options: BuildOperationOptions): { id: OperationId; createdAt: number } {
@@ -45,7 +53,8 @@ export function buildMoveOperation(
     payload: { dx, dy },
     createdAt,
     source: "manual",
-    status: "approved",
+    status: "draft",
+    metadata: buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
 
@@ -82,7 +91,8 @@ export function buildResizeOperation(
     },
     createdAt,
     source: "manual",
-    status: "approved",
+    status: "draft",
+    metadata: buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
 
@@ -100,7 +110,8 @@ export function buildRotateOperation(
     payload: { degrees },
     createdAt,
     source: "manual",
-    status: "approved",
+    status: "draft",
+    metadata: buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
 
@@ -127,7 +138,10 @@ export function buildHideOperation(
     payload,
     createdAt,
     source: "manual",
-    status: "approved",
+    status: "draft",
+    metadata: liveElement
+      ? buildMetadataFromElement(liveElement, persistedTarget.signature, options.sourceCommand)
+      : buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
 
@@ -150,7 +164,8 @@ export function buildCropOperation(
     },
     createdAt,
     source: "manual",
-    status: "approved",
+    status: "draft",
+    metadata: buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
 
@@ -171,6 +186,79 @@ export function buildZIndexOperation(
     payload,
     createdAt,
     source: "manual",
-    status: "approved",
+    status: "draft",
+    metadata: buildMetadataFromTransformTarget(target, options.sourceCommand),
+  };
+}
+
+export function buildStyleOperation(
+  target: TransformTarget,
+  property: StyleProperty,
+  value: string,
+  options: BuildOperationOptions,
+  previousValue?: string,
+  liveElement?: HTMLElement,
+): StyleOperation {
+  const { id, createdAt } = resolveMeta(options);
+  const payload: StyleOperation["payload"] =
+    previousValue === undefined ? { property, value } : { property, value, previousValue };
+
+  const persistedTarget: EditorTarget = liveElement
+    ? { signature: buildPersistableElementSignature(liveElement) }
+    : transformTargetToEditorTarget(target);
+
+  return {
+    id,
+    type: "style",
+    pageKey: options.pageKey,
+    target: persistedTarget,
+    payload,
+    createdAt,
+    source: "manual",
+    status: "draft",
+    metadata: liveElement
+      ? buildMetadataFromElement(liveElement, persistedTarget.signature, options.sourceCommand)
+      : buildMetadataFromTransformTarget(target, options.sourceCommand),
+  };
+}
+
+export function buildStyleOperations(
+  targets: TransformTarget[],
+  property: StyleProperty,
+  value: string,
+  options: BuildOperationOptions,
+): StyleOperation[] {
+  return targets.map((target) => buildStyleOperation(target, property, value, options));
+}
+
+export function buildTextOperation(
+  target: TransformTarget,
+  value: string,
+  options: BuildOperationOptions,
+  previousValue?: string,
+  liveElement?: HTMLElement,
+): TextOperation {
+  const { id, createdAt } = resolveMeta(options);
+  const payload: TextOperation["payload"] =
+    previousValue === undefined
+      ? { value, preserveFormat: true }
+      : { value, preserveFormat: true, previousValue };
+
+  const persistedTarget: EditorTarget = liveElement
+    ? { signature: buildPersistableElementSignature(liveElement) }
+    : transformTargetToEditorTarget(target);
+
+  return {
+    id,
+    type: "text",
+    pageKey: options.pageKey,
+    target: persistedTarget,
+    payload,
+    createdAt,
+    source: "manual",
+    status: "draft",
+    metadata: liveElement
+      ? buildMetadataFromElement(liveElement, persistedTarget.signature, options.sourceCommand)
+      : buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
