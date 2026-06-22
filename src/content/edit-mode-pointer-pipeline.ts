@@ -1,6 +1,7 @@
 import { isExtensionRoot } from "../editor/measurement/scan-guards.js";
 import {
   getEventComposedPath,
+  shouldHandleEditModeKeyboardActivationEvent,
   shouldHandleEditModeClickEvent,
   shouldHandleEditModePointerEvent,
   suppressPageInteractionEvent,
@@ -126,6 +127,22 @@ export function attachEditModePointerPipeline(
     suppressPageInteractionEvent(event);
   };
 
+  const auxClickHandler = (event: MouseEvent): void => {
+    if (!shouldHandleEditModeClickEvent(event, isExtensionRoot)) {
+      return;
+    }
+
+    suppressPageInteractionEvent(event);
+  };
+
+  const doubleClickHandler = (event: MouseEvent): void => {
+    if (!shouldHandleEditModeClickEvent(event, isExtensionRoot)) {
+      return;
+    }
+
+    suppressPageInteractionEvent(event);
+  };
+
   const selectStartHandler = (event: Event): void => {
     if (isExtensionRootInEventPath(event)) {
       return;
@@ -142,6 +159,14 @@ export function attachEditModePointerPipeline(
     suppressPageInteractionEvent(event);
   };
 
+  const keyActivationHandler = (event: KeyboardEvent): void => {
+    if (!shouldHandleEditModeKeyboardActivationEvent(event, isExtensionRoot)) {
+      return;
+    }
+
+    suppressPageInteractionEvent(event);
+  };
+
   const pointerDownListener = pointerDownHandler as EventListener;
   const pointerMoveListener = pointerMoveHandler as EventListener;
   const pointerUpListener = pointerUpHandler as EventListener;
@@ -149,8 +174,11 @@ export function attachEditModePointerPipeline(
   const mouseDownListener = mouseDownHandler as EventListener;
   const mouseUpListener = mouseUpHandler as EventListener;
   const clickListener = clickHandler as EventListener;
+  const auxClickListener = auxClickHandler as EventListener;
+  const doubleClickListener = doubleClickHandler as EventListener;
   const selectStartListener = selectStartHandler;
   const dragStartListener = dragStartHandler;
+  const keyActivationListener = keyActivationHandler as EventListener;
 
   options.window.addEventListener("pointerdown", pointerDownListener, listenerOptions);
   options.window.addEventListener("pointermove", pointerMoveListener, listenerOptions);
@@ -159,8 +187,12 @@ export function attachEditModePointerPipeline(
   options.window.addEventListener("mousedown", mouseDownListener, listenerOptions);
   options.window.addEventListener("mouseup", mouseUpListener, listenerOptions);
   options.window.addEventListener("click", clickListener, listenerOptions);
+  options.window.addEventListener("auxclick", auxClickListener, listenerOptions);
+  options.window.addEventListener("dblclick", doubleClickListener, listenerOptions);
   options.window.addEventListener("selectstart", selectStartListener, listenerOptions);
   options.window.addEventListener("dragstart", dragStartListener, listenerOptions);
+  options.window.addEventListener("keydown", keyActivationListener, listenerOptions);
+  options.window.addEventListener("keyup", keyActivationListener, listenerOptions);
 
   return {
     detach: () => {
@@ -171,8 +203,12 @@ export function attachEditModePointerPipeline(
       options.window.removeEventListener("mousedown", mouseDownListener, true);
       options.window.removeEventListener("mouseup", mouseUpListener, true);
       options.window.removeEventListener("click", clickListener, true);
+      options.window.removeEventListener("auxclick", auxClickListener, true);
+      options.window.removeEventListener("dblclick", doubleClickListener, true);
       options.window.removeEventListener("selectstart", selectStartListener, true);
       options.window.removeEventListener("dragstart", dragStartListener, true);
+      options.window.removeEventListener("keydown", keyActivationListener, true);
+      options.window.removeEventListener("keyup", keyActivationListener, true);
       restoreStyles();
     },
   };

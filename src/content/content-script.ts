@@ -31,6 +31,10 @@ async function requestEditModeDisable(): Promise<void> {
 
 function applyEditMode(enabled: boolean): void {
   if (enabled) {
+    if (editSession) {
+      return;
+    }
+
     const session = createEditSession({
       shell,
       root: document,

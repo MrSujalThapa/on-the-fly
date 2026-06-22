@@ -15,8 +15,10 @@ export interface StylePanelValues {
 export interface FloatingToolbarCallbacks {
   onCommand: (commandId: string) => void;
   onStyleChange: (property: StyleProperty, value: string) => void;
+  onStylePanelApply?: () => void;
   onTextCommit: (value: string) => void;
   onTextCancel: () => void;
+  onStylePanelReset?: () => Partial<StylePanelValues> | undefined;
   onStylePanelClose?: () => void;
 }
 
@@ -69,6 +71,7 @@ export class FloatingToolbar {
   private outsidePointerListener: ((event: PointerEvent) => void) | null = null;
   private viewportListener: (() => void) | null = null;
   private pendingPositionFrame: number | null = null;
+  private pendingShowFrame: number | null = null;
   private lastAnchor: VisualNodeRect | null = null;
 
   constructor(options: FloatingToolbarOptions) {
@@ -80,6 +83,20 @@ export class FloatingToolbar {
   mount(): void {
     if (this.toolbarEl) {
       return;
+    }
+
+    const staleUi = Array.from(
+      this.shadowRoot.querySelectorAll<HTMLElement>(
+        '[data-otf-ui="toolbar"], [data-otf-ui="style-panel"], [data-otf-ui="text-editor"]',
+      ),
+    );
+    if (staleUi.length > 0) {
+      console.warn("[On the Fly] Removed duplicate toolbar UI before mounting.", {
+        count: staleUi.length,
+      });
+      for (const element of staleUi) {
+        element.remove();
+      }
     }
 
     this.toolbarEl = document.createElement("div");
@@ -110,6 +127,7 @@ export class FloatingToolbar {
     this.detachOutsideListener();
     this.detachViewportListeners();
     this.cancelPendingPositionFrame();
+    this.cancelPendingShowFrame();
     this.toolbarEl?.remove();
     this.stylePanelEl?.remove();
     this.textEditorEl?.remove();
@@ -136,11 +154,9 @@ export class FloatingToolbar {
     }
 
     this.lastAnchor = anchorRect;
-    if (!this.toolbarWasDragged) {
-      this.positionToolbarNearSelection(anchorRect);
-      this.schedulePositionRefresh();
-    }
-    this.updateToolButtonPositions();
+    this.cancelPendingShowFrame();
+    this.toolbarEl.hidden = true;
+    this.toolbarEl.style.visibility = "hidden";
 
     for (const layout of COMMAND_LAYOUT) {
       const button = this.toolbarEl.querySelector<HTMLButtonElement>(`[data-command-id="${layout.id}"]`);
@@ -152,12 +168,23 @@ export class FloatingToolbar {
       button.classList.toggle("selected", activeStates[layout.id] === true);
     }
 
-    this.toolbarEl.hidden = false;
+    this.pendingShowFrame = requestAnimationFrame(() => {
+      this.pendingShowFrame = null;
+      if (!this.toolbarEl || this.lastAnchor !== anchorRect) {
+        return;
+      }
+      this.toolbarEl.hidden = false;
+      if (!this.toolbarWasDragged) {
+        this.positionToolbarNearSelection(anchorRect);
+      }
+      this.updateToolButtonPositions();
+      this.toolbarEl.style.visibility = "visible";
 
-    if (this.styleOpen) {
-      this.positionStylePanel();
+      if (this.styleOpen) {
+        this.positionStylePanel(true);
+      }
       this.schedulePositionRefresh();
-    }
+    });
   }
 
   hide(): void {
@@ -168,8 +195,10 @@ export class FloatingToolbar {
   }
 
   hideToolbarOnly(): void {
+    this.cancelPendingShowFrame();
     if (this.toolbarEl) {
       this.toolbarEl.hidden = true;
+      this.toolbarEl.style.removeProperty("visibility");
     }
   }
 
@@ -179,8 +208,11 @@ export class FloatingToolbar {
     }
 
     if (open) {
+      if (!this.toolbarEl || this.toolbarEl.hidden) {
+        return;
+      }
       this.styleAnchorButton =
-        this.toolbarEl?.querySelector<HTMLButtonElement>('[data-command-id="style-panel"]') ?? null;
+        this.toolbarEl.querySelector<HTMLButtonElement>('[data-command-id="style-panel"]') ?? null;
       this.panelWasDragged = false;
       this.stylePanelEl.hidden = false;
       if (values) {
@@ -199,7 +231,7 @@ export class FloatingToolbar {
     this.closeStylePanel();
   }
 
-  closeStylePanel(): void {
+  closeStylePanel(notifyClose = true): void {
     if (!this.stylePanelEl || !this.styleOpen) {
       return;
     }
@@ -213,7 +245,9 @@ export class FloatingToolbar {
     }, 160);
     this.styleAnchorButton = null;
     this.panelWasDragged = false;
-    this.callbacks.onStylePanelClose?.();
+    if (notifyClose) {
+      this.callbacks.onStylePanelClose?.();
+    }
   }
 
   isStylePanelOpen(): boolean {
@@ -402,7 +436,7 @@ export class FloatingToolbar {
       const input = this.stylePanelEl.querySelector<HTMLInputElement>(
         `[data-style-field="${binding.field}"]`,
       );
-      input?.addEventListener("change", () => {
+      input?.addEventListener("input", () => {
         const raw = input.value.trim();
         if (!raw) {
           return;
@@ -418,8 +452,6 @@ export class FloatingToolbar {
       if (opacityReadout) {
         opacityReadout.textContent = opacityRange.value;
       }
-    });
-    opacityRange?.addEventListener("change", () => {
       const raw = opacityRange.value.trim();
       if (!raw) {
         return;
@@ -439,21 +471,18 @@ export class FloatingToolbar {
     applyButton?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      this.closeStylePanel();
+      this.callbacks.onStylePanelApply?.();
+      this.closeStylePanel(false);
     });
 
     const resetButton = this.stylePanelEl.querySelector<HTMLButtonElement>("[data-style-reset]");
     resetButton?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      this.setStylePanelValues({
-        backgroundColor: "#ffffff",
-        color: "#000000",
-        fontSize: "",
-        fontWeight: "",
-        borderRadius: "",
-        opacity: "1",
-      });
+      const values = this.callbacks.onStylePanelReset?.();
+      if (values) {
+        this.setStylePanelValues(values);
+      }
     });
   }
 
@@ -542,6 +571,13 @@ export class FloatingToolbar {
     if (this.pendingPositionFrame !== null) {
       cancelAnimationFrame(this.pendingPositionFrame);
       this.pendingPositionFrame = null;
+    }
+  }
+
+  private cancelPendingShowFrame(): void {
+    if (this.pendingShowFrame !== null) {
+      cancelAnimationFrame(this.pendingShowFrame);
+      this.pendingShowFrame = null;
     }
   }
 

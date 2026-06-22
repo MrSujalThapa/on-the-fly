@@ -8,7 +8,7 @@ describe("FloatingToolbar", () => {
     globalThis.document.getElementById("on-the-fly-root-host")?.remove();
   });
 
-  it("renders only when selection anchor is provided", () => {
+  it("renders only when selection anchor is provided", async () => {
     const shell = new EditorShell();
     shell.mount({ onDeactivate: () => undefined });
     const shadow = shell.getShadowRoot();
@@ -45,13 +45,15 @@ describe("FloatingToolbar", () => {
     expect((toolbarEl as HTMLElement).hidden).toBe(true);
 
     toolbar.renderCommands([{ command, enabled: true }], { x: 10, y: 10, width: 100, height: 40 });
+    expect((toolbarEl as HTMLElement).hidden).toBe(true);
+    await nextFrame();
     expect((toolbarEl as HTMLElement).hidden).toBe(false);
     expect(shadow.querySelector("[data-command-id='hide']")).not.toBeNull();
 
     shell.unmount();
   });
 
-  it("invokes command handler when toolbar button is clicked", () => {
+  it("invokes command handler when toolbar button is clicked", async () => {
     const shell = new EditorShell();
     shell.mount({ onDeactivate: () => undefined });
     const shadow = shell.getShadowRoot();
@@ -83,6 +85,7 @@ describe("FloatingToolbar", () => {
     };
 
     toolbar.renderCommands([{ command, enabled: true }], { x: 20, y: 20, width: 80, height: 30 });
+    await nextFrame();
     const button = shadow.querySelector("[data-command-id='bring-forward']") as HTMLButtonElement;
     button.click();
     expect(onCommand).toHaveBeenCalledWith("bring-forward");
@@ -117,7 +120,7 @@ describe("FloatingToolbar", () => {
     shell.unmount();
   });
 
-  it("closes the style panel from the close button", () => {
+  it("closes the style panel from the close button", async () => {
     const shell = new EditorShell();
     shell.mount({ onDeactivate: () => undefined });
     const shadow = shell.getShadowRoot();
@@ -138,6 +141,7 @@ describe("FloatingToolbar", () => {
     });
     toolbar.mount();
     toolbar.renderCommands([], { x: 10, y: 10, width: 100, height: 40 });
+    await nextFrame();
     toolbar.toggleStylePanel(true, { opacity: "1" });
 
     expect(toolbar.isStylePanelOpen()).toBe(true);
@@ -149,7 +153,7 @@ describe("FloatingToolbar", () => {
     shell.unmount();
   });
 
-  it("keeps first-render toolbar sizing stable and independent of selection width", () => {
+  it("keeps first-render toolbar sizing stable and independent of selection width", async () => {
     const shell = new EditorShell();
     shell.mount({ onDeactivate: () => undefined });
     const shadow = shell.getShadowRoot();
@@ -170,9 +174,12 @@ describe("FloatingToolbar", () => {
 
     toolbar.renderCommands([], { x: 10, y: 10, width: 40, height: 20 });
     const toolbarEl = shadow.querySelector(".otf-curved-toolbar") as HTMLElement;
+    expect(toolbarEl.hidden).toBe(true);
+    await nextFrame();
     const narrowWidth = toolbarEl.dataset.width;
 
     toolbar.renderCommands([], { x: 10, y: 10, width: 900, height: 20 });
+    await nextFrame();
 
     expect(toolbarEl.dataset.width).toBe(narrowWidth);
     expect(Number(toolbarEl.dataset.width)).toBeGreaterThanOrEqual(330);
@@ -181,7 +188,7 @@ describe("FloatingToolbar", () => {
     shell.unmount();
   });
 
-  it("renders style panel controls without overflowing fields", () => {
+  it("renders style panel controls without overflowing fields", async () => {
     const shell = new EditorShell();
     shell.mount({ onDeactivate: () => undefined });
     const shadow = shell.getShadowRoot();
@@ -200,6 +207,7 @@ describe("FloatingToolbar", () => {
     });
     toolbar.mount();
     toolbar.renderCommands([], { x: 10, y: 10, width: 100, height: 40 });
+    await nextFrame();
     toolbar.toggleStylePanel(true, { opacity: "0.5" });
 
     const panel = shadow.querySelector(".otf-style-panel") as HTMLElement;
@@ -295,3 +303,11 @@ describe("FloatingToolbar", () => {
     shell.unmount();
   });
 });
+
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      resolve();
+    });
+  });
+}

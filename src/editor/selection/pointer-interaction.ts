@@ -89,7 +89,7 @@ export function shouldSuppressEditModeClick(options: {
   button: number;
   isExtensionRootTarget: boolean;
 }): boolean {
-  return options.button === 0 && !options.isExtensionRootTarget;
+  return (options.button === 0 || options.button === 1) && !options.isExtensionRootTarget;
 }
 
 export function normalizeLassoRect(
@@ -111,6 +111,7 @@ export function normalizeLassoRect(
 export function suppressPageInteractionEvent(event: Event): void {
   event.preventDefault();
   event.stopPropagation();
+  event.stopImmediatePropagation();
 }
 
 export function getEventComposedPath(event: Event): EventTarget[] {
@@ -128,13 +129,98 @@ export function isExtensionRootInComposedPath(
   return path.some((target) => target instanceof Element && isExtensionRoot(target));
 }
 
+function isEditableElementInComposedPath(path: EventTarget[]): boolean {
+  return path.some(
+    (target) =>
+      target instanceof HTMLElement &&
+      (target.isContentEditable || target.getAttribute("contenteditable") !== null),
+  );
+}
+
+function isKeyboardTextEntryInComposedPath(path: EventTarget[]): boolean {
+  return path.some(
+    (target) =>
+      target instanceof HTMLElement &&
+      (target.isContentEditable ||
+        target.getAttribute("contenteditable") !== null ||
+        isTextEntryElement(target)),
+  );
+}
+
+function isTextEntryElement(element: HTMLElement): boolean {
+  const tag = element.tagName.toLowerCase();
+  if (tag === "textarea" || tag === "select") {
+    return true;
+  }
+
+  if (tag === "input") {
+    const type = (element.getAttribute("type") ?? "text").toLowerCase();
+    return ![
+      "button",
+      "checkbox",
+      "color",
+      "file",
+      "hidden",
+      "image",
+      "radio",
+      "range",
+      "reset",
+      "submit",
+    ].includes(type);
+  }
+
+  return false;
+}
+
+function isClickableActivationElement(element: HTMLElement): boolean {
+  const tag = element.tagName.toLowerCase();
+  if (tag === "a" && element.hasAttribute("href")) {
+    return true;
+  }
+  if (tag === "button") {
+    return true;
+  }
+  if (tag === "summary") {
+    return true;
+  }
+  if (tag === "input") {
+    const type = (element.getAttribute("type") ?? "text").toLowerCase();
+    return [
+      "button",
+      "checkbox",
+      "image",
+      "radio",
+      "reset",
+      "submit",
+    ].includes(type);
+  }
+
+  const role = element.getAttribute("role")?.toLowerCase();
+  return role !== undefined && [
+    "button",
+    "link",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "option",
+    "radio",
+    "switch",
+    "tab",
+  ].includes(role);
+}
+
 export function shouldHandleEditModePointerEvent(
   event: PointerEvent,
   isExtensionRoot: (element: Element) => boolean,
 ): boolean {
+  const path = getEventComposedPath(event);
+  if (isEditableElementInComposedPath(path)) {
+    return false;
+  }
+
   return shouldConsumeEditModePointerEvent({
     button: event.button,
-    isExtensionRootTarget: isExtensionRootInComposedPath(getEventComposedPath(event), isExtensionRoot),
+    isExtensionRootTarget: isExtensionRootInComposedPath(path, isExtensionRoot),
   });
 }
 
@@ -142,8 +228,34 @@ export function shouldHandleEditModeClickEvent(
   event: MouseEvent,
   isExtensionRoot: (element: Element) => boolean,
 ): boolean {
+  const path = getEventComposedPath(event);
+  if (isEditableElementInComposedPath(path)) {
+    return false;
+  }
+
   return shouldSuppressEditModeClick({
     button: event.button,
-    isExtensionRootTarget: isExtensionRootInComposedPath(getEventComposedPath(event), isExtensionRoot),
+    isExtensionRootTarget: isExtensionRootInComposedPath(path, isExtensionRoot),
   });
+}
+
+export function shouldHandleEditModeKeyboardActivationEvent(
+  event: KeyboardEvent,
+  isExtensionRoot: (element: Element) => boolean,
+): boolean {
+  if (event.key !== "Enter" && event.key !== " ") {
+    return false;
+  }
+
+  const path = getEventComposedPath(event);
+  if (
+    isExtensionRootInComposedPath(path, isExtensionRoot) ||
+    isKeyboardTextEntryInComposedPath(path)
+  ) {
+    return false;
+  }
+
+  return path.some(
+    (target) => target instanceof HTMLElement && isClickableActivationElement(target),
+  );
 }

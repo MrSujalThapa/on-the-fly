@@ -73,4 +73,55 @@ describe("text-target-resolver", () => {
       expect(result.reason).toBe("inline-promoted-to-block");
     }
   });
+
+  it("promotes LinkedIn-style inline fragments to the parent notification text span", () => {
+    const { document, root } = createTestDocument(`
+      <main>
+        <span class="nt-card__text--3-line">
+          <strong id="name">Sujal Bhattarai</strong>
+          <span class="white-space-pre"> </span>
+          viewed your profile at
+          <strong id="company">Radical Ventures</strong>
+        </span>
+      </main>
+    `);
+    const note = root.querySelector(".nt-card__text--3-line") as HTMLElement;
+    const company = root.querySelector("#company") as HTMLElement;
+
+    company.getBoundingClientRect = () =>
+      ({ x: 180, y: 20, width: 130, height: 18, top: 20, left: 180, right: 310, bottom: 38 }) as DOMRect;
+    document.elementsFromPoint = () => [company, note, root];
+
+    const result = resolveTextEditTargetAtPoint(document, 190, 25, note, null);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.element).toBe(note);
+      expect(result.originalElement).toBe(company);
+      expect(result.reason).toBe("inline-promoted-to-block");
+      expect(result.element.textContent).toContain("Sujal Bhattarai");
+      expect(result.element.textContent).toContain("Radical Ventures");
+    }
+  });
+
+  it("resolves the first safe text descendant for a selected container", () => {
+    const { document, root } = createTestDocument(`
+      <main>
+        <section id="card">
+          <p id="title">Primary title</p>
+          <p id="body">Secondary body</p>
+        </section>
+      </main>
+    `);
+    const card = root.querySelector("#card") as HTMLElement;
+    const title = root.querySelector("#title") as HTMLElement;
+
+    const result = resolveTextEditTargetForSelection(document, card, null);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.element).toBe(title);
+      expect(result.reason).toBe("first-descendant");
+    }
+  });
 });

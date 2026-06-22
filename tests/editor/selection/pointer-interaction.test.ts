@@ -36,6 +36,9 @@ describe("pointer interaction", () => {
       shouldSuppressEditModeClick({ button: 0, isExtensionRootTarget: false }),
     ).toBe(true);
     expect(
+      shouldSuppressEditModeClick({ button: 1, isExtensionRootTarget: false }),
+    ).toBe(true);
+    expect(
       shouldConsumeEditModePointerEvent({ button: 0, isExtensionRootTarget: true }),
     ).toBe(false);
     expect(shouldConsumeEditModePointerEvent({ button: 1, isExtensionRootTarget: false })).toBe(
@@ -57,7 +60,7 @@ describe("pointer interaction", () => {
     });
   });
 
-  it("suppresses page events without stopImmediatePropagation", () => {
+  it("suppresses page events with immediate propagation stop", () => {
     const preventDefault = vi.fn();
     const stopPropagation = vi.fn();
     const stopImmediatePropagation = vi.fn();
@@ -71,6 +74,6 @@ describe("pointer interaction", () => {
 
     expect(preventDefault).toHaveBeenCalled();
     expect(stopPropagation).toHaveBeenCalled();
-    expect(stopImmediatePropagation).not.toHaveBeenCalled();
+    expect(stopImmediatePropagation).toHaveBeenCalled();
   });
 });

@@ -34,12 +34,26 @@ export class EditorShell {
   private overlayPointerDownListener: ((event: Event) => void) | null = null;
 
   isMounted(): boolean {
-    return this.rootHost !== null;
+    return this.rootHost !== null && this.rootHost.isConnected;
   }
 
   mount(options: EditorShellMountOptions): void {
-    if (this.rootHost) {
+    if (this.rootHost?.isConnected) {
       return;
+    }
+
+    this.rootHost = null;
+    this.shadow = null;
+    this.overlayLayer = null;
+
+    const existingHosts = Array.from(document.querySelectorAll<HTMLElement>(`#${ROOT_HOST_ID}`));
+    if (existingHosts.length > 0) {
+      console.warn("[On the Fly] Removed duplicate overlay root before mounting.", {
+        count: existingHosts.length,
+      });
+      for (const existingHost of existingHosts) {
+        existingHost.remove();
+      }
     }
 
     this.onDeactivate = options.onDeactivate;

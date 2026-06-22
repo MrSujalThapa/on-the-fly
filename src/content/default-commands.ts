@@ -3,7 +3,6 @@ import type { LayerCommand } from "../editor/transform/layer-order.js";
 import {
   hasActiveSelection,
   isSingleHandleTarget,
-  isSingleTextLikeSelection,
 } from "../editor/commands/command-helpers.js";
 import type { SessionCommandHost } from "./session-command-host.js";
 
@@ -96,7 +95,7 @@ export function createDefaultCommands(host: SessionCommandHost): EditorCommand[]
       appliesTo: ["text", "image", "container", "button", "input", "unknown", "any"],
       order: 30,
       group: "primary",
-      isEnabled: isSingleHandleTarget,
+      isEnabled: (context) => isSingleHandleTarget(context) && host.canCropSelection(),
       execute: () => {
         host.toggleCropMode();
       },
@@ -120,7 +119,7 @@ export function createDefaultCommands(host: SessionCommandHost): EditorCommand[]
       appliesTo: ["text", "button", "input", "any"],
       order: 50,
       group: "primary",
-      isEnabled: isSingleTextLikeSelection,
+      isEnabled: hasActiveSelection,
       execute: () => {
         host.openTextEditor();
       },

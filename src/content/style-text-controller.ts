@@ -41,6 +41,16 @@ export interface StyleTextControllerOptions {
   onDebug?: (message: string, data?: unknown) => void;
 }
 
+interface StyleOperationBuildResult {
+  operations: EditorOperation[];
+  targets: Array<{ element: HTMLElement; signatureTarget: TransformTarget }>;
+}
+
+interface StylePreviewState {
+  pending: Map<StyleProperty, string>;
+  operations: EditorOperation[];
+}
+
 export class StyleTextController {
   private readonly document: Document;
   private readonly adapter: DomRuntimeAdapter;
@@ -50,6 +60,7 @@ export class StyleTextController {
   private readonly onApply: ((operations: EditorOperation[]) => void) | undefined;
   private readonly onDebug: (message: string, data?: unknown) => void;
   private readonly lastOpacityByTarget = new Map<string, string>();
+  private stylePreview: StylePreviewState | null = null;
 
   constructor(options: StyleTextControllerOptions) {
     this.document = options.document;
@@ -62,18 +73,81 @@ export class StyleTextController {
   }
 
   applyStyle(property: StyleProperty, value: string): EditorOperation[] {
-    const transformTargets = this.resolveTargets();
-    if (transformTargets.length === 0) {
+    this.cancelStylePreview();
+    const built = this.buildStyleOperations(property, value);
+    return this.commitOperations(built.operations, built.targets);
+  }
+
+  previewStyle(property: StyleProperty, value: string): EditorOperation[] {
+    const normalized = normalizeStyleInput(property, value);
+    if (normalized === null) {
       return [];
     }
 
+    const pending = new Map(this.stylePreview?.pending ?? []);
+    pending.set(property, normalized);
+    this.revertStylePreviewEffects();
+
+    const preview: StylePreviewState = { pending, operations: [] };
+    this.stylePreview = preview;
+
+    for (const [pendingProperty, pendingValue] of pending) {
+      const built = this.buildStyleOperations(pendingProperty, pendingValue, {
+        trackOpacity: false,
+      });
+      const applied = this.applyDraftOperations(built.operations, built.targets);
+      preview.operations.push(...applied);
+    }
+
+    return [...preview.operations];
+  }
+
+  commitStylePreview(): EditorOperation[] {
+    const pending = new Map(this.stylePreview?.pending ?? []);
+    if (pending.size === 0) {
+      return [];
+    }
+
+    this.revertStylePreviewEffects();
+    this.stylePreview = null;
+
+    const operations: EditorOperation[] = [];
+    const targets: Array<{ element: HTMLElement; signatureTarget: TransformTarget }> = [];
+    for (const [property, value] of pending) {
+      const built = this.buildStyleOperations(property, value);
+      operations.push(...built.operations);
+      targets.push(...built.targets);
+    }
+
+    return this.commitOperations(operations, targets);
+  }
+
+  cancelStylePreview(): void {
+    this.revertStylePreviewEffects();
+    this.stylePreview = null;
+  }
+
+  private buildStyleOperations(
+    property: StyleProperty,
+    value: string,
+    options: { trackOpacity?: boolean } = {},
+  ): StyleOperationBuildResult {
+    const transformTargets = this.resolveTargets();
+    if (transformTargets.length === 0) {
+      return { operations: [], targets: [] };
+    }
+
     if (property === "opacity") {
-      return this.applyOpacity(value, transformTargets);
+      return this.buildOpacityOperations(
+        value,
+        transformTargets,
+        options.trackOpacity !== false,
+      );
     }
 
     const trimmed = value.trim();
     if (!trimmed) {
-      return [];
+      return { operations: [], targets: [] };
     }
 
     const normalized = normalizeStyleValue(property, trimmed);
@@ -107,7 +181,7 @@ export class StyleTextController {
       this.onDebug("style-no-targets", { property });
     }
 
-    return this.commitOperations(operations, resolution.targets);
+    return { operations, targets: resolution.targets };
   }
 
   applyText(value: string): EditorOperation[] {
@@ -163,9 +237,18 @@ export class StyleTextController {
   }
 
   private applyOpacity(raw: string, transformTargets: TransformTarget[]): EditorOperation[] {
+    const built = this.buildOpacityOperations(raw, transformTargets, true);
+    return this.commitOperations(built.operations, built.targets);
+  }
+
+  private buildOpacityOperations(
+    raw: string,
+    transformTargets: TransformTarget[],
+    trackOpacity: boolean,
+  ): StyleOperationBuildResult {
     const parsed = parseOpacityInput(raw);
     if (parsed === null) {
-      return [];
+      return { operations: [], targets: [] };
     }
 
     const value = formatOpacityValue(parsed);
@@ -199,10 +282,12 @@ export class StyleTextController {
         ),
       );
       elementTargets.push(entry);
-      this.lastOpacityByTarget.set(key, value);
+      if (trackOpacity) {
+        this.lastOpacityByTarget.set(key, value);
+      }
     }
 
-    return this.commitOperations(operations, elementTargets);
+    return { operations, targets: elementTargets };
   }
 
   private readStyleValue(element: HTMLElement, cssProperty: string): string {
@@ -247,6 +332,50 @@ export class StyleTextController {
 
     return applied;
   }
+
+  private applyDraftOperations(
+    operations: EditorOperation[],
+    targets: Array<{ element: HTMLElement; signatureTarget: TransformTarget }>,
+  ): EditorOperation[] {
+    const applied: EditorOperation[] = [];
+    for (let index = 0; index < operations.length; index += 1) {
+      const operation = operations[index];
+      if (!operation) {
+        continue;
+      }
+      const element = targets[index]?.element ?? null;
+      const result = this.adapter.applyOperation(
+        operation,
+        element?.isConnected ? element : null,
+      );
+      if (result.ok) {
+        applied.push(operation);
+      }
+    }
+    return applied;
+  }
+
+  private revertStylePreviewEffects(): void {
+    const operations = this.stylePreview?.operations ?? [];
+    for (const operation of [...operations].reverse()) {
+      this.adapter.revertOperation(operation);
+    }
+    if (this.stylePreview) {
+      this.stylePreview.operations = [];
+    }
+  }
+}
+
+function normalizeStyleInput(property: StyleProperty, value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (property === "opacity") {
+    const parsed = parseOpacityInput(trimmed);
+    return parsed === null ? null : formatOpacityValue(clampOpacity(parsed));
+  }
+  return normalizeStyleValue(property, trimmed);
 }
 
 function normalizeStyleValue(property: StyleProperty, value: string): string {

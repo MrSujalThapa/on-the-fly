@@ -5,6 +5,7 @@ import { EditorShell } from "../../src/content/editor-shell.js";
 import * as storageClient from "../../src/content/storage-client.js";
 import { createTestDocument } from "../editor/dom/test-document.js";
 import { createStyleOperation } from "../editor/fixtures.js";
+import type { CropOperation } from "../../src/editor/operations.js";
 
 describe("PageCustomizationController", () => {
   it("marks replay idempotent for a page load", async () => {
@@ -43,6 +44,41 @@ describe("PageCustomizationController", () => {
 
     await controller.clearPage();
     expect(copy.style.color).toBe("");
+    expect(controller.getPageOperations()).toEqual([]);
+  });
+
+  it("clears replayed crop effects while edit mode is off", async () => {
+    const { document, root } = createTestDocument(`<main><img id="photo" alt="x" /></main>`);
+    const photo = root.querySelector("#photo") as HTMLElement;
+    const controller = new PageCustomizationController(document);
+    const operation: CropOperation = {
+      id: "op-crop",
+      type: "crop",
+      pageKey: "https://example.com/",
+      target: {
+        nodeId: "node-1",
+        signature: {
+          cssPath: "main img#photo",
+          tagName: "img",
+          classList: [],
+          idAttr: "photo",
+          boundingBoxHint: { xRatio: 0, yRatio: 0, widthRatio: 0, heightRatio: 0 },
+        },
+      },
+      payload: { top: 8, right: 12, bottom: 4, left: 6 },
+      createdAt: 1,
+      source: "manual",
+      status: "approved",
+    };
+
+    controller.getAdapter().applyOperation(operation);
+    controller.recordAppliedOperations([operation]);
+    expect(photo.style.clipPath).toBe("inset(8px 12px 4px 6px)");
+
+    await controller.clearPage();
+
+    expect(photo.style.clipPath).toBe("");
+    expect(photo.getAttribute("data-otf-crop")).toBeNull();
     expect(controller.getPageOperations()).toEqual([]);
   });
 

@@ -9,13 +9,19 @@ export type TextEditRefusalReason =
   | "blocked-element"
   | "too-many-text-nodes"
   | "no-text-content"
-  | "not-connected";
+  | "not-connected"
+  | "rejected-too-large";
 
 export interface TextEditTargetResult {
   ok: true;
   element: HTMLElement;
   target: TransformTarget;
-  reason: "direct-leaf" | "inline-promoted-to-block" | "single-descendant" | "selected-leaf";
+  reason:
+    | "direct-leaf"
+    | "inline-promoted-to-block"
+    | "single-descendant"
+    | "first-descendant"
+    | "selected-leaf";
   originalElement?: HTMLElement;
 }
 
@@ -77,6 +83,9 @@ const TEXT_BLOCK_TAGS = new Set([
   "h6",
   "figcaption",
 ]);
+
+const TEXT_BLOCK_CLASS_HINT =
+  /(?:^|[-_\s])(nt-card__text|line-clamp|text|copy|body|description|headline|title|subtitle|summary|message|notification|notif)(?:[-_\s]|$)/i;
 
 const MAX_PROMOTED_TEXT_LENGTH = 700;
 const MAX_PROMOTED_DESCENDANTS = 40;
@@ -158,6 +167,17 @@ export function resolveTextEditTargetForSelection(
       reason: "too-many-text-nodes",
       detail: String(descendants.length),
     };
+  }
+
+  const first = descendants[0];
+  if (first) {
+    const promoted = resolvePromotedTextBlock(first, selectedElement);
+    return toResult(
+      promoted ?? first,
+      fallbackTarget,
+      promoted ? "inline-promoted-to-block" : "first-descendant",
+      first,
+    );
   }
 
   return { ok: false, reason: "no-target", detail: "select-specific-text" };
@@ -251,7 +271,8 @@ function resolvePromotedTextBlock(
       return null;
     }
 
-    if (isSafePromotedTextBlock(current, element)) {
+    const result = evaluatePromotedTextBlock(current, element);
+    if (result === "safe") {
       return current;
     }
 
@@ -265,40 +286,69 @@ function resolvePromotedTextBlock(
   return null;
 }
 
-function isSafePromotedTextBlock(candidate: HTMLElement, original: HTMLElement): boolean {
+function evaluatePromotedTextBlock(
+  candidate: HTMLElement,
+  original: HTMLElement,
+): "safe" | "too-large" | "unsafe" {
   if (!candidate.contains(original)) {
-    return false;
+    return "unsafe";
   }
 
   const text = candidate.textContent.replace(/\s+/g, " ").trim();
   if (!text || text.length > MAX_PROMOTED_TEXT_LENGTH) {
-    return false;
+    return "too-large";
   }
 
   if (candidate.querySelectorAll("*").length > MAX_PROMOTED_DESCENDANTS) {
-    return false;
+    return "too-large";
   }
 
   const tag = candidate.tagName.toLowerCase();
   if (TEXT_BLOCK_TAGS.has(tag)) {
-    return true;
+    return "safe";
   }
 
-  if (tag === "div") {
+  if (tag === "span" || tag === "div") {
     const directText = Array.from(candidate.childNodes)
       .filter((node) => node.nodeType === Node.TEXT_NODE)
       .map((node) => node.textContent ?? "")
       .join(" ")
       .replace(/\s+/g, " ")
       .trim();
-    return directText.length > 0 || sentenceLike(text);
+    if (
+      directText.length > 0 ||
+      sentenceLike(text) ||
+      hasTextBlockClassHint(candidate) ||
+      hasMultipleInlineTextChildren(candidate)
+    ) {
+      return "safe";
+    }
   }
 
-  return false;
+  return "unsafe";
 }
 
 function sentenceLike(text: string): boolean {
   return /\s/.test(text) && /[.!?)]?$/.test(text);
+}
+
+function hasTextBlockClassHint(element: HTMLElement): boolean {
+  const value = `${element.id} ${Array.from(element.classList).join(" ")}`;
+  return TEXT_BLOCK_CLASS_HINT.test(value);
+}
+
+function hasMultipleInlineTextChildren(element: HTMLElement): boolean {
+  let count = 0;
+  for (const child of Array.from(element.children)) {
+    if (!(child instanceof HTMLElement)) {
+      continue;
+    }
+    const tag = child.tagName.toLowerCase();
+    if (INLINE_TEXT_TAGS.has(tag) && child.textContent.trim().length > 0) {
+      count += 1;
+    }
+  }
+  return count >= 2;
 }
 
 function toResult(

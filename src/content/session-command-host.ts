@@ -7,6 +7,8 @@ export interface SessionCommandHost {
   applyLayerCommand(command: LayerCommand): void;
   toggleCropMode(): boolean;
   isCropMode(): boolean;
+  canCropSelection(): boolean;
+  canEditTextSelection(): boolean;
   clearSelection(): void;
   clearPage(): Promise<void>;
   undo(): boolean;

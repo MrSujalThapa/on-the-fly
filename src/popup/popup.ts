@@ -8,6 +8,10 @@ import {
 } from "../shared/messages.js";
 import { parseSettingsResponse } from "../shared/settings.js";
 import { isRestrictedUrl } from "../shared/restricted-url.js";
+import {
+  formatAgentStatus,
+  formatPopupDiagnostics,
+} from "./popup-view.js";
 
 const buildModeEl = document.querySelector<HTMLElement>("#build-mode");
 const statusEl = document.querySelector<HTMLElement>("#edit-status");
@@ -26,9 +30,7 @@ function setBuildModeLabel(): void {
     return;
   }
 
-  buildModeEl.textContent = isAgentEnabled()
-    ? "Local developer build · Agent enabled"
-    : "Public build · Agent disabled";
+  buildModeEl.textContent = formatAgentStatus(isAgentEnabled());
 }
 
 function formatStatus(status: EditModeStatus): string {
@@ -51,8 +53,7 @@ function renderUi(): void {
   statusEl.dataset.status = currentStatus;
 
   if (clearPageButton) {
-    // Clearing reverts the live page, so it requires an active edit session.
-    clearPageButton.disabled = currentStatus !== "active" || isBusy;
+    clearPageButton.disabled = currentStatus === "unavailable" || isBusy || pageOperationCount === 0;
   }
 
   if (currentStatus === "unavailable") {
@@ -116,16 +117,17 @@ function renderDiagnostics(settingsResponse: ReturnType<typeof parseSettingsResp
 
   const diagnostics = settingsResponse.diagnostics;
   if (!settingsResponse.ok || !settingsResponse.settings || !diagnostics) {
-    diagnosticsLine.textContent = "Settings unavailable";
+    diagnosticsLine.textContent = formatPopupDiagnostics({
+      operationCount: pageOperationCount,
+      agentEnabled: false,
+    });
     return;
   }
 
-  const restoreLabel = settingsResponse.settings.restoreEditModeOnLoad ? "On" : "Off";
-  const agentLabel = diagnostics.agentEnabled ? "Enabled" : "Disabled";
-  const opsLabel =
-    pageOperationCount === null ? "—" : String(pageOperationCount);
-
-  diagnosticsLine.textContent = `v${diagnostics.extensionVersion} · Restore on load: ${restoreLabel} · Agent: ${agentLabel} · Saved ops: ${opsLabel}`;
+  diagnosticsLine.textContent = formatPopupDiagnostics({
+    operationCount: pageOperationCount,
+    agentEnabled: diagnostics.agentEnabled,
+  });
 }
 
 async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
@@ -214,7 +216,7 @@ function wireOptionsButton(): void {
 }
 
 async function clearCurrentPage(): Promise<void> {
-  if (activeTabId === undefined || currentStatus !== "active") {
+  if (activeTabId === undefined || currentStatus === "unavailable") {
     return;
   }
 
@@ -225,6 +227,8 @@ async function clearCurrentPage(): Promise<void> {
     await chrome.tabs.sendMessage(activeTabId, {
       type: OTF_MESSAGE.CLEAR_PAGE_REQUEST,
     });
+    pageOperationCount = await loadPageOperationCount();
+    void loadSettingsSummary();
   } catch {
     // Content script may be unavailable; storage stays intact.
   } finally {

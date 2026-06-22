@@ -26,6 +26,7 @@ import {
   findCommandForKeyboardEvent,
 } from "../editor/commands/command-registry.js";
 import type { DomRuntimeAdapter } from "../editor/dom/dom-runtime-adapter.js";
+import { matchElementBySignature } from "../editor/dom/signature-matcher.js";
 import type { VisualNodeRect, VisualNode } from "../editor/visual-node.js";
 import type { VisualNodeId } from "../editor/ids.js";
 import { savePageOperations } from "./storage-client.js";
@@ -70,6 +71,18 @@ export interface EditSessionOptions {
 
 const DOUBLE_CLICK_MS = 400;
 
+interface InPlaceTextEditState {
+  element: HTMLElement;
+  target: TransformTarget;
+  originalText: string;
+  previousContentEditable: string | null;
+  previousUserSelect: string;
+  multiline: boolean;
+  finished: boolean;
+  keyHandler: (event: KeyboardEvent) => void;
+  blurHandler: () => void;
+}
+
 export class EditSession implements SessionCommandHost {
   private readonly shell: EditorShell;
   private readonly root: Document;
@@ -95,6 +108,8 @@ export class EditSession implements SessionCommandHost {
   private lastClickNodeId: string | null = null;
   private lastSelectionKey: string | null = null;
   private textEditTarget: TransformTarget | null = null;
+  private inPlaceTextEdit: InPlaceTextEditState | null = null;
+  private toolbarOpen = false;
 
   constructor(options: EditSessionOptions) {
     this.shell = options.shell;
@@ -154,7 +169,14 @@ export class EditSession implements SessionCommandHost {
             void this.executeCommand(commandId);
           },
           onStyleChange: (property, value) => {
-            this.applyStyle(property, value);
+            this.previewStyle(property, value);
+          },
+          onStylePanelApply: () => {
+            this.applyStylePreview();
+          },
+          onStylePanelReset: () => {
+            this.cancelStylePreview();
+            return this.readStylePanelValues();
           },
           onTextCommit: (value) => {
             this.applyText(value);
@@ -164,6 +186,7 @@ export class EditSession implements SessionCommandHost {
             this.textEditTarget = null;
           },
           onStylePanelClose: () => {
+            this.cancelStylePreview();
             this.updateToolbar();
           },
         },
@@ -212,12 +235,14 @@ export class EditSession implements SessionCommandHost {
   }
 
   afterExternalClearPage(): void {
+    this.closeInPlaceTextEditor(true);
+    this.cancelStylePreview();
     this.pageOperations = [];
     this.sessionHistory = createSessionHistory();
     this.transformController?.setCropMode(false);
     this.selectionController?.clearSelection();
     this.transformController?.clearSelection();
-    this.toolbar?.hide();
+    this.closeToolbar();
     this.shell.clearOverlays();
     this.lastSelectionKey = null;
     this.textEditTarget = null;
@@ -265,13 +290,14 @@ export class EditSession implements SessionCommandHost {
   }
 
   async clearPage(): Promise<void> {
+    this.cancelStylePreview();
     await this.pageCustomization.clearPage();
     this.pageOperations = [];
     this.sessionHistory = createSessionHistory();
     this.transformController?.setCropMode(false);
     this.selectionController?.clearSelection();
     this.transformController?.clearSelection();
-    this.toolbar?.hide();
+    this.closeToolbar();
     this.shell.clearOverlays();
     this.lastSelectionKey = null;
     this.textEditTarget = null;
@@ -279,6 +305,8 @@ export class EditSession implements SessionCommandHost {
   }
 
   stop(): void {
+    this.closeInPlaceTextEditor(true);
+    this.cancelStylePreview();
     this.pointerPipeline?.detach();
     this.pointerPipeline = null;
     this.detachKeyHandler();
@@ -300,6 +328,7 @@ export class EditSession implements SessionCommandHost {
     this.lastSelectionResult = null;
     this.pageOperations = [];
     this.sessionHistory = createSessionHistory();
+    this.toolbarOpen = false;
   }
 
   hideSelection(): void {
@@ -326,11 +355,21 @@ export class EditSession implements SessionCommandHost {
     return this.transformController?.isCropMode() ?? false;
   }
 
+  canCropSelection(): boolean {
+    return this.transformController?.canCropSelection() ?? false;
+  }
+
+  canEditTextSelection(): boolean {
+    return this.resolveTextEditSelection().ok;
+  }
+
   clearSelection(): void {
+    this.closeInPlaceTextEditor(true);
+    this.cancelStylePreview();
     this.selectionController?.clearSelection();
     this.transformController?.clearSelection();
-    this.toolbar?.closeStylePanel();
-    this.toolbar?.hide();
+    this.transformController?.setCropMode(false);
+    this.closeToolbar();
     this.shell.clearOverlays();
   }
 
@@ -390,18 +429,30 @@ export class EditSession implements SessionCommandHost {
     this.transformController?.refreshSelectionOutline();
   }
 
+  private previewStyle(property: StyleProperty, value: string): void {
+    this.styleTextController?.previewStyle(property, value);
+    this.transformController?.refreshSelectionOutline();
+  }
+
+  private applyStylePreview(): void {
+    this.styleTextController?.commitStylePreview();
+    this.transformController?.refreshSelectionOutline();
+    this.updateToolbar();
+  }
+
+  private cancelStylePreview(): void {
+    this.styleTextController?.cancelStylePreview();
+    this.transformController?.refreshSelectionOutline();
+  }
+
   applyText(value: string): void {
     this.styleTextController?.applyText(value);
     this.transformController?.refreshSelectionOutline();
   }
 
   openTextEditor(clientX?: number, clientY?: number): void {
-    const handleTarget = this.transformController?.getHandleTarget() ?? null;
-    const selectedElement = handleTarget?.element ?? null;
-    const resolution =
-      clientX !== undefined && clientY !== undefined
-        ? resolveTextEditTargetAtPoint(this.root, clientX, clientY, selectedElement, handleTarget)
-        : resolveTextEditTargetForSelection(this.root, selectedElement, handleTarget);
+    this.closeInPlaceTextEditor(false);
+    const resolution = this.resolveTextEditSelection(clientX, clientY);
 
     if (!resolution.ok) {
       this.onDebug("text-edit-refused", {
@@ -417,13 +468,41 @@ export class EditSession implements SessionCommandHost {
       originalTag: resolution.originalElement?.tagName.toLowerCase(),
     });
     this.textEditTarget = resolution.target;
-    const rect = resolution.target.rect;
-    if (!this.styleTextController || !this.toolbar) {
+    if (!this.styleTextController) {
       return;
     }
 
     const initialText = this.styleTextController.readTextForTarget(resolution.target);
-    this.toolbar.openTextEditor(rect, initialText);
+    if (this.openInPlaceTextEditor(resolution.element, resolution.target, initialText)) {
+      return;
+    }
+
+    this.toolbar?.openTextEditor(resolution.target.rect, initialText);
+  }
+
+  private resolveTextEditSelection(clientX?: number, clientY?: number) {
+    const handleTarget = this.transformController?.getHandleTarget() ?? null;
+    const orderedTargets = [
+      ...(handleTarget ? [handleTarget] : []),
+      ...(this.transformController?.getTargets() ?? []).filter(
+        (target) => target.nodeId !== handleTarget?.nodeId,
+      ),
+    ];
+
+    for (const target of orderedTargets) {
+      const selectedElement = target.element?.isConnected
+        ? target.element
+        : matchElementBySignature(this.root, target.signature);
+      const resolution =
+        clientX !== undefined && clientY !== undefined
+          ? resolveTextEditTargetAtPoint(this.root, clientX, clientY, selectedElement, target)
+          : resolveTextEditTargetForSelection(this.root, selectedElement, target);
+      if (resolution.ok) {
+        return resolution;
+      }
+    }
+
+    return { ok: false as const, reason: "no-target" as const, detail: "no-safe-text-descendant" };
   }
 
   private handleSelectionChange(
@@ -431,12 +510,11 @@ export class EditSession implements SessionCommandHost {
     result: SelectionResolveResult,
   ): void {
     const selectionKey = selectionKeyFrom(selection);
-    if (
-      this.lastSelectionKey !== null &&
-      selectionKey !== this.lastSelectionKey &&
-      this.toolbar?.isStylePanelOpen()
-    ) {
-      this.toolbar.closeStylePanel();
+    const selectionChanged = this.lastSelectionKey !== null && selectionKey !== this.lastSelectionKey;
+    if (selectionChanged || selection.selectedNodeIds.length === 0) {
+      this.cancelStylePreview();
+      this.transformController?.setCropMode(false);
+      this.closeToolbar();
     }
     this.lastSelectionKey = selectionKey;
     this.lastSelectionResult = result;
@@ -457,6 +535,11 @@ export class EditSession implements SessionCommandHost {
     const context = this.buildCommandContext();
     const hasSelection = context.selection.selectedNodeIds.length > 0;
     if (!hasSelection) {
+      this.closeToolbar();
+      return;
+    }
+
+    if (!this.toolbarOpen) {
       this.toolbar.hide();
       return;
     }
@@ -481,6 +564,106 @@ export class EditSession implements SessionCommandHost {
     }
   }
 
+  private toggleToolbar(): void {
+    if (this.toolbar?.isStylePanelOpen() || this.toolbar?.isTextEditorOpen()) {
+      return;
+    }
+
+    if (this.toolbarOpen) {
+      this.closeToolbar();
+      return;
+    }
+
+    this.openToolbar();
+  }
+
+  private openToolbar(): void {
+    const selection = this.selectionController?.getSelection();
+    if (!selection || selection.selectedNodeIds.length === 0 || !this.toolbar) {
+      return;
+    }
+
+    this.toolbarOpen = true;
+    this.updateToolbar();
+  }
+
+  private closeToolbar(): void {
+    this.toolbarOpen = false;
+    this.toolbar?.hide();
+  }
+
+  private shouldIgnoreToolbarShortcut(event: KeyboardEvent): boolean {
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    for (const target of path) {
+      if (!(target instanceof Element)) {
+        continue;
+      }
+
+      if (target.getAttribute("data-otf-ui") === "style-panel") {
+        return true;
+      }
+
+      if (target.closest("[data-otf-ui='style-panel']")) {
+        return true;
+      }
+
+      if (isTextEntryElement(target)) {
+        return true;
+      }
+    }
+
+    if (event.target instanceof Element) {
+      if (this.isElementInsideExtensionUi(event.target) || isTextEntryElement(event.target)) {
+        return true;
+      }
+    }
+
+    const activeElement = this.root.activeElement;
+    if (activeElement && (
+      this.isElementInsideExtensionUi(activeElement) ||
+      isTextEntryElement(activeElement)
+    )) {
+      return true;
+    }
+
+    const shadowActive = this.shell.getShadowRoot()?.activeElement;
+    if (shadowActive instanceof Element) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private isElementInsideExtensionUi(element: Element): boolean {
+    return (
+      element.getAttribute("data-otf-ui") !== null ||
+      element.closest("[data-otf-ui]") !== null ||
+      element.id === "on-the-fly-root-host"
+    );
+  }
+
+  private canToggleToolbarFromKeyboard(event: KeyboardEvent): boolean {
+    if (this.shouldIgnoreToolbarShortcut(event)) {
+      return false;
+    }
+
+    if (this.toolbar?.isStylePanelOpen() || this.toolbar?.isTextEditorOpen()) {
+      return false;
+    }
+
+    if (
+      this.transformController?.isTransforming() ||
+      this.transformController?.isCropMode() ||
+      this.movePending ||
+      this.moveActive
+    ) {
+      return false;
+    }
+
+    const selection = this.selectionController?.getSelection();
+    return Boolean(selection && selection.selectedNodeIds.length > 0);
+  }
+
   private readStylePanelValues(): Partial<Record<string, string>> {
     const target = this.transformController?.getHandleTarget()
       ?? this.transformController?.getTargets()[0];
@@ -499,7 +682,7 @@ export class EditSession implements SessionCommandHost {
   }
 
   private toggleStylePanel(): void {
-    if (!this.toolbar) {
+    if (!this.toolbar || !this.toolbarOpen) {
       return;
     }
 
@@ -603,7 +786,28 @@ export class EditSession implements SessionCommandHost {
     }
 
     this.keyHandler = (event: KeyboardEvent) => {
+      if (this.inPlaceTextEdit) {
+        this.handleInPlaceTextKey(event);
+        return;
+      }
+
       if (event.repeat) {
+        return;
+      }
+
+      if (
+        event.key.toLowerCase() === "t" &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !event.shiftKey
+      ) {
+        if (!this.canToggleToolbarFromKeyboard(event)) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        this.toggleToolbar();
         return;
       }
 
@@ -654,6 +858,11 @@ export class EditSession implements SessionCommandHost {
   }
 
   handleEscape(): boolean {
+    if (this.inPlaceTextEdit) {
+      this.closeInPlaceTextEditor(true);
+      return true;
+    }
+
     if (this.toolbar?.isTextEditorOpen()) {
       this.toolbar.closeTextEditor(true);
       return true;
@@ -666,9 +875,23 @@ export class EditSession implements SessionCommandHost {
     }
 
     if (this.transformController?.isTransforming()) {
-      this.transformController.cancelMove();
+      this.transformController.cancelActiveTransform();
       this.movePending = false;
       this.moveActive = false;
+      this.updateToolbar();
+      return true;
+    }
+
+    if (this.transformController?.isCropMode()) {
+      this.transformController.setCropMode(false);
+      this.movePending = false;
+      this.moveActive = false;
+      this.updateToolbar();
+      return true;
+    }
+
+    if (this.toolbarOpen) {
+      this.closeToolbar();
       return true;
     }
 
@@ -682,6 +905,26 @@ export class EditSession implements SessionCommandHost {
   }
 
   private handlePointerDown(event: PointerEvent): void {
+    if (this.inPlaceTextEdit && event.target !== this.inPlaceTextEdit.element) {
+      this.closeInPlaceTextEditor(false);
+    }
+
+    if (this.transformController?.isTransforming()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    if (this.transformController?.isCropMode()) {
+      if (!(this.transformController.hitTestSelection(event.clientX, event.clientY))) {
+        this.transformController.setCropMode(false);
+        this.updateToolbar();
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (this.activeGesture) {
       return;
     }
@@ -899,6 +1142,112 @@ export class EditSession implements SessionCommandHost {
 
     this.captureTarget = null;
   }
+
+  private openInPlaceTextEditor(
+    element: HTMLElement,
+    target: TransformTarget,
+    initialText: string,
+  ): boolean {
+    if (!element.isConnected || element.isContentEditable) {
+      return false;
+    }
+
+    const previousContentEditable = element.getAttribute("contenteditable");
+    const previousUserSelect = element.style.userSelect;
+    const multiline = initialText.includes("\n") || target.rect.height > 44;
+
+    const blurHandler = (): void => {
+      this.closeInPlaceTextEditor(false);
+    };
+    const keyHandler = (event: KeyboardEvent): void => {
+      this.handleInPlaceTextKey(event);
+    };
+
+    this.inPlaceTextEdit = {
+      element,
+      target,
+      originalText: initialText,
+      previousContentEditable,
+      previousUserSelect,
+      multiline,
+      finished: false,
+      keyHandler,
+      blurHandler,
+    };
+    this.textEditTarget = target;
+
+    element.setAttribute("contenteditable", "plaintext-only");
+    if (element.getAttribute("contenteditable") !== "plaintext-only") {
+      element.setAttribute("contenteditable", "true");
+    }
+    element.style.userSelect = "text";
+    element.focus({ preventScroll: true });
+    selectElementText(element);
+    element.addEventListener("keydown", keyHandler);
+    element.addEventListener("blur", blurHandler);
+    this.onDebug("text-edit-in-place", {
+      tag: element.tagName.toLowerCase(),
+      multiline,
+    });
+    return true;
+  }
+
+  private handleInPlaceTextKey(event: KeyboardEvent): void {
+    const state = this.inPlaceTextEdit;
+    if (!state || state.finished) {
+      return;
+    }
+
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeInPlaceTextEditor(false);
+      return;
+    }
+
+    if (event.key === "Enter" && !state.multiline && !event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeInPlaceTextEditor(false);
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeInPlaceTextEditor(true);
+    }
+  }
+
+  private closeInPlaceTextEditor(cancel: boolean): void {
+    const state = this.inPlaceTextEdit;
+    if (!state || state.finished) {
+      return;
+    }
+
+    state.finished = true;
+    state.element.removeEventListener("keydown", state.keyHandler);
+    state.element.removeEventListener("blur", state.blurHandler);
+    const nextText = state.element.textContent;
+    restoreContentEditable(state.element, state.previousContentEditable);
+    state.element.style.userSelect = state.previousUserSelect;
+    clearSelectionRange(state.element.ownerDocument);
+    this.inPlaceTextEdit = null;
+
+    if (cancel) {
+      state.element.textContent = state.originalText;
+      this.textEditTarget = null;
+      return;
+    }
+
+    if (nextText !== state.originalText) {
+      state.element.textContent = state.originalText;
+      this.textEditTarget = state.target;
+      this.applyText(nextText);
+    }
+
+    this.textEditTarget = null;
+  }
 }
 
 export function createEditSession(options: EditSessionOptions): EditSession {
@@ -947,4 +1296,45 @@ function toTransformSelectionInput(
     variant: "node",
     handleTarget: targets.length === 1 ? (targets[0] ?? null) : null,
   };
+}
+
+function selectElementText(element: HTMLElement): void {
+  const selection = element.ownerDocument.getSelection();
+  if (!selection) {
+    return;
+  }
+  const range = element.ownerDocument.createRange();
+  range.selectNodeContents(element);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function clearSelectionRange(document: Document): void {
+  document.getSelection()?.removeAllRanges();
+}
+
+function restoreContentEditable(element: HTMLElement, previous: string | null): void {
+  if (previous === null) {
+    element.removeAttribute("contenteditable");
+    return;
+  }
+  element.setAttribute("contenteditable", previous);
+}
+
+function isTextEntryElement(element: Element): boolean {
+  const tag = element.tagName.toLowerCase();
+  if (tag === "textarea" || tag === "select") {
+    return true;
+  }
+
+  if (tag === "input") {
+    const type = (element.getAttribute("type") ?? "text").toLowerCase();
+    return !["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"].includes(type);
+  }
+
+  if (element instanceof HTMLElement && element.isContentEditable) {
+    return true;
+  }
+
+  return element.closest("[contenteditable='true'], [contenteditable='plaintext-only']") !== null;
 }
