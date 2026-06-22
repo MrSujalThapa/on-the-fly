@@ -101,11 +101,20 @@ function safeQueryElements(root: ParentNode, cssPath: string): Element[] {
 }
 
 export function getMatchViewport(root: ParentNode): MatchViewport {
-  if (root instanceof Document) {
-    return {
-      width: root.documentElement.clientWidth || root.documentElement.scrollWidth || 0,
-      height: root.documentElement.clientHeight || root.documentElement.scrollHeight || 0,
-    };
+  if ("documentElement" in root) {
+    const doc = root as Document;
+    const width =
+      doc.documentElement.clientWidth ||
+      doc.documentElement.scrollWidth ||
+      doc.defaultView?.innerWidth ||
+      0;
+    const height =
+      doc.documentElement.clientHeight ||
+      doc.documentElement.scrollHeight ||
+      doc.defaultView?.innerHeight ||
+      0;
+
+    return { width, height };
   }
 
   if (root instanceof HTMLElement) {

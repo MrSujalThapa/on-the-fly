@@ -21,7 +21,7 @@ export type DomChange =
   | { kind: "display"; previousValue: string }
   | { kind: "visibility"; previousValue: string }
   | { kind: "transform-state"; previousState: string | null }
-  | { kind: "size"; previousWidth: string; previousHeight: string }
+  | { kind: "size"; previousWidth: string; previousHeight: string; previousBoxSizing: string }
   | { kind: "zIndex"; previousValue: string }
   | { kind: "position"; previousValue: string };
 

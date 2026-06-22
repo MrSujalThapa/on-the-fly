@@ -42,4 +42,11 @@ export interface VisualNode {
   childIds: VisualNodeId[];
   isLikelyContainer?: boolean;
   isPageLevel?: boolean;
+  /**
+   * Runtime-only live reference to the backing DOM element. Set for DOM-first
+   * (rectangle) selection targets so transforms hit the exact selected element
+   * during the active session without depending on signature re-resolution.
+   * Never serialized; persistence relies on {@link signature}.
+   */
+  element?: HTMLElement;
 }
