@@ -40,6 +40,7 @@ export class SelectionController {
   private activeGroup: VirtualGroup | null = null;
   private preGroupSelection: EditorSelection | null = null;
   private preGroupTargets: VirtualGroupMember[] = [];
+  private altCycle: { x: number; y: number; index: number } | null = null;
 
   constructor(options: SelectionControllerOptions) {
     this.getGraph = options.getGraph;
@@ -60,6 +61,7 @@ export class SelectionController {
     this.selection = createEmptySelection();
     this.resetGroupState();
     this.lastTargets = [];
+    this.altCycle = null;
     this.onSelectionChange?.(this.selection, {
       selection: this.selection,
       resolvedNodes: [],
@@ -72,19 +74,48 @@ export class SelectionController {
     y: number,
     shiftKey: boolean,
     composedPath: EventTarget[] = [],
+    altKey = false,
   ): SelectionResolveResult {
+    const options = this.getClickResolveOptions();
+    if (altKey) {
+      options.altKey = true;
+      options.altCycleIndex = this.nextAltCycleIndex(x, y);
+    } else {
+      this.altCycle = null;
+    }
+
     const result = this.withPageHitTest(() =>
       resolveClickSelection(
         this.getGraph(),
         x,
         y,
-        shiftKey,
-        shiftKey ? this.selection : createEmptySelection(),
+        altKey ? false : shiftKey,
+        shiftKey && !altKey ? this.selection : createEmptySelection(),
         composedPath,
-        this.getClickResolveOptions(),
+        options,
       ),
     );
     return this.commitSelectionResult(result);
+  }
+
+  /**
+   * Advances the Alt+Click cycle counter. Clicks landing near the previous
+   * Alt+Click step the chain (child → parent → container); a click elsewhere
+   * resets to the deepest child.
+   */
+  private nextAltCycleIndex(x: number, y: number): number {
+    const ALT_CYCLE_THRESHOLD_PX = 6;
+    const previous = this.altCycle;
+    let index = 0;
+    if (
+      previous &&
+      Math.abs(previous.x - x) <= ALT_CYCLE_THRESHOLD_PX &&
+      Math.abs(previous.y - y) <= ALT_CYCLE_THRESHOLD_PX
+    ) {
+      index = previous.index + 1;
+    }
+    this.altCycle = { x, y, index };
+    return index;
   }
 
   handleLasso(startX: number, startY: number, endX: number, endY: number, shiftKey: boolean): SelectionResolveResult {
@@ -93,6 +124,7 @@ export class SelectionController {
   }
 
   handleLassoRect(lassoRect: MeasurementRect, shiftKey: boolean): SelectionResolveResult {
+    this.altCycle = null;
     const result = this.withPageHitTest(() =>
       resolveLassoSelection(
         this.getGraph(),

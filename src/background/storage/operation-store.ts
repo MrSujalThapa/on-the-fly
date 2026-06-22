@@ -1,0 +1,363 @@
+import type { EditorOperation } from "../../editor/operations.js";
+import type { PageKey } from "../../editor/ids.js";
+import {
+  coalescePageOperations,
+} from "../../editor/persistence/coalesce-page-operations.js";
+import { validateOperation } from "../../editor/validation/validate-operation.js";
+import {
+  defaultCustomizationId,
+  derivePageInfo,
+  type StoredCustomization,
+  type StoredOperation,
+  type StoredPage,
+  type StoredSite,
+} from "../../shared/storage-records.js";
+
+export const OTF_DB_NAME = "on_the_fly_v1";
+export const OTF_DB_VERSION = 1;
+
+export const STORE = {
+  SITES: "sites",
+  PAGES: "pages",
+  CUSTOMIZATIONS: "customizations",
+  OPERATIONS: "operations",
+  ASSETS: "assets",
+} as const;
+
+/** Local product limit (see docs/04). Keeps a single page from growing huge. */
+export const MAX_OPERATIONS_PER_PAGE = 1000;
+
+export interface SaveOperationsResult {
+  saved: number;
+  skipped: number;
+  totalCount: number;
+  trimmed: number;
+  capReached: boolean;
+}
+
+export interface OperationStoreOptions {
+  indexedDB: IDBFactory;
+  dbName?: string;
+  now?: () => number;
+}
+
+function promisifyRequest<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => {
+      resolve(request.result);
+    };
+    request.onerror = () => {
+      reject(request.error ?? new Error("indexeddb_request_failed"));
+    };
+  });
+}
+
+function awaitTransaction(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => {
+      resolve();
+    };
+    tx.onerror = () => {
+      reject(tx.error ?? new Error("indexeddb_transaction_failed"));
+    };
+    tx.onabort = () => {
+      reject(tx.error ?? new Error("indexeddb_transaction_aborted"));
+    };
+  });
+}
+
+/**
+ * Local-only IndexedDB store for approved editor operations. No backend, no
+ * cloud sync. The IDBFactory is injectable so tests can run against
+ * fake-indexeddb while production uses the service-worker `indexedDB`.
+ */
+export class OperationStore {
+  private readonly factory: IDBFactory;
+  private readonly dbName: string;
+  private readonly now: () => number;
+  private dbPromise: Promise<IDBDatabase> | null = null;
+
+  constructor(options: OperationStoreOptions) {
+    this.factory = options.indexedDB;
+    this.dbName = options.dbName ?? OTF_DB_NAME;
+    this.now = options.now ?? (() => Date.now());
+  }
+
+  private openDatabase(): Promise<IDBDatabase> {
+    this.dbPromise ??= new Promise<IDBDatabase>((resolve, reject) => {
+      const request = this.factory.open(this.dbName, OTF_DB_VERSION);
+      request.onupgradeneeded = () => {
+        upgradeSchema(request.result);
+      };
+      request.onsuccess = () => {
+        resolve(request.result);
+      };
+      request.onerror = () => {
+        reject(request.error ?? new Error("indexeddb_open_failed"));
+      };
+    });
+    return this.dbPromise;
+  }
+
+  /**
+   * Merges incoming operations with saved page state (coalescing duplicate hide
+   * ops per target), then rewrites the page operation list. Returns diagnostics
+   * so callers can log cap/quota issues instead of failing silently.
+   */
+  async saveOperations(
+    pageKey: PageKey,
+    operations: EditorOperation[],
+  ): Promise<SaveOperationsResult> {
+    const valid = operations.filter((operation) => validateOperation(operation).ok);
+    const skipped = operations.length - valid.length;
+
+    if (valid.length === 0) {
+      const totalCount = await this.countOperations(pageKey);
+      return { saved: 0, skipped, totalCount, trimmed: 0, capReached: false };
+    }
+
+    const existing = await this.loadOperations(pageKey);
+    const { operations: merged, applied, skipped: coalesceSkipped } = coalescePageOperations(
+      existing,
+      valid,
+    );
+
+    if (applied === 0 && merged.length === existing.length) {
+      return {
+        saved: 0,
+        skipped: skipped + coalesceSkipped,
+        totalCount: existing.length,
+        trimmed: 0,
+        capReached: false,
+      };
+    }
+
+    const { totalCount, trimmed } = await this.replacePageOperations(pageKey, merged);
+
+    return {
+      saved: applied,
+      skipped: skipped + coalesceSkipped,
+      totalCount,
+      trimmed,
+      capReached: trimmed > 0,
+    };
+  }
+
+  /** Returns the number of stored operations for a page. */
+  async countOperations(pageKey: PageKey): Promise<number> {
+    const db = await this.openDatabase();
+    const tx = db.transaction(STORE.OPERATIONS, "readonly");
+    const count = await promisifyRequest<number>(
+      tx.objectStore(STORE.OPERATIONS).index("pageKey").count(pageKey),
+    );
+    await awaitTransaction(tx);
+    return count;
+  }
+
+  /**
+   * Replaces all operations for a page with the merged list, reassigning
+   * monotonic sequence numbers. Trims oldest ops when over the per-page cap.
+   */
+  private async replacePageOperations(
+    pageKey: PageKey,
+    operations: EditorOperation[],
+  ): Promise<{ totalCount: number; trimmed: number }> {
+    const db = await this.openDatabase();
+    const { origin, normalizedPath } = derivePageInfo(pageKey);
+    const timestamp = this.now();
+    const customizationId = defaultCustomizationId(pageKey);
+
+    let trimmed = 0;
+    let finalOps = operations;
+    if (operations.length > MAX_OPERATIONS_PER_PAGE) {
+      trimmed = operations.length - MAX_OPERATIONS_PER_PAGE;
+      finalOps = operations.slice(trimmed);
+    }
+
+    const tx = db.transaction(
+      [STORE.SITES, STORE.PAGES, STORE.CUSTOMIZATIONS, STORE.OPERATIONS],
+      "readwrite",
+    );
+    const operationsStore = tx.objectStore(STORE.OPERATIONS);
+
+    const existingKeys = await promisifyRequest<IDBValidKey[]>(
+      operationsStore.index("pageKey").getAllKeys(pageKey),
+    );
+    for (const key of existingKeys) {
+      operationsStore.delete(key);
+    }
+
+    await upsertSite(tx.objectStore(STORE.SITES), origin, timestamp);
+    await upsertPage(tx.objectStore(STORE.PAGES), pageKey, origin, normalizedPath, timestamp);
+    await upsertCustomization(
+      tx.objectStore(STORE.CUSTOMIZATIONS),
+      customizationId,
+      pageKey,
+      timestamp,
+    );
+
+    finalOps.forEach((operation, index) => {
+      const stored: StoredOperation = {
+        ...operation,
+        pageKey,
+        status: "approved",
+        customizationId,
+        sequence: index + 1,
+      };
+      operationsStore.put(stored);
+    });
+
+    await awaitTransaction(tx);
+    return { totalCount: finalOps.length, trimmed };
+  }
+
+  /** Loads approved operations for a page, ordered by sequence (replay order). */
+  async loadOperations(pageKey: PageKey): Promise<EditorOperation[]> {
+    const db = await this.openDatabase();
+    const tx = db.transaction(STORE.OPERATIONS, "readonly");
+    const stored = await promisifyRequest(
+      tx.objectStore(STORE.OPERATIONS).index("pageKey").getAll(pageKey) as IDBRequest<
+        StoredOperation[]
+      >,
+    );
+    await awaitTransaction(tx);
+
+    return stored
+      .slice()
+      .sort((left, right) => left.sequence - right.sequence)
+      .map(toEditorOperation);
+  }
+
+  /** Removes all stored operations, the customization, and the page record. */
+  async clearPage(pageKey: PageKey): Promise<number> {
+    const db = await this.openDatabase();
+    const tx = db.transaction(
+      [STORE.PAGES, STORE.CUSTOMIZATIONS, STORE.OPERATIONS],
+      "readwrite",
+    );
+    const operationsStore = tx.objectStore(STORE.OPERATIONS);
+    const keys = await promisifyRequest<IDBValidKey[]>(
+      operationsStore.index("pageKey").getAllKeys(pageKey),
+    );
+    for (const key of keys) {
+      operationsStore.delete(key);
+    }
+
+    const customizations = tx.objectStore(STORE.CUSTOMIZATIONS);
+    const customizationKeys = await promisifyRequest<IDBValidKey[]>(
+      customizations.index("pageKey").getAllKeys(pageKey),
+    );
+    for (const key of customizationKeys) {
+      customizations.delete(key);
+    }
+
+    tx.objectStore(STORE.PAGES).delete(pageKey);
+    await awaitTransaction(tx);
+    return keys.length;
+  }
+
+  close(): void {
+    if (!this.dbPromise) {
+      return;
+    }
+    void this.dbPromise.then((db) => {
+      db.close();
+    });
+    this.dbPromise = null;
+  }
+}
+
+function upgradeSchema(db: IDBDatabase): void {
+  if (!db.objectStoreNames.contains(STORE.SITES)) {
+    db.createObjectStore(STORE.SITES, { keyPath: "origin" });
+  }
+
+  if (!db.objectStoreNames.contains(STORE.PAGES)) {
+    const pages = db.createObjectStore(STORE.PAGES, { keyPath: "pageKey" });
+    pages.createIndex("origin", "origin", { unique: false });
+    pages.createIndex("updatedAt", "updatedAt", { unique: false });
+  }
+
+  if (!db.objectStoreNames.contains(STORE.CUSTOMIZATIONS)) {
+    const customizations = db.createObjectStore(STORE.CUSTOMIZATIONS, { keyPath: "id" });
+    customizations.createIndex("pageKey", "pageKey", { unique: false });
+    customizations.createIndex("updatedAt", "updatedAt", { unique: false });
+  }
+
+  if (!db.objectStoreNames.contains(STORE.OPERATIONS)) {
+    const operations = db.createObjectStore(STORE.OPERATIONS, { keyPath: "id" });
+    operations.createIndex("pageKey", "pageKey", { unique: false });
+    operations.createIndex("customizationId", "customizationId", { unique: false });
+    operations.createIndex("sequence", "sequence", { unique: false });
+    operations.createIndex("updatedAt", "createdAt", { unique: false });
+  }
+
+  if (!db.objectStoreNames.contains(STORE.ASSETS)) {
+    const assets = db.createObjectStore(STORE.ASSETS, { keyPath: "id" });
+    assets.createIndex("pageKey", "pageKey", { unique: false });
+    assets.createIndex("createdAt", "createdAt", { unique: false });
+  }
+}
+
+async function upsertSite(
+  store: IDBObjectStore,
+  origin: string,
+  timestamp: number,
+): Promise<void> {
+  const existing = await promisifyRequest(
+    store.get(origin) as IDBRequest<StoredSite | undefined>,
+  );
+  const record: StoredSite = {
+    origin,
+    createdAt: existing?.createdAt ?? timestamp,
+    updatedAt: timestamp,
+  };
+  store.put(record);
+}
+
+async function upsertPage(
+  store: IDBObjectStore,
+  pageKey: PageKey,
+  origin: string,
+  normalizedPath: string,
+  timestamp: number,
+): Promise<void> {
+  const existing = await promisifyRequest(
+    store.get(pageKey) as IDBRequest<StoredPage | undefined>,
+  );
+  const record: StoredPage = {
+    pageKey,
+    origin,
+    normalizedPath,
+    createdAt: existing?.createdAt ?? timestamp,
+    updatedAt: timestamp,
+  };
+  store.put(record);
+}
+
+async function upsertCustomization(
+  store: IDBObjectStore,
+  id: string,
+  pageKey: PageKey,
+  timestamp: number,
+): Promise<void> {
+  const existing = await promisifyRequest(
+    store.get(id) as IDBRequest<StoredCustomization | undefined>,
+  );
+  const record: StoredCustomization = {
+    id,
+    pageKey,
+    name: existing?.name ?? "Default",
+    isActive: true,
+    createdAt: existing?.createdAt ?? timestamp,
+    updatedAt: timestamp,
+  };
+  store.put(record);
+}
+
+function toEditorOperation(stored: StoredOperation): EditorOperation {
+  const record = { ...stored } as Partial<StoredOperation>;
+  delete record.customizationId;
+  delete record.sequence;
+  return record as EditorOperation;
+}

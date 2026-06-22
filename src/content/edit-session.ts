@@ -18,7 +18,13 @@ import {
 import type { EditorSelection } from "../editor/editor-selection.js";
 import type { SelectionResolveResult } from "../editor/selection/selection-resolver.js";
 import type { LayerCommand, TransformTarget } from "../editor/transform/index.js";
+import type { EditorOperation } from "../editor/operations.js";
 import { createDomRuntimeAdapter, type DomRuntimeAdapter } from "../editor/dom/dom-runtime-adapter.js";
+import {
+  clearPageOperations,
+  loadPageOperations,
+  savePageOperations,
+} from "./storage-client.js";
 import { attachEditModePointerPipeline } from "./edit-mode-pointer-pipeline.js";
 import type { EditModePointerPipeline } from "./edit-mode-pointer-pipeline.js";
 import type { EditorShell } from "./editor-shell.js";
@@ -74,6 +80,9 @@ export class EditSession {
       document: this.root,
       adapter: this.adapter,
       getPageKey: () => this.computePageKey(),
+      onApply: (operations) => {
+        this.persistOperations(operations);
+      },
       onDebug: this.onDebug,
     });
 
@@ -115,6 +124,79 @@ export class EditSession {
 
     this.attachKeyHandler(windowRef);
     this.cacheController.cache.ensureFresh();
+    void this.loadAndReplaySavedOperations();
+  }
+
+  /**
+   * Loads operations saved for this page from extension-local storage and
+   * replays them onto the live DOM in sequence. Runs on edit-mode activation.
+   */
+  private async loadAndReplaySavedOperations(): Promise<void> {
+    const adapter = this.adapter;
+    if (!adapter) {
+      return;
+    }
+
+    const pageKey = this.computePageKey();
+    const operations = await loadPageOperations(pageKey);
+    if (operations.length === 0) {
+      this.onDebug("replay", { pageKey, count: 0, failed: 0, resolved: 0, unresolved: 0 });
+      return;
+    }
+
+    const batch = adapter.replayOperationsWithDiagnostics(operations);
+    const failed = batch.results.filter((result) => !result.ok).length;
+    const resolved = batch.diagnostics.filter((entry) => entry.resolved).length;
+    const unresolved = batch.diagnostics.length - resolved;
+
+    for (const entry of batch.diagnostics) {
+      this.onDebug("replay-op", entry);
+    }
+
+    this.onDebug("replay", { pageKey, count: operations.length, failed, resolved, unresolved });
+  }
+
+  private persistOperations(operations: EditorOperation[]): void {
+    if (operations.length === 0) {
+      return;
+    }
+
+    const pageKey = this.computePageKey();
+    void savePageOperations(pageKey, operations).then((result) => {
+      if (!result.ok) {
+        this.onDebug("storage-save-failed", {
+          pageKey,
+          error: result.error ?? "unknown",
+          batchSize: operations.length,
+        });
+        return;
+      }
+
+      this.onDebug("storage-save", {
+        pageKey,
+        saved: result.saved ?? 0,
+        skipped: result.skipped ?? 0,
+        operationCount: result.operationCount ?? 0,
+        trimmed: result.trimmed ?? 0,
+        capReached: result.capReached === true,
+        ...(result.capReached ? { warning: "operation_cap_reached" } : {}),
+        ...(result.error ? { note: result.error } : {}),
+      });
+    });
+  }
+
+  /**
+   * Clears all saved operations for the current page and reverts the visible
+   * page by undoing applied effects where reversible (deterministic clear).
+   */
+  async clearPage(): Promise<void> {
+    const pageKey = this.computePageKey();
+    await clearPageOperations(pageKey);
+    this.adapter?.clearAppliedEffects();
+    this.selectionController?.clearSelection();
+    this.transformController?.clearSelection();
+    this.shell.clearOverlays();
+    this.onDebug("clear-page", { pageKey });
   }
 
   stop(): void {
@@ -181,6 +263,24 @@ export class EditSession {
     }
 
     this.keyHandler = (event: KeyboardEvent) => {
+      // Delete/Backspace hides the current selection (no modifier).
+      if (
+        (event.key === "Delete" || event.key === "Backspace") &&
+        !event.ctrlKey &&
+        !event.metaKey
+      ) {
+        if (event.repeat) {
+          return;
+        }
+        if (!this.transformController?.hasSelection()) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        this.handleHideSelectionKey();
+        return;
+      }
+
       if (!(event.ctrlKey || event.metaKey)) {
         return;
       }
@@ -230,6 +330,18 @@ export class EditSession {
     this.keyHandler = null;
   }
 
+  private handleHideSelectionKey(): void {
+    const operations = this.transformController?.hideSelection() ?? [];
+    if (operations.length === 0) {
+      this.onDebug("hide-noop", { reason: "already-hidden-or-no-targets" });
+      return;
+    }
+
+    this.selectionController?.clearSelection();
+    this.transformController?.clearSelection();
+    this.shell.clearOverlays();
+  }
+
   handleEscape(): boolean {
     if (this.transformController?.isTransforming()) {
       this.transformController.cancelMove();
@@ -259,9 +371,11 @@ export class EditSession {
       event.clientX,
       event.clientY,
       event.shiftKey,
+      event.altKey,
     );
     this.movePending =
       !event.shiftKey &&
+      !event.altKey &&
       (this.transformController?.hasSelection() ?? false) &&
       (this.transformController?.hitTestSelection(event.clientX, event.clientY) ?? false);
     this.moveActive = false;
@@ -394,11 +508,13 @@ export class EditSession {
       event.clientY,
       gesture.shiftKey,
       composedPath,
+      gesture.altKey,
     );
     this.onDebug("click-resolve", {
       count: result.resolvedNodes.length,
       source: result.selection.source,
       rejectionReason: result.rejectionReason,
+      altKey: gesture.altKey,
     });
     this.shell.renderLassoBox(null);
   }

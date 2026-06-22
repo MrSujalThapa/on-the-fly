@@ -154,4 +154,79 @@ describe("EditSession transform integration", () => {
     session.stop();
     shell.unmount();
   });
+
+  it("ignores repeated Delete keydown and clears selection after hide", () => {
+    const doc = globalThis.document;
+    const win = globalThis.window;
+
+    doc.body.innerHTML = `
+      <main>
+        <section id="card-a"><p id="copy-a">alpha copy</p></section>
+      </main>
+    `;
+
+    const main = doc.querySelector("main") as HTMLElement;
+    const cardA = doc.querySelector("#card-a") as HTMLElement;
+    const copyA = doc.querySelector("#copy-a") as HTMLElement;
+
+    layoutElement(main, { x: 10, y: 10, width: 400, height: 400 });
+    layoutElement(cardA, { x: 20, y: 20, width: 200, height: 100 });
+    layoutElement(copyA, { x: 30, y: 40, width: 150, height: 20 });
+
+    doc.elementsFromPoint = vi.fn(() => [copyA, cardA, main, doc.body, doc.documentElement]);
+
+    const shell = new EditorShell();
+    shell.mount({ onDeactivate: () => undefined });
+    const outlineSpy = vi.spyOn(shell, "renderSelectionOutlines");
+    const hideDebug: unknown[] = [];
+
+    const session = createEditSession({
+      shell,
+      root: doc,
+      onDebug: (message, data) => {
+        if (message === "transform-hide" || message === "hide-noop") {
+          hideDebug.push({ message, data });
+        }
+      },
+    });
+    session.start();
+
+    dispatchPointer(win, copyA, "pointerdown", { clientX: 40, clientY: 45, buttons: 1 });
+    dispatchPointer(win, copyA, "pointerup", { clientX: 40, clientY: 45, buttons: 0 });
+
+    const repeatDelete = new win.KeyboardEvent("keydown", {
+      key: "Delete",
+      repeat: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    win.dispatchEvent(repeatDelete);
+    expect(repeatDelete.defaultPrevented).toBe(false);
+    expect(copyA.style.display).not.toBe("none");
+
+    const deleteKey = new win.KeyboardEvent("keydown", {
+      key: "Delete",
+      repeat: false,
+      bubbles: true,
+      cancelable: true,
+    });
+    win.dispatchEvent(deleteKey);
+    expect(deleteKey.defaultPrevented).toBe(true);
+    expect(copyA.style.display).toBe("none");
+    expect(hideDebug.filter((entry) => (entry as { message: string }).message === "transform-hide")).toHaveLength(1);
+
+    outlineSpy.mockClear();
+    const repeatAfterHide = new win.KeyboardEvent("keydown", {
+      key: "Delete",
+      repeat: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    win.dispatchEvent(repeatAfterHide);
+    expect(repeatAfterHide.defaultPrevented).toBe(false);
+    expect(outlineSpy).not.toHaveBeenCalled();
+
+    session.stop();
+    shell.unmount();
+  });
 });

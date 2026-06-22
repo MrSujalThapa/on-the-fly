@@ -12,8 +12,13 @@ export interface ElementSignature {
   classList: string[];
   role?: string;
   ariaLabel?: string;
+  titleAttr?: string;
+  altAttr?: string;
   textFingerprint?: string;
+  srcFingerprint?: string;
   parentFingerprint?: string;
+  parentCssPath?: string;
+  ancestorTextContext?: string;
   boundingBoxHint: BoundingBoxHint;
 }
 

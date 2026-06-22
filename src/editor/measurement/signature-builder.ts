@@ -1,8 +1,12 @@
 import type { BoundingBoxHint, ElementSignature } from "../element-signature.js";
 import { isDangerousTagName } from "../validation/dangerous-selectors.js";
 import type { MatchViewport } from "../dom/types.js";
-import { getMatchViewport } from "../dom/signature-matcher.js";
-import { MAX_TEXT_FINGERPRINT_LENGTH } from "./constants.js";
+import { getMatchViewport } from "../dom/match-viewport.js";
+import {
+  MAX_ANCESTOR_TEXT_CONTEXT_LENGTH,
+  MAX_TEXT_FINGERPRINT_LENGTH,
+} from "./constants.js";
+import { fingerprintSrcValue } from "./src-fingerprint.js";
 import { extractBoundingBox } from "./bounding-box.js";
 import type { MeasurementRect } from "./types.js";
 
@@ -100,8 +104,103 @@ export function buildCssPath(element: Element, root: ParentNode = element.ownerD
 }
 
 export function buildTextFingerprint(element: Element): string | undefined {
+  const directText = truncateText(
+    normalizeText(getDirectTextContent(element)),
+    MAX_TEXT_FINGERPRINT_LENGTH,
+  );
+  if (directText) {
+    return directText;
+  }
+
   const text = truncateText(normalizeText(element.textContent), MAX_TEXT_FINGERPRINT_LENGTH);
   return text || undefined;
+}
+
+function getDirectTextContent(element: Element): string {
+  let text = "";
+  for (const node of Array.from(element.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      text += node.textContent ?? "";
+    }
+  }
+  return text;
+}
+
+export function buildSrcFingerprint(element: Element): string | undefined {
+  if (!(element instanceof HTMLImageElement)) {
+    const src = element.getAttribute("src")?.trim();
+    if (!src) {
+      return undefined;
+    }
+    return fingerprintSrcValue(src);
+  }
+
+  const src = element.currentSrc || element.src;
+  return src ? fingerprintSrcValue(src) : undefined;
+}
+
+export function buildAncestorTextContext(element: Element): string | undefined {
+  const snippets: string[] = [];
+  const parent = element.parentElement;
+  if (parent && !isDangerousTagName(parent.tagName)) {
+    const parentText = truncateText(normalizeText(parent.textContent), 80);
+    if (parentText) {
+      snippets.push(parentText);
+    }
+  }
+
+  const previous = element.previousElementSibling;
+  if (previous) {
+    const previousText = truncateText(normalizeText(previous.textContent), 40);
+    if (previousText) {
+      snippets.push(previousText);
+    }
+  }
+
+  const next = element.nextElementSibling;
+  if (next) {
+    const nextText = truncateText(normalizeText(next.textContent), 40);
+    if (nextText) {
+      snippets.push(nextText);
+    }
+  }
+
+  const combined = truncateText(normalizeText(snippets.join(" | ")), MAX_ANCESTOR_TEXT_CONTEXT_LENGTH);
+  return combined || undefined;
+}
+
+/**
+ * Builds a rich signature from a live element for persistence/replay. Prefer this
+ * over graph-derived signatures when saving hide operations.
+ */
+export function buildPersistableElementSignature(
+  element: Element,
+  options: { root?: ParentNode; viewport?: MatchViewport } = {},
+): ElementSignature {
+  const signature = buildElementSignature(element, options);
+  const titleAttr = element.getAttribute("title")?.trim();
+  const altAttr = element.getAttribute("alt")?.trim();
+  const srcFingerprint = buildSrcFingerprint(element);
+  const ancestorTextContext = buildAncestorTextContext(element);
+  const parent = element.parentElement;
+
+  if (titleAttr) {
+    signature.titleAttr = titleAttr;
+  }
+  if (altAttr) {
+    signature.altAttr = altAttr;
+  }
+  if (srcFingerprint) {
+    signature.srcFingerprint = srcFingerprint;
+  }
+  if (ancestorTextContext) {
+    signature.ancestorTextContext = ancestorTextContext;
+  }
+  if (parent && !isDangerousTagName(parent.tagName)) {
+    signature.parentCssPath = buildCssPath(parent, options.root ?? element.ownerDocument);
+  }
+
+  return signature;
 }
 
 export function buildParentFingerprint(element: Element): string | undefined {

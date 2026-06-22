@@ -1,5 +1,7 @@
 import type { VisualNode } from "../visual-node.js";
 import type { VisualLayoutGraph } from "../visual-graph/visual-layout-graph.js";
+import { isExtensionRoot, isGiantPageWrapper } from "../measurement/scan-guards.js";
+import { buildDomSelectionTarget } from "./dom-rectangle-selection.js";
 import { getFilteredElementsFromPoint, mapSampledElementToVisualNode } from "./rectangle-sampling.js";
 import { isSelectableForInteraction } from "./selection-guards.js";
 import { findNodesAtPoint } from "./point-queries.js";
@@ -255,4 +257,81 @@ export function resolveClickTargetNode(
   }
 
   return findNodesAtPoint(graph.getNodes(), x, y)[0];
+}
+
+/**
+ * Collects the page elements stacked under the cursor, ordered deepest child
+ * first up through meaningful ancestors. Stops at `html`/`body`, the extension
+ * overlay, and giant page wrappers so Alt+Click can never escape to page-level
+ * nodes. Uses the event composed path when available (most reliable, including
+ * nested anchors), falling back to `document.elementsFromPoint`.
+ */
+function collectAltClickElements(
+  graph: VisualLayoutGraph,
+  x: number,
+  y: number,
+  composedPath: EventTarget[],
+  document?: Document,
+): Element[] {
+  const viewport = graph.getViewport();
+  const fromPath = composedPath.filter(
+    (target): target is Element => target instanceof Element,
+  );
+  const ordered =
+    fromPath.length > 0
+      ? fromPath
+      : document
+        ? getFilteredElementsFromPoint(document, x, y, viewport)
+        : [];
+
+  const elements: Element[] = [];
+  for (const element of ordered) {
+    const tagName = element.tagName.toLowerCase();
+    if (tagName === "html" || tagName === "body") {
+      break;
+    }
+
+    if (isExtensionRoot(element)) {
+      continue;
+    }
+
+    if (isGiantPageWrapper(element, viewport)) {
+      break;
+    }
+
+    elements.push(element);
+  }
+
+  return elements;
+}
+
+/**
+ * Builds the Alt+Click target chain: the direct/deeper child under the cursor
+ * first, then its selectable ancestors (parent, container). Repeated Alt+Click
+ * cycles through this chain so users can reach a child inside an anchor/link
+ * that normal click would resolve to the parent link/container.
+ */
+export function buildAltClickChain(
+  graph: VisualLayoutGraph,
+  x: number,
+  y: number,
+  composedPath: EventTarget[] = [],
+  document?: Document,
+): VisualNode[] {
+  const viewport = graph.getViewport();
+  const elements = collectAltClickElements(graph, x, y, composedPath, document);
+  const chain: VisualNode[] = [];
+
+  elements.forEach((element, index) => {
+    // DOM-first: build the target from the exact element under the cursor so
+    // the child (ad title/image) resolves precisely instead of snapping to a
+    // graph node for a different element. Keeps the live element reference so
+    // transforms/hide act on exactly what was Alt+Clicked.
+    const node = buildDomSelectionTarget(element, `otf-alt-${String(index)}`, viewport);
+    if (isSelectableForInteraction(node)) {
+      chain.push(node);
+    }
+  });
+
+  return chain;
 }

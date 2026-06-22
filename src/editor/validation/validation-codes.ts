@@ -22,6 +22,7 @@ export const SUPPORTED_DOM_OPERATION_TYPES = [
   "style",
   "text",
   "hide",
+  "crop",
   "zIndex",
   "move",
   "resize",

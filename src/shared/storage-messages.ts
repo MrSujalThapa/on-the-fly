@@ -5,6 +5,7 @@ export const OTF_STORAGE_MESSAGE = {
   LOAD_PAGE_STATE: "OTF_LOAD_PAGE_STATE",
   SAVE_OPERATIONS: "OTF_SAVE_OPERATIONS",
   CLEAR_PAGE: "OTF_CLEAR_PAGE",
+  GET_PAGE_OPERATION_COUNT: "OTF_GET_PAGE_OPERATION_COUNT",
   EXPORT_DATA: "OTF_EXPORT_DATA",
   IMPORT_DATA: "OTF_IMPORT_DATA",
 } as const;
@@ -25,6 +26,11 @@ export type OtfClearPageMessage = {
   pageKey: PageKey;
 };
 
+export type OtfGetPageOperationCountMessage = {
+  type: typeof OTF_STORAGE_MESSAGE.GET_PAGE_OPERATION_COUNT;
+  pageKey: PageKey;
+};
+
 export type OtfExportDataMessage = {
   type: typeof OTF_STORAGE_MESSAGE.EXPORT_DATA;
 };
@@ -38,6 +44,7 @@ export type StorageRequestMessage =
   | OtfLoadPageStateMessage
   | OtfSaveOperationsMessage
   | OtfClearPageMessage
+  | OtfGetPageOperationCountMessage
   | OtfExportDataMessage
   | OtfImportDataMessage;
 
@@ -45,12 +52,18 @@ export interface PageStateResponse {
   ok: boolean;
   pageKey?: PageKey;
   operations?: EditorOperation[];
+  operationCount?: number;
   error?: string;
 }
 
 export interface StorageMutationResponse {
   ok: boolean;
   error?: string;
+  operationCount?: number;
+  trimmed?: number;
+  capReached?: boolean;
+  saved?: number;
+  skipped?: number;
 }
 
 export function isLoadPageStateMessage(value: unknown): value is OtfLoadPageStateMessage {
@@ -83,6 +96,19 @@ export function isClearPageMessage(value: unknown): value is OtfClearPageMessage
     value !== null &&
     "type" in value &&
     value.type === OTF_STORAGE_MESSAGE.CLEAR_PAGE &&
+    "pageKey" in value &&
+    typeof value.pageKey === "string"
+  );
+}
+
+export function isGetPageOperationCountMessage(
+  value: unknown,
+): value is OtfGetPageOperationCountMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === OTF_STORAGE_MESSAGE.GET_PAGE_OPERATION_COUNT &&
     "pageKey" in value &&
     typeof value.pageKey === "string"
   );

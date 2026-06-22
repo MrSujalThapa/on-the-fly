@@ -2,7 +2,9 @@ import { isAgentEnabled } from "../shared/build-flags.js";
 import {
   type EditModeStatus,
   OTF_MESSAGE,
+  OTF_STORAGE_MESSAGE,
   parseEditModeResponse,
+  type PageStateResponse,
 } from "../shared/messages.js";
 import { parseSettingsResponse } from "../shared/settings.js";
 import { isRestrictedUrl } from "../shared/restricted-url.js";
@@ -10,12 +12,14 @@ import { isRestrictedUrl } from "../shared/restricted-url.js";
 const buildModeEl = document.querySelector<HTMLElement>("#build-mode");
 const statusEl = document.querySelector<HTMLElement>("#edit-status");
 const toggleButton = document.querySelector<HTMLButtonElement>("#toggle-button");
+const clearPageButton = document.querySelector<HTMLButtonElement>("#clear-page");
 const diagnosticsLine = document.querySelector<HTMLElement>("#diagnostics-line");
 const openOptionsButton = document.querySelector<HTMLButtonElement>("#open-options");
 
 let activeTabId: number | undefined;
 let currentStatus: EditModeStatus = "inactive";
 let isBusy = false;
+let pageOperationCount: number | null = null;
 
 function setBuildModeLabel(): void {
   if (!buildModeEl) {
@@ -46,6 +50,11 @@ function renderUi(): void {
   statusEl.textContent = formatStatus(currentStatus);
   statusEl.dataset.status = currentStatus;
 
+  if (clearPageButton) {
+    // Clearing reverts the live page, so it requires an active edit session.
+    clearPageButton.disabled = currentStatus !== "active" || isBusy;
+  }
+
   if (currentStatus === "unavailable") {
     toggleButton.disabled = true;
     toggleButton.textContent = "Unavailable on this page";
@@ -64,6 +73,42 @@ function renderUi(): void {
   toggleButton.className = "toggle-button is-enable";
 }
 
+function derivePageKeyFromUrl(url: string | undefined): string | null {
+  if (!url) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+async function loadPageOperationCount(): Promise<number | null> {
+  const tab = await getActiveTab();
+  const pageKey = derivePageKeyFromUrl(tab?.url);
+  if (!pageKey) {
+    return null;
+  }
+
+  try {
+    const response: PageStateResponse = await chrome.runtime.sendMessage({
+      type: OTF_STORAGE_MESSAGE.GET_PAGE_OPERATION_COUNT,
+      pageKey,
+    });
+
+    if (response.ok && typeof response.operationCount === "number") {
+      return response.operationCount;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 function renderDiagnostics(settingsResponse: ReturnType<typeof parseSettingsResponse>): void {
   if (!diagnosticsLine) {
     return;
@@ -77,8 +122,10 @@ function renderDiagnostics(settingsResponse: ReturnType<typeof parseSettingsResp
 
   const restoreLabel = settingsResponse.settings.restoreEditModeOnLoad ? "On" : "Off";
   const agentLabel = diagnostics.agentEnabled ? "Enabled" : "Disabled";
+  const opsLabel =
+    pageOperationCount === null ? "—" : String(pageOperationCount);
 
-  diagnosticsLine.textContent = `v${diagnostics.extensionVersion} · Restore on load: ${restoreLabel} · Agent: ${agentLabel}`;
+  diagnosticsLine.textContent = `v${diagnostics.extensionVersion} · Restore on load: ${restoreLabel} · Agent: ${agentLabel} · Saved ops: ${opsLabel}`;
 }
 
 async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
@@ -91,6 +138,7 @@ async function loadSettingsSummary(): Promise<void> {
     const response = parseSettingsResponse(
       await chrome.runtime.sendMessage({ type: OTF_MESSAGE.GET_SETTINGS }),
     );
+    pageOperationCount = await loadPageOperationCount();
     renderDiagnostics(response);
   } catch {
     if (diagnosticsLine) {
@@ -118,7 +166,9 @@ async function refreshEditModeState(): Promise<void> {
     );
 
     currentStatus = response.status;
+    pageOperationCount = await loadPageOperationCount();
     renderUi();
+    void loadSettingsSummary();
   } catch {
     currentStatus = "unavailable";
     renderUi();
@@ -163,8 +213,35 @@ function wireOptionsButton(): void {
   });
 }
 
+async function clearCurrentPage(): Promise<void> {
+  if (activeTabId === undefined || currentStatus !== "active") {
+    return;
+  }
+
+  isBusy = true;
+  renderUi();
+
+  try {
+    await chrome.tabs.sendMessage(activeTabId, {
+      type: OTF_MESSAGE.CLEAR_PAGE_REQUEST,
+    });
+  } catch {
+    // Content script may be unavailable; storage stays intact.
+  } finally {
+    isBusy = false;
+    renderUi();
+  }
+}
+
+function wireClearPageButton(): void {
+  clearPageButton?.addEventListener("click", () => {
+    void clearCurrentPage();
+  });
+}
+
 setBuildModeLabel();
 wireToggleButton();
+wireClearPageButton();
 wireOptionsButton();
 void loadSettingsSummary();
 void refreshEditModeState();

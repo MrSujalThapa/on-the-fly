@@ -6,6 +6,8 @@ export const MIN_VISIBLE_SIZE_PX = 1;
 export const DEFAULT_ALIGNMENT_TOLERANCE_PX = 2;
 export const GIANT_NODE_AREA_RATIO = 0.92;
 export const MAX_TEXT_FINGERPRINT_LENGTH = 120;
+export const MAX_ANCESTOR_TEXT_CONTEXT_LENGTH = 160;
+export const MAX_SRC_FINGERPRINT_LENGTH = 120;
 
 export const EXCLUDED_TAG_NAMES = new Set([
   "html",

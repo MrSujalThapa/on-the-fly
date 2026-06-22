@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { DomRuntimeAdapter } from "../../../src/editor/dom/dom-runtime-adapter.js";
 import { OTF_MANAGED_ATTR } from "../../../src/editor/dom/types.js";
 import { createEmptyBoundingBoxHint } from "../../../src/editor/element-signature.js";
-import type { HideOperation, MoveOperation, StyleOperation, TextOperation } from "../../../src/editor/operations.js";
+import type { CropOperation, HideOperation, MoveOperation, StyleOperation, TextOperation } from "../../../src/editor/operations.js";
+import { OTF_CROP_ATTR } from "../../../src/editor/dom/types.js";
 import { createTestDocument } from "./test-document.js";
 
 const PAGE_KEY = "https://example.com/";
@@ -102,5 +103,31 @@ describe("DomRuntimeAdapter", () => {
     expect(element.style.transform).toContain("translate(12px, 8px)");
     expect(adapter.revertOperation(moveOperation).ok).toBe(true);
     expect(element.style.transform).toBe("");
+  });
+
+  it("applies and reverts a crop operation as inline clip-path", () => {
+    const { root } = createTestDocument(`<main><p class="intro">Hello</p></main>`);
+    const adapter = new DomRuntimeAdapter(root);
+    const target = createTargetSignature();
+    const element = root.querySelector("p.intro") as HTMLElement;
+
+    const cropOperation: CropOperation = {
+      id: "op-crop",
+      type: "crop",
+      pageKey: PAGE_KEY,
+      target,
+      payload: { top: 5, right: 10, bottom: 15, left: 20 },
+      createdAt: 5,
+      source: "manual",
+      status: "approved",
+    };
+
+    expect(adapter.applyOperation(cropOperation).ok).toBe(true);
+    expect(element.style.clipPath).toBe("inset(5px 10px 15px 20px)");
+    expect(element.getAttribute(OTF_CROP_ATTR)).toContain("\"top\":5");
+
+    expect(adapter.revertOperation(cropOperation).ok).toBe(true);
+    expect(element.style.clipPath).toBe("");
+    expect(element.getAttribute(OTF_CROP_ATTR)).toBeNull();
   });
 });
