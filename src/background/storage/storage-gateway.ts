@@ -73,6 +73,23 @@ export async function handleSaveOperations(
   }
 }
 
+export async function handleReplacePageOperations(
+  pageKey: PageKey,
+  operations: EditorOperation[],
+): Promise<StorageMutationResponse> {
+  try {
+    const result = await getStore().replacePageOperations(pageKey, operations);
+    return {
+      ok: true,
+      operationCount: result.totalCount,
+      trimmed: result.trimmed,
+      capReached: result.trimmed > 0,
+    };
+  } catch (error) {
+    return { ok: false, error: formatStorageError(error) };
+  }
+}
+
 export async function handleClearPage(pageKey: PageKey): Promise<StorageMutationResponse> {
   try {
     const removed = await getStore().clearPage(pageKey);

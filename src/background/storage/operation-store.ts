@@ -99,6 +99,15 @@ export class OperationStore {
     return this.dbPromise;
   }
 
+  /** Replaces all stored operations for a page (used by undo/clear sync). */
+  async replacePageOperations(
+    pageKey: PageKey,
+    operations: EditorOperation[],
+  ): Promise<{ totalCount: number; trimmed: number }> {
+    const valid = operations.filter((operation) => validateOperation(operation).ok);
+    return this.replacePageOperationsInternal(pageKey, valid);
+  }
+
   /**
    * Merges incoming operations with saved page state (coalescing duplicate hide
    * ops per target), then rewrites the page operation list. Returns diagnostics
@@ -132,7 +141,7 @@ export class OperationStore {
       };
     }
 
-    const { totalCount, trimmed } = await this.replacePageOperations(pageKey, merged);
+    const { totalCount, trimmed } = await this.replacePageOperationsInternal(pageKey, merged);
 
     return {
       saved: applied,
@@ -158,7 +167,7 @@ export class OperationStore {
    * Replaces all operations for a page with the merged list, reassigning
    * monotonic sequence numbers. Trims oldest ops when over the per-page cap.
    */
-  private async replacePageOperations(
+  private async replacePageOperationsInternal(
     pageKey: PageKey,
     operations: EditorOperation[],
   ): Promise<{ totalCount: number; trimmed: number }> {

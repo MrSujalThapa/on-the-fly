@@ -12,6 +12,7 @@ import {
   isClearPageMessage,
   isGetPageOperationCountMessage,
   isLoadPageStateMessage,
+  isReplacePageOperationsMessage,
   isSaveOperationsMessage,
 } from "../shared/storage-messages.js";
 import { isRestrictedUrl } from "../shared/restricted-url.js";
@@ -20,6 +21,7 @@ import {
   handleClearPage,
   handleGetPageOperationCount,
   handleLoadPageState,
+  handleReplacePageOperations,
   handleSaveOperations,
 } from "./storage/storage-gateway.js";
 import {
@@ -155,6 +157,11 @@ export function registerBackgroundMessageHandler(): void {
 
       if (isSaveOperationsMessage(message)) {
         sendResponse(await handleSaveOperations(message.pageKey, message.operations));
+        return;
+      }
+
+      if (isReplacePageOperationsMessage(message)) {
+        sendResponse(await handleReplacePageOperations(message.pageKey, message.operations));
         return;
       }
 

@@ -141,6 +141,10 @@ export class EditorShell {
     this.clearOverlayTranslate();
   }
 
+  getShadowRoot(): ShadowRoot | null {
+    return this.shadow;
+  }
+
   private attachOverlayPointerDownListener(): void {
     if (!this.overlayLayer || this.overlayPointerDownListener) {
       return;

@@ -18,11 +18,20 @@ import {
 import type { EditorSelection } from "../editor/editor-selection.js";
 import type { SelectionResolveResult } from "../editor/selection/selection-resolver.js";
 import type { LayerCommand, TransformTarget } from "../editor/transform/index.js";
-import type { EditorOperation } from "../editor/operations.js";
+import type { EditorOperation, StyleProperty } from "../editor/operations.js";
+import type { CommandContext } from "../editor/editor-command.js";
+import {
+  CommandRegistry,
+  createCommandRegistry,
+  findCommandForKeyboardEvent,
+} from "../editor/commands/command-registry.js";
 import { createDomRuntimeAdapter, type DomRuntimeAdapter } from "../editor/dom/dom-runtime-adapter.js";
+import type { VisualNodeRect, VisualNode } from "../editor/visual-node.js";
+import type { VisualNodeId } from "../editor/ids.js";
 import {
   clearPageOperations,
   loadPageOperations,
+  replacePageOperations,
   savePageOperations,
 } from "./storage-client.js";
 import { attachEditModePointerPipeline } from "./edit-mode-pointer-pipeline.js";
@@ -33,6 +42,21 @@ import {
   type TransformController,
   type TransformSelectionInput,
 } from "./transform-controller.js";
+import { createDefaultCommands, TOOLBAR_COMMAND_IDS } from "./default-commands.js";
+import type { SessionCommandHost } from "./session-command-host.js";
+import {
+  appendOperations,
+  canRedo,
+  canUndo,
+  createSessionHistory,
+  popRedoBatch,
+  popUndoBatch,
+  recordHistoryBatch,
+  removeOperationsById,
+  type SessionHistory,
+} from "./session-history.js";
+import { createStyleTextController, StyleTextController } from "./style-text-controller.js";
+import { FloatingToolbar } from "./floating-toolbar.js";
 
 export interface EditSessionOptions {
   shell: EditorShell;
@@ -40,20 +64,30 @@ export interface EditSessionOptions {
   onDebug?: (message: string, data?: unknown) => void;
 }
 
-export class EditSession {
+const DOUBLE_CLICK_MS = 400;
+
+export class EditSession implements SessionCommandHost {
   private readonly shell: EditorShell;
   private readonly root: Document;
   private readonly onDebug: (message: string, data?: unknown) => void;
   private cacheController: ReturnType<typeof createGeometryCacheController> | null = null;
   private selectionController: SelectionController | null = null;
   private transformController: TransformController | null = null;
+  private styleTextController: StyleTextController | null = null;
   private adapter: DomRuntimeAdapter | null = null;
   private pointerPipeline: EditModePointerPipeline | null = null;
+  private commandRegistry: CommandRegistry | null = null;
+  private toolbar: FloatingToolbar | null = null;
+  private sessionHistory: SessionHistory = createSessionHistory();
+  private pageOperations: EditorOperation[] = [];
   private activeGesture: PointerGestureState | null = null;
   private captureTarget: HTMLElement | null = null;
   private keyHandler: ((event: KeyboardEvent) => void) | null = null;
   private movePending = false;
   private moveActive = false;
+  private lastSelectionResult: SelectionResolveResult | null = null;
+  private lastClickTime = 0;
+  private lastClickNodeId: string | null = null;
 
   constructor(options: EditSessionOptions) {
     this.shell = options.shell;
@@ -81,10 +115,45 @@ export class EditSession {
       adapter: this.adapter,
       getPageKey: () => this.computePageKey(),
       onApply: (operations) => {
-        this.persistOperations(operations);
+        this.recordOperations(operations);
       },
       onDebug: this.onDebug,
     });
+
+    this.styleTextController = createStyleTextController({
+      document: this.root,
+      adapter: this.adapter,
+      getPageKey: () => this.computePageKey(),
+      resolveTargets: () => this.transformController?.getTargets() ?? [],
+      resolveTextTarget: () => this.transformController?.getHandleTarget() ?? null,
+      onApply: (operations) => {
+        this.recordOperations(operations);
+      },
+    });
+
+    this.commandRegistry = createCommandRegistry(createDefaultCommands(this));
+
+    const shadowRoot = this.shell.getShadowRoot();
+    if (shadowRoot) {
+      this.toolbar = new FloatingToolbar({
+        shadowRoot,
+        callbacks: {
+          onCommand: (commandId) => {
+            void this.executeCommand(commandId);
+          },
+          onStyleChange: (property, value) => {
+            this.applyStyle(property, value);
+          },
+          onTextCommit: (value) => {
+            this.applyText(value);
+          },
+          onTextCancel: () => {
+            this.toolbar?.closeTextEditor();
+          },
+        },
+      });
+      this.toolbar.mount();
+    }
 
     this.selectionController = createSelectionController({
       getGraph: () => {
@@ -127,10 +196,6 @@ export class EditSession {
     void this.loadAndReplaySavedOperations();
   }
 
-  /**
-   * Loads operations saved for this page from extension-local storage and
-   * replays them onto the live DOM in sequence. Runs on edit-mode activation.
-   */
   private async loadAndReplaySavedOperations(): Promise<void> {
     const adapter = this.adapter;
     if (!adapter) {
@@ -139,6 +204,8 @@ export class EditSession {
 
     const pageKey = this.computePageKey();
     const operations = await loadPageOperations(pageKey);
+    this.pageOperations = [...operations];
+
     if (operations.length === 0) {
       this.onDebug("replay", { pageKey, count: 0, failed: 0, resolved: 0, unresolved: 0 });
       return;
@@ -154,6 +221,17 @@ export class EditSession {
     }
 
     this.onDebug("replay", { pageKey, count: operations.length, failed, resolved, unresolved });
+  }
+
+  private recordOperations(operations: EditorOperation[]): void {
+    if (operations.length === 0) {
+      return;
+    }
+
+    this.sessionHistory = recordHistoryBatch(this.sessionHistory, operations);
+    this.pageOperations = appendOperations(this.pageOperations, operations);
+    this.persistOperations(operations);
+    this.updateToolbar();
   }
 
   private persistOperations(operations: EditorOperation[]): void {
@@ -185,16 +263,16 @@ export class EditSession {
     });
   }
 
-  /**
-   * Clears all saved operations for the current page and reverts the visible
-   * page by undoing applied effects where reversible (deterministic clear).
-   */
   async clearPage(): Promise<void> {
     const pageKey = this.computePageKey();
     await clearPageOperations(pageKey);
     this.adapter?.clearAppliedEffects();
+    this.pageOperations = [];
+    this.sessionHistory = createSessionHistory();
+    this.transformController?.setCropMode(false);
     this.selectionController?.clearSelection();
     this.transformController?.clearSelection();
+    this.toolbar?.hide();
     this.shell.clearOverlays();
     this.onDebug("clear-page", { pageKey });
   }
@@ -203,6 +281,10 @@ export class EditSession {
     this.pointerPipeline?.detach();
     this.pointerPipeline = null;
     this.detachKeyHandler();
+    this.toolbar?.unmount();
+    this.toolbar = null;
+    this.commandRegistry = null;
+    this.styleTextController = null;
     this.transformController?.dispose();
     this.transformController = null;
     this.adapter = null;
@@ -214,18 +296,248 @@ export class EditSession {
     this.captureTarget = null;
     this.movePending = false;
     this.moveActive = false;
+    this.lastSelectionResult = null;
+    this.pageOperations = [];
+    this.sessionHistory = createSessionHistory();
+  }
+
+  hideSelection(): void {
+    const operations = this.transformController?.hideSelection() ?? [];
+    if (operations.length === 0) {
+      this.onDebug("hide-noop", { reason: "already-hidden-or-no-targets" });
+      return;
+    }
+
+    this.clearSelection();
+  }
+
+  applyLayerCommand(command: LayerCommand): void {
+    this.transformController?.applyLayerCommand(command);
+  }
+
+  toggleCropMode(): boolean {
+    const enabled = this.transformController?.toggleCropMode() ?? false;
+    this.updateToolbar();
+    return enabled;
+  }
+
+  isCropMode(): boolean {
+    return this.transformController?.isCropMode() ?? false;
+  }
+
+  clearSelection(): void {
+    this.selectionController?.clearSelection();
+    this.transformController?.clearSelection();
+    this.toolbar?.closeStylePanel();
+    this.toolbar?.hide();
+    this.shell.clearOverlays();
+  }
+
+  undo(): boolean {
+    const popped = popUndoBatch(this.sessionHistory);
+    const batch = popped.batch;
+    if (!batch || !this.adapter) {
+      return false;
+    }
+
+    this.sessionHistory = popped.history;
+    for (const operation of [...batch].reverse()) {
+      this.adapter.revertOperation(operation);
+    }
+
+    const ids = new Set(batch.map((operation) => operation.id));
+    this.pageOperations = removeOperationsById(this.pageOperations, ids);
+    void replacePageOperations(this.computePageKey(), this.pageOperations);
+    this.transformController?.refreshSelectionOutline();
+    this.updateToolbar();
+    this.onDebug("undo", { count: batch.length });
+    return true;
+  }
+
+  redo(): boolean {
+    const popped = popRedoBatch(this.sessionHistory);
+    const batch = popped.batch;
+    if (!batch || !this.adapter) {
+      return false;
+    }
+
+    this.sessionHistory = popped.history;
+    for (const operation of batch) {
+      this.adapter.applyOperation(operation);
+    }
+
+    this.pageOperations = appendOperations(this.pageOperations, batch);
+    void savePageOperations(this.computePageKey(), batch);
+    this.transformController?.refreshSelectionOutline();
+    this.updateToolbar();
+    this.onDebug("redo", { count: batch.length });
+    return true;
+  }
+
+  canUndo(): boolean {
+    return canUndo(this.sessionHistory);
+  }
+
+  canRedo(): boolean {
+    return canRedo(this.sessionHistory);
+  }
+
+  applyStyle(property: StyleProperty, value: string): void {
+    this.styleTextController?.applyStyle(property, value);
+    this.transformController?.refreshSelectionOutline();
+  }
+
+  applyText(value: string): void {
+    this.styleTextController?.applyText(value);
+    this.transformController?.refreshSelectionOutline();
+  }
+
+  openTextEditor(): void {
+    const target = this.transformController?.getHandleTarget();
+    const rect = this.getAnchorRect();
+    if (!target || !rect || !this.styleTextController || !this.toolbar) {
+      return;
+    }
+
+    const initialText = this.styleTextController.readTextForTarget(target);
+    this.toolbar.openTextEditor(rect, initialText);
   }
 
   private handleSelectionChange(
     _selection: EditorSelection,
     result: SelectionResolveResult,
   ): void {
+    this.lastSelectionResult = result;
     if (!this.transformController) {
       return;
     }
 
     const input = toTransformSelectionInput(result);
     this.transformController.setSelection(input);
+    this.updateToolbar();
+  }
+
+  private updateToolbar(): void {
+    if (!this.toolbar || !this.commandRegistry) {
+      return;
+    }
+
+    const context = this.buildCommandContext();
+    const hasSelection = context.selection.selectedNodeIds.length > 0;
+    if (!hasSelection) {
+      this.toolbar.hide();
+      return;
+    }
+
+    const commands = TOOLBAR_COMMAND_IDS.flatMap((id) => {
+      const command = this.commandRegistry?.get(id);
+      if (!command) {
+        return [];
+      }
+      return [{
+        command,
+        enabled: this.commandRegistry?.isEnabled(id, context) ?? false,
+      }];
+    });
+
+    this.toolbar.renderCommands(commands, this.getAnchorRect(), {
+      "crop-mode": this.isCropMode(),
+    });
+
+    if (this.toolbar.isStylePanelOpen()) {
+      this.toolbar.setStylePanelValues(this.readStylePanelValues());
+    }
+  }
+
+  private readStylePanelValues(): Partial<Record<string, string>> {
+    const target = this.transformController?.getHandleTarget()
+      ?? this.transformController?.getTargets()[0];
+    if (!target || !this.styleTextController) {
+      return {};
+    }
+
+    return {
+      backgroundColor: this.styleTextController.readStyleForTarget(target, "backgroundColor"),
+      color: this.styleTextController.readStyleForTarget(target, "color"),
+      fontSize: this.styleTextController.readStyleForTarget(target, "fontSize"),
+      fontWeight: this.styleTextController.readStyleForTarget(target, "fontWeight"),
+      borderRadius: this.styleTextController.readStyleForTarget(target, "borderRadius"),
+      opacity: this.styleTextController.readStyleForTarget(target, "opacity"),
+    };
+  }
+
+  private toggleStylePanel(): void {
+    if (!this.toolbar) {
+      return;
+    }
+
+    const open = !this.toolbar.isStylePanelOpen();
+    this.toolbar.toggleStylePanel(open, open ? this.readStylePanelValues() : undefined);
+    this.updateToolbar();
+  }
+
+  private async executeCommand(commandId: string): Promise<void> {
+    const registry = this.commandRegistry;
+    if (!registry) {
+      return;
+    }
+
+    if (commandId === "style-panel") {
+      this.toggleStylePanel();
+      return;
+    }
+
+    if (commandId === "crop-mode") {
+      this.toggleCropMode();
+      return;
+    }
+
+    const context = this.buildCommandContext();
+    await registry.execute(commandId, context);
+  }
+
+  private buildCommandContext(): CommandContext {
+    const graph = this.cacheController?.cache.ensureFresh();
+    const selection = this.selectionController?.getSelection() ?? {
+      selectedNodeIds: [],
+      source: "click" as const,
+    };
+
+    const visualNodes = new Map<VisualNodeId, VisualNode>();
+    if (graph) {
+      for (const node of graph.getNodes()) {
+        visualNodes.set(node.id, node);
+      }
+    }
+
+    return {
+      selection,
+      visualNodes,
+      applyOperation: (operation) => {
+        if (!this.adapter) {
+          return;
+        }
+        const result = this.adapter.applyOperation(operation);
+        if (result.ok) {
+          this.recordOperations([operation]);
+        }
+      },
+      openPanel: (panelId) => {
+        if (panelId === "style") {
+          this.toggleStylePanel();
+        }
+      },
+    };
+  }
+
+  private getAnchorRect(): VisualNodeRect | null {
+    const selection = this.transformController?.getSelection();
+    if (selection && selection.outlineRects.length > 0) {
+      return selection.outlineRects[0] ?? null;
+    }
+
+    const node = this.lastSelectionResult?.resolvedNodes[0];
+    return node ? { ...node.rect } : null;
   }
 
   private computePageKey(): string {
@@ -263,21 +575,21 @@ export class EditSession {
     }
 
     this.keyHandler = (event: KeyboardEvent) => {
-      // Delete/Backspace hides the current selection (no modifier).
-      if (
-        (event.key === "Delete" || event.key === "Backspace") &&
-        !event.ctrlKey &&
-        !event.metaKey
-      ) {
-        if (event.repeat) {
-          return;
-        }
-        if (!this.transformController?.hasSelection()) {
-          return;
-        }
+      if (event.repeat) {
+        return;
+      }
+
+      const registry = this.commandRegistry;
+      if (!registry) {
+        return;
+      }
+
+      const context = this.buildCommandContext();
+      const command = findCommandForKeyboardEvent(registry, event, context);
+      if (command) {
         event.preventDefault();
         event.stopPropagation();
-        this.handleHideSelectionKey();
+        void this.executeCommand(command.id);
         return;
       }
 
@@ -286,7 +598,6 @@ export class EditSession {
       }
 
       const key = event.key.toLowerCase();
-
       if (key === "g") {
         if (!this.selectionController?.getSelection()) {
           return;
@@ -298,22 +609,6 @@ export class EditSession {
         } else {
           this.groupSelection();
         }
-        return;
-      }
-
-      // Layer shortcuts must key off `event.code` (physical key), not
-      // `event.key`: with Shift held the browser reports "}"/"{" for the
-      // bracket keys, so the Ctrl+Shift+] / Ctrl+Shift+[ variants would never
-      // match. The code stays "BracketRight"/"BracketLeft" regardless of Shift.
-      if (event.code === "BracketRight" || event.code === "BracketLeft") {
-        if (!this.transformController?.hasSelection()) {
-          return;
-        }
-        event.preventDefault();
-        event.stopPropagation();
-        this.transformController.applyLayerCommand(
-          resolveLayerCommand(event.code, event.shiftKey),
-        );
       }
     };
 
@@ -330,19 +625,13 @@ export class EditSession {
     this.keyHandler = null;
   }
 
-  private handleHideSelectionKey(): void {
-    const operations = this.transformController?.hideSelection() ?? [];
-    if (operations.length === 0) {
-      this.onDebug("hide-noop", { reason: "already-hidden-or-no-targets" });
-      return;
+  handleEscape(): boolean {
+    if (this.toolbar?.isStylePanelOpen()) {
+      this.toolbar.closeStylePanel();
+      this.updateToolbar();
+      return true;
     }
 
-    this.selectionController?.clearSelection();
-    this.transformController?.clearSelection();
-    this.shell.clearOverlays();
-  }
-
-  handleEscape(): boolean {
     if (this.transformController?.isTransforming()) {
       this.transformController.cancelMove();
       this.movePending = false;
@@ -352,9 +641,7 @@ export class EditSession {
 
     const selection = this.selectionController?.getSelection();
     if (selection && selection.selectedNodeIds.length > 0) {
-      this.selectionController?.clearSelection();
-      this.transformController?.clearSelection();
-      this.shell.clearOverlays();
+      this.clearSelection();
       return true;
     }
 
@@ -517,6 +804,34 @@ export class EditSession {
       altKey: gesture.altKey,
     });
     this.shell.renderLassoBox(null);
+
+    this.handleClickDoubleTap(result, gesture.shiftKey);
+  }
+
+  private handleClickDoubleTap(result: SelectionResolveResult, shiftKey: boolean): void {
+    const nodeId = result.resolvedNodes[0]?.id ?? null;
+    const now = Date.now();
+    const isDoubleClick =
+      nodeId !== null &&
+      nodeId === this.lastClickNodeId &&
+      now - this.lastClickTime <= DOUBLE_CLICK_MS;
+
+    this.lastClickTime = now;
+    this.lastClickNodeId = nodeId;
+
+    if (!isDoubleClick || result.resolvedNodes.length !== 1) {
+      return;
+    }
+
+    if (shiftKey) {
+      this.onDebug("agent-disabled", { reason: "shift-double-click-reserved" });
+      return;
+    }
+
+    const node = result.resolvedNodes[0];
+    if (node && (node.kind === "text" || node.kind === "button" || node.kind === "input")) {
+      this.openTextEditor();
+    }
   }
 
   private handlePointerCancel(event: PointerEvent): void {
@@ -553,13 +868,6 @@ export class EditSession {
 
 export function createEditSession(options: EditSessionOptions): EditSession {
   return new EditSession(options);
-}
-
-function resolveLayerCommand(code: string, shiftKey: boolean): LayerCommand {
-  if (code === "BracketRight") {
-    return shiftKey ? "front" : "forward";
-  }
-  return shiftKey ? "back" : "backward";
 }
 
 function toTransformSelectionInput(

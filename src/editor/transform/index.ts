@@ -15,6 +15,9 @@ export {
   buildMoveOperations,
   buildResizeOperation,
   buildRotateOperation,
+  buildStyleOperation,
+  buildStyleOperations,
+  buildTextOperation,
   buildZIndexOperation,
 } from "./operation-factory.js";
 

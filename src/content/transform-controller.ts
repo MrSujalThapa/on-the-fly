@@ -120,6 +120,7 @@ export class TransformController {
   private resizeDrag: ResizeDragState | null = null;
   private rotateDrag: RotateDragState | null = null;
   private cropDrag: CropDragState | null = null;
+  private cropModeEnabled = false;
   private handleWindowListeners: (() => void) | null = null;
   private rafId: number | null = null;
   private pendingTask: (() => void) | null = null;
@@ -150,6 +151,31 @@ export class TransformController {
 
   hasSelection(): boolean {
     return this.selection !== null && this.selection.targets.length > 0;
+  }
+
+  getSelection(): TransformSelectionInput | null {
+    return this.selection;
+  }
+
+  getTargets(): TransformTarget[] {
+    return this.selection?.targets ?? [];
+  }
+
+  getHandleTarget(): TransformTarget | null {
+    return this.selection?.handleTarget ?? null;
+  }
+
+  setCropMode(enabled: boolean): void {
+    this.cropModeEnabled = enabled;
+  }
+
+  isCropMode(): boolean {
+    return this.cropModeEnabled;
+  }
+
+  toggleCropMode(): boolean {
+    this.cropModeEnabled = !this.cropModeEnabled;
+    return this.cropModeEnabled;
   }
 
   isTransforming(): boolean {
@@ -470,7 +496,7 @@ export class TransformController {
         baseDy: stored?.dy ?? 0,
         shiftKey: event.shiftKey,
       };
-    } else if (isResizeHandleId(handleId) && event.altKey) {
+    } else if (isResizeHandleId(handleId) && (event.altKey || this.cropModeEnabled)) {
       // Alt + handle drag crops (clips) instead of resizing: distinct concept.
       this.cropDrag = {
         element,
@@ -775,6 +801,10 @@ export class TransformController {
   }
 
   /** Re-measures live elements after a transform so the outline tracks them. */
+  refreshSelectionOutline(): void {
+    this.refreshOutlineFromDom();
+  }
+
   private refreshOutlineFromDom(): void {
     if (!this.selection) {
       return;

@@ -126,6 +126,41 @@ export async function savePageOperations(
   }
 }
 
+export async function replacePageOperations(
+  pageKey: PageKey,
+  operations: EditorOperation[],
+): Promise<SavePageOperationsResult> {
+  const runtime = getRuntime();
+  if (!runtime) {
+    return { ok: false, error: "no_runtime" };
+  }
+
+  try {
+    const response = (await runtime.sendMessage({
+      type: OTF_STORAGE_MESSAGE.REPLACE_PAGE_OPERATIONS,
+      pageKey,
+      operations,
+    })) as StorageMutationResponse | undefined;
+
+    if (!response) {
+      return { ok: false, error: "empty_response" };
+    }
+
+    return {
+      ok: response.ok,
+      ...(response.operationCount !== undefined ? { operationCount: response.operationCount } : {}),
+      ...(response.trimmed !== undefined ? { trimmed: response.trimmed } : {}),
+      ...(response.capReached !== undefined ? { capReached: response.capReached } : {}),
+      ...(response.error !== undefined ? { error: response.error } : {}),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "replace_failed",
+    };
+  }
+}
+
 export async function clearPageOperations(pageKey: PageKey): Promise<boolean> {
   const runtime = getRuntime();
   if (!runtime) {

@@ -6,6 +6,9 @@ import type {
   ResizeMode,
   ResizeOperation,
   RotateOperation,
+  StyleOperation,
+  StyleProperty,
+  TextOperation,
   ZIndexOperation,
 } from "../operations.js";
 import type { EditorTarget } from "../editor-target.js";
@@ -168,6 +171,72 @@ export function buildZIndexOperation(
     type: "zIndex",
     pageKey: options.pageKey,
     target: transformTargetToEditorTarget(target),
+    payload,
+    createdAt,
+    source: "manual",
+    status: "approved",
+  };
+}
+
+export function buildStyleOperation(
+  target: TransformTarget,
+  property: StyleProperty,
+  value: string,
+  options: BuildOperationOptions,
+  previousValue?: string,
+  liveElement?: HTMLElement,
+): StyleOperation {
+  const { id, createdAt } = resolveMeta(options);
+  const payload: StyleOperation["payload"] =
+    previousValue === undefined ? { property, value } : { property, value, previousValue };
+
+  const persistedTarget: EditorTarget = liveElement
+    ? { signature: buildPersistableElementSignature(liveElement) }
+    : transformTargetToEditorTarget(target);
+
+  return {
+    id,
+    type: "style",
+    pageKey: options.pageKey,
+    target: persistedTarget,
+    payload,
+    createdAt,
+    source: "manual",
+    status: "approved",
+  };
+}
+
+export function buildStyleOperations(
+  targets: TransformTarget[],
+  property: StyleProperty,
+  value: string,
+  options: BuildOperationOptions,
+): StyleOperation[] {
+  return targets.map((target) => buildStyleOperation(target, property, value, options));
+}
+
+export function buildTextOperation(
+  target: TransformTarget,
+  value: string,
+  options: BuildOperationOptions,
+  previousValue?: string,
+  liveElement?: HTMLElement,
+): TextOperation {
+  const { id, createdAt } = resolveMeta(options);
+  const payload: TextOperation["payload"] =
+    previousValue === undefined
+      ? { value, preserveFormat: true }
+      : { value, preserveFormat: true, previousValue };
+
+  const persistedTarget: EditorTarget = liveElement
+    ? { signature: buildPersistableElementSignature(liveElement) }
+    : transformTargetToEditorTarget(target);
+
+  return {
+    id,
+    type: "text",
+    pageKey: options.pageKey,
+    target: persistedTarget,
     payload,
     createdAt,
     source: "manual",

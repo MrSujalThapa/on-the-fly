@@ -4,6 +4,7 @@ import type { EditorOperation } from "../editor/operations.js";
 export const OTF_STORAGE_MESSAGE = {
   LOAD_PAGE_STATE: "OTF_LOAD_PAGE_STATE",
   SAVE_OPERATIONS: "OTF_SAVE_OPERATIONS",
+  REPLACE_PAGE_OPERATIONS: "OTF_REPLACE_PAGE_OPERATIONS",
   CLEAR_PAGE: "OTF_CLEAR_PAGE",
   GET_PAGE_OPERATION_COUNT: "OTF_GET_PAGE_OPERATION_COUNT",
   EXPORT_DATA: "OTF_EXPORT_DATA",
@@ -17,6 +18,12 @@ export type OtfLoadPageStateMessage = {
 
 export type OtfSaveOperationsMessage = {
   type: typeof OTF_STORAGE_MESSAGE.SAVE_OPERATIONS;
+  pageKey: PageKey;
+  operations: EditorOperation[];
+};
+
+export type OtfReplacePageOperationsMessage = {
+  type: typeof OTF_STORAGE_MESSAGE.REPLACE_PAGE_OPERATIONS;
   pageKey: PageKey;
   operations: EditorOperation[];
 };
@@ -43,6 +50,7 @@ export type OtfImportDataMessage = {
 export type StorageRequestMessage =
   | OtfLoadPageStateMessage
   | OtfSaveOperationsMessage
+  | OtfReplacePageOperationsMessage
   | OtfClearPageMessage
   | OtfGetPageOperationCountMessage
   | OtfExportDataMessage
@@ -83,6 +91,21 @@ export function isSaveOperationsMessage(value: unknown): value is OtfSaveOperati
     value !== null &&
     "type" in value &&
     value.type === OTF_STORAGE_MESSAGE.SAVE_OPERATIONS &&
+    "pageKey" in value &&
+    typeof value.pageKey === "string" &&
+    "operations" in value &&
+    Array.isArray(value.operations)
+  );
+}
+
+export function isReplacePageOperationsMessage(
+  value: unknown,
+): value is OtfReplacePageOperationsMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === OTF_STORAGE_MESSAGE.REPLACE_PAGE_OPERATIONS &&
     "pageKey" in value &&
     typeof value.pageKey === "string" &&
     "operations" in value &&
