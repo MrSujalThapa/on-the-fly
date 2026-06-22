@@ -148,4 +148,150 @@ describe("FloatingToolbar", () => {
 
     shell.unmount();
   });
+
+  it("keeps first-render toolbar sizing stable and independent of selection width", () => {
+    const shell = new EditorShell();
+    shell.mount({ onDeactivate: () => undefined });
+    const shadow = shell.getShadowRoot();
+    if (!shadow) {
+      throw new Error("expected shadow root");
+    }
+
+    const toolbar = new FloatingToolbar({
+      shadowRoot: shadow,
+      callbacks: {
+        onCommand: vi.fn(),
+        onStyleChange: vi.fn(),
+        onTextCommit: vi.fn(),
+        onTextCancel: vi.fn(),
+      },
+    });
+    toolbar.mount();
+
+    toolbar.renderCommands([], { x: 10, y: 10, width: 40, height: 20 });
+    const toolbarEl = shadow.querySelector(".otf-curved-toolbar") as HTMLElement;
+    const narrowWidth = toolbarEl.dataset.width;
+
+    toolbar.renderCommands([], { x: 10, y: 10, width: 900, height: 20 });
+
+    expect(toolbarEl.dataset.width).toBe(narrowWidth);
+    expect(Number(toolbarEl.dataset.width)).toBeGreaterThanOrEqual(330);
+    expect(Number(toolbarEl.dataset.width)).toBeLessThanOrEqual(420);
+
+    shell.unmount();
+  });
+
+  it("renders style panel controls without overflowing fields", () => {
+    const shell = new EditorShell();
+    shell.mount({ onDeactivate: () => undefined });
+    const shadow = shell.getShadowRoot();
+    if (!shadow) {
+      throw new Error("expected shadow root");
+    }
+
+    const toolbar = new FloatingToolbar({
+      shadowRoot: shadow,
+      callbacks: {
+        onCommand: vi.fn(),
+        onStyleChange: vi.fn(),
+        onTextCommit: vi.fn(),
+        onTextCancel: vi.fn(),
+      },
+    });
+    toolbar.mount();
+    toolbar.renderCommands([], { x: 10, y: 10, width: 100, height: 40 });
+    toolbar.toggleStylePanel(true, { opacity: "0.5" });
+
+    const panel = shadow.querySelector(".otf-style-panel") as HTMLElement;
+    expect(panel.hidden).toBe(false);
+    expect(shadow.querySelectorAll(".otf-style-panel-grid .otf-style-field")).toHaveLength(6);
+    const opacity = shadow.querySelector('[data-style-field="opacity"]') as HTMLInputElement;
+    expect(opacity.getAttribute("min")).toBe("0");
+    expect(opacity.getAttribute("max")).toBe("1");
+    expect(shadow.querySelector("[data-style-reset]")).toBeInstanceOf(HTMLButtonElement);
+    expect(shadow.querySelector("[data-style-apply]")).toBeInstanceOf(HTMLButtonElement);
+
+    shell.unmount();
+  });
+
+  it("saves changed text with Ctrl+Enter and cancels with Escape", () => {
+    const shell = new EditorShell();
+    shell.mount({ onDeactivate: () => undefined });
+    const shadow = shell.getShadowRoot();
+    if (!shadow) {
+      throw new Error("expected shadow root");
+    }
+
+    const onTextCommit = vi.fn();
+    const onTextCancel = vi.fn();
+    const toolbar = new FloatingToolbar({
+      shadowRoot: shadow,
+      callbacks: {
+        onCommand: vi.fn(),
+        onStyleChange: vi.fn(),
+        onTextCommit,
+        onTextCancel,
+      },
+    });
+    toolbar.mount();
+
+    toolbar.openTextEditor({ x: 10, y: 10, width: 120, height: 20 }, "Hello");
+    const firstInput = shadow.querySelector(".otf-text-editor-input") as HTMLTextAreaElement;
+    firstInput.value = "Updated";
+    firstInput.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Enter",
+      ctrlKey: true,
+      bubbles: true,
+    }));
+    expect(onTextCommit).toHaveBeenCalledWith("Updated");
+
+    toolbar.openTextEditor({ x: 10, y: 10, width: 120, height: 20 }, "Hello");
+    const secondInput = shadow.querySelector(".otf-text-editor-input") as HTMLTextAreaElement;
+    secondInput.value = "Cancelled";
+    secondInput.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+    }));
+    expect(onTextCancel).toHaveBeenCalledTimes(1);
+    expect(onTextCommit).toHaveBeenCalledTimes(1);
+
+    shell.unmount();
+  });
+
+  it("saves single-line text with Enter and blur only when changed", () => {
+    const shell = new EditorShell();
+    shell.mount({ onDeactivate: () => undefined });
+    const shadow = shell.getShadowRoot();
+    if (!shadow) {
+      throw new Error("expected shadow root");
+    }
+
+    const onTextCommit = vi.fn();
+    const toolbar = new FloatingToolbar({
+      shadowRoot: shadow,
+      callbacks: {
+        onCommand: vi.fn(),
+        onStyleChange: vi.fn(),
+        onTextCommit,
+        onTextCancel: vi.fn(),
+      },
+    });
+    toolbar.mount();
+
+    toolbar.openTextEditor({ x: 10, y: 10, width: 120, height: 20 }, "Hello");
+    const unchangedInput = shadow.querySelector(".otf-text-editor-input") as HTMLTextAreaElement;
+    unchangedInput.dispatchEvent(new FocusEvent("blur", { bubbles: false }));
+    expect(onTextCommit).not.toHaveBeenCalled();
+
+    toolbar.openTextEditor({ x: 10, y: 10, width: 120, height: 20 }, "Hello");
+    const changedInput = shadow.querySelector(".otf-text-editor-input") as HTMLTextAreaElement;
+    changedInput.value = "Changed";
+    changedInput.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+    }));
+    expect(onTextCommit).toHaveBeenCalledWith("Changed");
+
+    shell.unmount();
+  });
 });

@@ -105,6 +105,31 @@ describe("DomRuntimeAdapter", () => {
     expect(element.style.transform).toBe("");
   });
 
+  it("applies and reverts text operations on blocks with inline children", () => {
+    const { root } = createTestDocument(
+      `<main><p class="intro">Hello <a>Radical Ventures</a></p></main>`,
+    );
+    const adapter = new DomRuntimeAdapter(root);
+    const target = createTargetSignature();
+    const element = root.querySelector("p.intro") as HTMLElement;
+
+    const textOperation: TextOperation = {
+      id: "op-text-block",
+      type: "text",
+      pageKey: PAGE_KEY,
+      target,
+      payload: { value: "Updated block", preserveFormat: true },
+      createdAt: 6,
+      source: "manual",
+      status: "approved",
+    };
+
+    expect(adapter.applyOperation(textOperation).ok).toBe(true);
+    expect(element.textContent).toBe("Updated block");
+    expect(adapter.revertOperation(textOperation).ok).toBe(true);
+    expect(element.textContent).toBe("Hello Radical Ventures");
+  });
+
   it("applies and reverts a crop operation as inline clip-path", () => {
     const { root } = createTestDocument(`<main><p class="intro">Hello</p></main>`);
     const adapter = new DomRuntimeAdapter(root);

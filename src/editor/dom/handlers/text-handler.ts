@@ -7,10 +7,6 @@ export function applyTextOperation(
   operation: TextOperation,
   snapshotStore: ElementSnapshotStore,
 ): AppliedDomEffect {
-  if (element.children.length > 0) {
-    throw new Error("text operation requires a leaf-like element");
-  }
-
   snapshotStore.captureIfNeeded(element);
   const previousValue = element.textContent;
 

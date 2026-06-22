@@ -123,11 +123,6 @@ export class StyleTextController {
       return [];
     }
 
-    if (element.children.length > 0) {
-      this.onDebug("text-edit-refused", { reason: "not-leaf", tag: element.tagName.toLowerCase() });
-      return [];
-    }
-
     const previousValue = element.textContent;
     const operation = buildTextOperation(
       target,

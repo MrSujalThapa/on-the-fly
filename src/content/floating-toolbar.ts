@@ -27,6 +27,9 @@ export interface FloatingToolbarOptions {
 
 const VIEWBOX_WIDTH = 520;
 const VIEWBOX_HEIGHT = 420;
+const DEFAULT_TOOLBAR_WIDTH = 390;
+const MIN_TOOLBAR_WIDTH = 330;
+const MAX_TOOLBAR_WIDTH = 420;
 const MAIN_PATH = "M 90 300 C 55 185 140 82 270 78 C 335 76 390 92 432 120";
 const MAIN_DIVIDERS = [0.12, 0.24, 0.36, 0.48, 0.6, 0.72, 0.84] as const;
 
@@ -64,6 +67,8 @@ export class FloatingToolbar {
   private panelWasDragged = false;
   private styleAnchorButton: HTMLButtonElement | null = null;
   private outsidePointerListener: ((event: PointerEvent) => void) | null = null;
+  private viewportListener: (() => void) | null = null;
+  private pendingPositionFrame: number | null = null;
   private lastAnchor: VisualNodeRect | null = null;
 
   constructor(options: FloatingToolbarOptions) {
@@ -84,6 +89,7 @@ export class FloatingToolbar {
     this.toolbarEl.hidden = true;
     this.renderToolbarStructure();
     this.wireToolbarInteractions();
+    this.attachViewportListeners();
 
     this.stylePanelEl = document.createElement("aside");
     this.stylePanelEl.className = "otf-style-panel";
@@ -102,6 +108,8 @@ export class FloatingToolbar {
 
   unmount(): void {
     this.detachOutsideListener();
+    this.detachViewportListeners();
+    this.cancelPendingPositionFrame();
     this.toolbarEl?.remove();
     this.stylePanelEl?.remove();
     this.textEditorEl?.remove();
@@ -130,6 +138,7 @@ export class FloatingToolbar {
     this.lastAnchor = anchorRect;
     if (!this.toolbarWasDragged) {
       this.positionToolbarNearSelection(anchorRect);
+      this.schedulePositionRefresh();
     }
     this.updateToolButtonPositions();
 
@@ -147,6 +156,7 @@ export class FloatingToolbar {
 
     if (this.styleOpen) {
       this.positionStylePanel();
+      this.schedulePositionRefresh();
     }
   }
 
@@ -179,6 +189,7 @@ export class FloatingToolbar {
       this.positionStylePanel(true);
       requestAnimationFrame(() => {
         this.stylePanelEl?.classList.add("is-open");
+        this.positionStylePanel(true);
       });
       this.styleOpen = true;
       this.attachOutsideListener();
@@ -256,22 +267,41 @@ export class FloatingToolbar {
     textarea.focus();
     textarea.select();
 
+    const wasMultiLine = initialText.includes("\n") || rect.height > 44;
+    let finished = false;
     const commit = (): void => {
-      if (!this.textEditorOpen) {
+      if (!this.textEditorOpen || finished) {
         return;
       }
-      this.callbacks.onTextCommit(textarea.value);
+      finished = true;
+      if (textarea.value !== initialText) {
+        this.callbacks.onTextCommit(textarea.value);
+      }
       this.closeTextEditor(false);
+    };
+
+    const cancel = (): void => {
+      if (!this.textEditorOpen || finished) {
+        return;
+      }
+      finished = true;
+      this.closeTextEditor(true);
     };
 
     textarea.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         commit();
+        return;
+      }
+      if (event.key === "Enter" && !wasMultiLine && !event.shiftKey) {
+        event.preventDefault();
+        commit();
+        return;
       }
       if (event.key === "Escape") {
         event.preventDefault();
-        this.closeTextEditor(true);
+        cancel();
       }
     });
 
@@ -284,12 +314,12 @@ export class FloatingToolbar {
     if (!this.textEditorEl || !this.textEditorOpen) {
       return;
     }
-    if (cancel) {
-      this.callbacks.onTextCancel();
-    }
     this.textEditorOpen = false;
     this.textEditorEl.hidden = true;
     this.textEditorEl.replaceChildren();
+    if (cancel) {
+      this.callbacks.onTextCancel();
+    }
   }
 
   private renderToolbarStructure(): void {
@@ -404,6 +434,27 @@ export class FloatingToolbar {
       }
       this.makePanelDraggable(event);
     });
+
+    const applyButton = this.stylePanelEl.querySelector<HTMLButtonElement>("[data-style-apply]");
+    applyButton?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeStylePanel();
+    });
+
+    const resetButton = this.stylePanelEl.querySelector<HTMLButtonElement>("[data-style-reset]");
+    resetButton?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.setStylePanelValues({
+        backgroundColor: "#ffffff",
+        color: "#000000",
+        fontSize: "",
+        fontWeight: "",
+        borderRadius: "",
+        opacity: "1",
+      });
+    });
   }
 
   private updateToolButtonPositions(): void {
@@ -445,9 +496,13 @@ export class FloatingToolbar {
     if (!this.toolbarEl) {
       return;
     }
-    const width = Math.min(440, Math.max(280, rect.width + 120));
-    const x = Math.max(14, rect.x + rect.width / 2 - width / 2);
-    const y = Math.max(14, rect.y - 130);
+    const viewportWidth = Math.max(1, window.innerWidth);
+    const viewportHeight = Math.max(1, window.innerHeight);
+    const maxWidth = Math.max(220, Math.min(MAX_TOOLBAR_WIDTH, viewportWidth - 28));
+    const minWidth = Math.min(MIN_TOOLBAR_WIDTH, maxWidth);
+    const width = clamp(DEFAULT_TOOLBAR_WIDTH, minWidth, maxWidth);
+    const x = clamp(rect.x + rect.width / 2 - width / 2, 14, viewportWidth - width - 14);
+    const y = clamp(rect.y - 126, 14, Math.max(14, viewportHeight - 164));
     this.setToolbarPlacement(x, y, width, -82);
   }
 
@@ -466,6 +521,28 @@ export class FloatingToolbar {
     this.toolbarEl.style.setProperty("--scale", String(width / VIEWBOX_WIDTH));
     const handle = this.toolbarEl.querySelector<HTMLElement>(".otf-rotate-handle");
     handle?.style.setProperty("--counter-angle", `${String(-rotation)}deg`);
+  }
+
+  private schedulePositionRefresh(): void {
+    this.cancelPendingPositionFrame();
+    this.pendingPositionFrame = requestAnimationFrame(() => {
+      this.pendingPositionFrame = null;
+      if (!this.lastAnchor || !this.toolbarEl || this.toolbarWasDragged) {
+        return;
+      }
+      this.positionToolbarNearSelection(this.lastAnchor);
+      this.updateToolButtonPositions();
+      if (this.styleOpen) {
+        this.positionStylePanel(true);
+      }
+    });
+  }
+
+  private cancelPendingPositionFrame(): void {
+    if (this.pendingPositionFrame !== null) {
+      cancelAnimationFrame(this.pendingPositionFrame);
+      this.pendingPositionFrame = null;
+    }
   }
 
   private positionStylePanel(force = false): void {
@@ -647,6 +724,31 @@ export class FloatingToolbar {
     }
   }
 
+  private attachViewportListeners(): void {
+    this.detachViewportListeners();
+    this.viewportListener = () => {
+      if (!this.lastAnchor || this.toolbarWasDragged) {
+        return;
+      }
+      this.positionToolbarNearSelection(this.lastAnchor);
+      this.updateToolButtonPositions();
+      if (this.styleOpen) {
+        this.positionStylePanel(true);
+      }
+    };
+    window.addEventListener("resize", this.viewportListener);
+    window.addEventListener("scroll", this.viewportListener, true);
+  }
+
+  private detachViewportListeners(): void {
+    if (!this.viewportListener) {
+      return;
+    }
+    window.removeEventListener("resize", this.viewportListener);
+    window.removeEventListener("scroll", this.viewportListener, true);
+    this.viewportListener = null;
+  }
+
   private isInsideOtfUi(event: PointerEvent): boolean {
     const path = typeof event.composedPath === "function" ? event.composedPath() : [];
     for (const node of path) {
@@ -730,6 +832,9 @@ function setInputValue(root: HTMLElement, field: string, value: string | undefin
 }
 
 function clamp(value: number, min: number, max: number): number {
+  if (max < min) {
+    return min;
+  }
   return Math.min(Math.max(value, min), max);
 }
 
@@ -750,10 +855,19 @@ function createStylePanelMarkup(): string {
         <input type="range" min="${String(OPACITY_MIN)}" max="${String(OPACITY_MAX)}" step="${String(OPACITY_STEP)}" value="1" data-style-field="opacity" />
       </label>
     </div>
+    <div class="otf-style-panel-actions">
+      <button type="button" data-style-reset>Reset</button>
+      <button type="button" data-style-apply>Apply</button>
+    </div>
   `;
 }
 
 const CURVED_TOOLBAR_CSS = `
+  :host, :host * {
+    box-sizing: border-box;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    letter-spacing: 0;
+  }
   .otf-curved-toolbar {
     position: fixed;
     left: 0;
@@ -771,6 +885,7 @@ const CURVED_TOOLBAR_CSS = `
     user-select: none;
     pointer-events: auto;
     z-index: 2;
+    contain: layout style paint;
   }
   .otf-curved-toolbar:active { cursor: grabbing; }
   .otf-toolbar-svg {
@@ -854,9 +969,11 @@ const CURVED_TOOLBAR_CSS = `
     left: 0;
     top: 0;
     z-index: 3;
-    width: 350px;
-    padding: 18px;
-    border-radius: 30px;
+    width: min(350px, calc(100vw - 28px));
+    min-width: min(320px, calc(100vw - 28px));
+    max-width: 350px;
+    padding: 16px;
+    border-radius: 8px;
     background: radial-gradient(circle at top left, rgba(255,255,255,0.88), transparent 45%), linear-gradient(145deg, #f6f1e6 0%, #e8dfcf 100%);
     border: 1px solid rgba(255,255,255,0.65);
     box-shadow: 0 24px 55px rgba(0,0,0,0.48), inset 0 1px 0 rgba(255,255,255,0.9);
@@ -866,6 +983,7 @@ const CURVED_TOOLBAR_CSS = `
     opacity: 0;
     pointer-events: none;
     transition: opacity 160ms ease, transform 160ms ease;
+    contain: layout style paint;
   }
   .otf-style-panel.is-open {
     opacity: 1;
@@ -887,6 +1005,7 @@ const CURVED_TOOLBAR_CSS = `
     gap: 8px;
     font-size: 16px;
     font-weight: 760;
+    line-height: 1.2;
   }
   .otf-style-panel-title-dot {
     width: 9px;
@@ -909,21 +1028,24 @@ const CURVED_TOOLBAR_CSS = `
   .otf-style-panel-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
+    gap: 10px;
   }
   .otf-style-field {
     display: grid;
     gap: 7px;
     font-size: 12px;
     font-weight: 700;
+    line-height: 1.2;
     color: rgba(32,32,32,0.62);
+    min-width: 0;
   }
   .otf-style-field input[type="text"],
   .otf-style-field input[type="color"] {
     width: 100%;
+    min-width: 0;
     height: 40px;
     border: 1px solid rgba(32,32,32,0.16);
-    border-radius: 15px;
+    border-radius: 8px;
     background: linear-gradient(180deg, rgba(255,255,255,0.56), rgba(255,255,255,0.32));
     color: #202020;
     padding: 0 12px;
@@ -931,7 +1053,41 @@ const CURVED_TOOLBAR_CSS = `
     font-size: 15px;
     font-weight: 650;
   }
-  .otf-opacity-field input[type="range"] { width: 100%; }
+  .otf-style-field input[type="color"] {
+    padding: 4px;
+  }
+  .otf-opacity-field input[type="range"] {
+    width: 100%;
+    min-width: 0;
+    accent-color: #202020;
+  }
+  .otf-opacity-field strong {
+    font: inherit;
+    color: #202020;
+  }
+  .otf-style-panel-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(32,32,32,0.12);
+  }
+  .otf-style-panel-actions button {
+    height: 34px;
+    min-width: 72px;
+    border: 1px solid rgba(32,32,32,0.14);
+    border-radius: 8px;
+    padding: 0 12px;
+    background: rgba(255,255,255,0.48);
+    color: #202020;
+    font: 700 13px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    cursor: pointer;
+  }
+  .otf-style-panel-actions button[data-style-apply] {
+    background: #202020;
+    color: #ffffff;
+  }
   .otf-text-editor {
     position: fixed;
     pointer-events: auto;

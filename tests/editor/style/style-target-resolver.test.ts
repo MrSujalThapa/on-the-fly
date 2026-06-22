@@ -75,4 +75,65 @@ describe("style-target-resolver", () => {
     const resolution = resolveStyleElementTargets("color", [targetA, targetB], document);
     expect(resolution.targets.length).toBe(2);
   });
+
+  it("promotes background changes from an inline text child to the nearest text block", () => {
+    const { document, root } = createTestDocument(`
+      <main>
+        <p id="note">Sujal from <a id="company">Radical Ventures</a> liked this.</p>
+      </main>
+    `);
+    const company = root.querySelector("#company") as HTMLElement;
+    const note = root.querySelector("#note") as HTMLElement;
+    const target: TransformTarget = {
+      nodeId: "link-1",
+      signature: {
+        cssPath: "main p#note > a#company",
+        tagName: "a",
+        classList: [],
+        boundingBoxHint: { xRatio: 0, yRatio: 0, widthRatio: 0, heightRatio: 0 },
+      },
+      rect: { x: 0, y: 0, width: 100, height: 20 },
+      element: company,
+    };
+
+    const resolution = resolveStyleElementTargets("backgroundColor", [target], document);
+    expect(resolution.targets).toHaveLength(1);
+    expect(resolution.targets[0]?.element).toBe(note);
+  });
+
+  it("applies background to each group member surface without selecting child text nodes", () => {
+    const { document, root } = createTestDocument(`
+      <main>
+        <div id="card-a"><span id="title-a">A</span></div>
+        <div id="card-b"><span id="title-b">B</span></div>
+      </main>
+    `);
+    const cardA = root.querySelector("#card-a") as HTMLElement;
+    const cardB = root.querySelector("#card-b") as HTMLElement;
+    const targetA: TransformTarget = {
+      nodeId: "group-a",
+      signature: {
+        cssPath: "main div#card-a",
+        tagName: "div",
+        classList: [],
+        boundingBoxHint: { xRatio: 0, yRatio: 0, widthRatio: 0, heightRatio: 0 },
+      },
+      rect: { x: 0, y: 0, width: 100, height: 20 },
+      element: cardA,
+    };
+    const targetB: TransformTarget = {
+      nodeId: "group-b",
+      signature: {
+        cssPath: "main div#card-b",
+        tagName: "div",
+        classList: [],
+        boundingBoxHint: { xRatio: 0, yRatio: 0, widthRatio: 0, heightRatio: 0 },
+      },
+      rect: { x: 0, y: 0, width: 100, height: 20 },
+      element: cardB,
+    };
+
+    const resolution = resolveStyleElementTargets("backgroundColor", [targetA, targetB], document);
+    expect(resolution.targets.map((target) => target.element)).toEqual([cardA, cardB]);
+  });
 });

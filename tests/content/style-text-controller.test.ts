@@ -57,6 +57,31 @@ describe("StyleTextController", () => {
     expect(element.textContent).toBe("Updated copy");
   });
 
+  it("applies text operations to promoted blocks with inline children", () => {
+    const { document, root } = createTestDocument(
+      `<main><p id="note">Someone at <a>Radical Ventures</a> viewed your profile.</p></main>`,
+    );
+    const element = root.querySelector("#note") as HTMLElement;
+    const target = {
+      nodeId: "node-1",
+      signature: createTestSignature({ cssPath: "main p#note" }),
+      rect: { x: 0, y: 0, width: 240, height: 20 },
+      element,
+    };
+
+    const controller = createStyleTextController({
+      document,
+      adapter: new DomRuntimeAdapter(root),
+      getPageKey: () => "https://example.com/",
+      resolveTargets: () => [target],
+      resolveTextTarget: () => target,
+    });
+
+    const applied = controller.applyText("Updated notification text");
+    expect(applied).toHaveLength(1);
+    expect(element.textContent).toBe("Updated notification text");
+  });
+
   it("applies text color to descendants inside a container selection", () => {
     const { document, root } = createTestDocument(`
       <main><div id="card"><span id="title">Title</span><span id="body">Body</span></div></main>
@@ -82,6 +107,68 @@ describe("StyleTextController", () => {
     expect(applied.length).toBe(2);
     expect(title.style.color).toBe("rgb(255, 0, 0)");
     expect(body.style.color).toBe("rgb(255, 0, 0)");
+  });
+
+  it("applies background to the selected container surface, not descendant text", () => {
+    const { document, root } = createTestDocument(`
+      <main><div id="card"><span id="title">Title</span><span id="body">Body</span></div></main>
+    `);
+    const card = root.querySelector("#card") as HTMLElement;
+    const title = root.querySelector("#title") as HTMLElement;
+    const body = root.querySelector("#body") as HTMLElement;
+
+    const controller = createStyleTextController({
+      document,
+      adapter: new DomRuntimeAdapter(root),
+      getPageKey: () => "https://example.com/",
+      resolveTargets: () => [{
+        nodeId: "node-card",
+        signature: createTestSignature({ cssPath: "main div#card" }),
+        rect: { x: 0, y: 0, width: 100, height: 40 },
+        element: card,
+      }],
+      resolveTextTarget: () => null,
+    });
+
+    const applied = controller.applyStyle("backgroundColor", "rgb(0, 128, 255)");
+    expect(applied.length).toBe(1);
+    expect(card.style.backgroundColor).toBe("rgb(0, 128, 255)");
+    expect(title.style.backgroundColor).toBe("");
+    expect(body.style.backgroundColor).toBe("");
+  });
+
+  it("applies background to each group member surface", () => {
+    const { document, root } = createTestDocument(`
+      <main><div id="card-a">A</div><div id="card-b">B</div></main>
+    `);
+    const cardA = root.querySelector("#card-a") as HTMLElement;
+    const cardB = root.querySelector("#card-b") as HTMLElement;
+
+    const controller = createStyleTextController({
+      document,
+      adapter: new DomRuntimeAdapter(root),
+      getPageKey: () => "https://example.com/",
+      resolveTargets: () => [
+        {
+          nodeId: "node-a",
+          signature: createTestSignature({ cssPath: "main div#card-a" }),
+          rect: { x: 0, y: 0, width: 100, height: 40 },
+          element: cardA,
+        },
+        {
+          nodeId: "node-b",
+          signature: createTestSignature({ cssPath: "main div#card-b" }),
+          rect: { x: 0, y: 0, width: 100, height: 40 },
+          element: cardB,
+        },
+      ],
+      resolveTextTarget: () => null,
+    });
+
+    const applied = controller.applyStyle("backgroundColor", "rgb(12, 34, 56)");
+    expect(applied.length).toBe(2);
+    expect(cardA.style.backgroundColor).toBe("rgb(12, 34, 56)");
+    expect(cardB.style.backgroundColor).toBe("rgb(12, 34, 56)");
   });
 
   it("ignores empty opacity input and clamps valid values", () => {

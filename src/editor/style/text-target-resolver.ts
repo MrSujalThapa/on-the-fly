@@ -15,6 +15,8 @@ export interface TextEditTargetResult {
   ok: true;
   element: HTMLElement;
   target: TransformTarget;
+  reason: "direct-leaf" | "inline-promoted-to-block" | "single-descendant" | "selected-leaf";
+  originalElement?: HTMLElement;
 }
 
 export interface TextEditRefusal {
@@ -48,6 +50,37 @@ const TEXT_LIKE_TAGS = new Set([
   "div",
 ]);
 
+const INLINE_TEXT_TAGS = new Set([
+  "span",
+  "strong",
+  "em",
+  "a",
+  "b",
+  "i",
+  "small",
+  "mark",
+  "code",
+]);
+
+const TEXT_BLOCK_TAGS = new Set([
+  "p",
+  "li",
+  "td",
+  "th",
+  "button",
+  "label",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "figcaption",
+]);
+
+const MAX_PROMOTED_TEXT_LENGTH = 700;
+const MAX_PROMOTED_DESCENDANTS = 40;
+
 export function resolveTextEditTargetAtPoint(
   document: Document,
   clientX: number,
@@ -57,17 +90,29 @@ export function resolveTextEditTargetAtPoint(
 ): TextEditResolution {
   const hit = findTextElementAtPoint(document, clientX, clientY);
   if (hit) {
-    return toResult(hit, fallbackTarget);
+    const promoted = resolvePromotedTextBlock(hit);
+    return toResult(
+      promoted ?? hit,
+      fallbackTarget,
+      promoted ? "inline-promoted-to-block" : "direct-leaf",
+      hit,
+    );
   }
 
   if (selectedElement?.isConnected) {
     const nested = findNestedTextAtPoint(selectedElement, clientX, clientY);
     if (nested) {
-      return toResult(nested, fallbackTarget);
+      const promoted = resolvePromotedTextBlock(nested, selectedElement);
+      return toResult(
+        promoted ?? nested,
+        fallbackTarget,
+        promoted ? "inline-promoted-to-block" : "direct-leaf",
+        nested,
+      );
     }
 
     if (isEditableLeaf(selectedElement)) {
-      return toResult(selectedElement, fallbackTarget);
+      return toResult(selectedElement, fallbackTarget, "selected-leaf");
     }
   }
 
@@ -84,14 +129,26 @@ export function resolveTextEditTargetForSelection(
   }
 
   if (isEditableLeaf(selectedElement)) {
-    return toResult(selectedElement, fallbackTarget);
+    const promoted = resolvePromotedTextBlock(selectedElement);
+    return toResult(
+      promoted ?? selectedElement,
+      fallbackTarget,
+      promoted ? "inline-promoted-to-block" : "selected-leaf",
+      selectedElement,
+    );
   }
 
   const descendants = collectEditableTextLeaves(selectedElement);
   if (descendants.length === 1) {
     const only = descendants[0];
     if (only) {
-      return toResult(only, fallbackTarget);
+      const promoted = resolvePromotedTextBlock(only, selectedElement);
+      return toResult(
+        promoted ?? only,
+        fallbackTarget,
+        promoted ? "inline-promoted-to-block" : "single-descendant",
+        only,
+      );
     }
   }
 
@@ -179,9 +236,76 @@ function isEditableLeaf(element: HTMLElement): boolean {
   return TEXT_LIKE_TAGS.has(tag) || element.getAttribute("role") === "textbox";
 }
 
+function resolvePromotedTextBlock(
+  element: HTMLElement,
+  stopAt?: HTMLElement,
+): HTMLElement | null {
+  const tag = element.tagName.toLowerCase();
+  if (!INLINE_TEXT_TAGS.has(tag)) {
+    return null;
+  }
+
+  let current = element.parentElement;
+  while (current && current !== element.ownerDocument.body) {
+    if (isBlockedTextEditElement(current)) {
+      return null;
+    }
+
+    if (isSafePromotedTextBlock(current, element)) {
+      return current;
+    }
+
+    if (stopAt && current === stopAt) {
+      return null;
+    }
+
+    current = current.parentElement;
+  }
+
+  return null;
+}
+
+function isSafePromotedTextBlock(candidate: HTMLElement, original: HTMLElement): boolean {
+  if (!candidate.contains(original)) {
+    return false;
+  }
+
+  const text = candidate.textContent.replace(/\s+/g, " ").trim();
+  if (!text || text.length > MAX_PROMOTED_TEXT_LENGTH) {
+    return false;
+  }
+
+  if (candidate.querySelectorAll("*").length > MAX_PROMOTED_DESCENDANTS) {
+    return false;
+  }
+
+  const tag = candidate.tagName.toLowerCase();
+  if (TEXT_BLOCK_TAGS.has(tag)) {
+    return true;
+  }
+
+  if (tag === "div") {
+    const directText = Array.from(candidate.childNodes)
+      .filter((node) => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.textContent ?? "")
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return directText.length > 0 || sentenceLike(text);
+  }
+
+  return false;
+}
+
+function sentenceLike(text: string): boolean {
+  return /\s/.test(text) && /[.!?)]?$/.test(text);
+}
+
 function toResult(
   element: HTMLElement,
   fallback: TransformTarget | null,
+  reason: TextEditTargetResult["reason"],
+  originalElement?: HTMLElement,
 ): TextEditResolution {
   if (isBlockedTextEditElement(element)) {
     return { ok: false, reason: "blocked-element", detail: element.tagName.toLowerCase() };
@@ -197,6 +321,8 @@ function toResult(
   return {
     ok: true,
     element,
+    reason,
+    ...(originalElement && originalElement !== element ? { originalElement } : {}),
     target: {
       nodeId: fallback?.nodeId ?? "text-edit",
       signature: buildPersistableElementSignature(element),

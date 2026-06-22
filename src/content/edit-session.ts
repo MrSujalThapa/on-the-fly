@@ -158,9 +158,10 @@ export class EditSession implements SessionCommandHost {
           },
           onTextCommit: (value) => {
             this.applyText(value);
+            this.textEditTarget = null;
           },
           onTextCancel: () => {
-            this.toolbar?.closeTextEditor(true);
+            this.textEditTarget = null;
           },
           onStylePanelClose: () => {
             this.updateToolbar();
@@ -410,6 +411,11 @@ export class EditSession implements SessionCommandHost {
       return;
     }
 
+    this.onDebug("text-edit-target", {
+      reason: resolution.reason,
+      tag: resolution.element.tagName.toLowerCase(),
+      originalTag: resolution.originalElement?.tagName.toLowerCase(),
+    });
     this.textEditTarget = resolution.target;
     const rect = resolution.target.rect;
     if (!this.styleTextController || !this.toolbar) {

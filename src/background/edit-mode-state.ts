@@ -12,6 +12,21 @@ export function clearEditModeForTab(tabId: number): void {
   editModeByTabId.delete(tabId);
 }
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-  clearEditModeForTab(tabId);
-});
+export function handleTabUpdatedForEditModeReset(
+  tabId: number,
+  changeInfo: chrome.tabs.TabChangeInfo,
+): void {
+  if (changeInfo.status === "loading" || changeInfo.url !== undefined) {
+    clearEditModeForTab(tabId);
+  }
+}
+
+if (typeof chrome !== "undefined") {
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    clearEditModeForTab(tabId);
+  });
+
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    handleTabUpdatedForEditModeReset(tabId, changeInfo);
+  });
+}

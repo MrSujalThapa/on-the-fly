@@ -5,6 +5,8 @@ import type { StyleProperty } from "../operations.js";
 import type { TransformTarget } from "../transform/transform-target.js";
 
 export const MAX_TEXT_DESCENDANT_STYLE_TARGETS = 50;
+export const MAX_SURFACE_PROMOTION_TEXT_LENGTH = 700;
+export const MAX_SURFACE_PROMOTION_DESCENDANTS = 80;
 
 export const CONTAINER_STYLE_PROPERTIES: ReadonlySet<StyleProperty> = new Set([
   "backgroundColor",
@@ -46,6 +48,31 @@ const SKIP_TAGS = new Set([
   "audio",
 ]);
 
+const INLINE_TEXT_TAGS = new Set([
+  "a",
+  "span",
+  "strong",
+  "em",
+  "b",
+  "i",
+  "small",
+  "mark",
+  "code",
+]);
+
+const BLOCK_SURFACE_TAGS = new Set([
+  "article",
+  "aside",
+  "blockquote",
+  "button",
+  "div",
+  "figure",
+  "li",
+  "main",
+  "p",
+  "section",
+]);
+
 export function isContainerStyleProperty(property: StyleProperty): boolean {
   return CONTAINER_STYLE_PROPERTIES.has(property);
 }
@@ -64,12 +91,14 @@ export function resolveStyleElementTargets(
   }
 
   const targets: ResolvedStyleElementTarget[] = [];
+  const seen = new Set<HTMLElement>();
   for (const target of transformTargets) {
     const element = resolveLiveElement(target, document);
     if (!element) {
       continue;
     }
-    targets.push({ element, signatureTarget: target });
+    const styleElement = resolveContainerStyleSurface(element, property);
+    pushUniqueTarget(targets, seen, styleElement, target);
   }
 
   return { targets, capped: false, skippedHidden: 0 };
@@ -140,6 +169,117 @@ function toElementStyleTarget(element: HTMLElement, fallback: TransformTarget): 
     rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
     element,
   };
+}
+
+function resolveContainerStyleSurface(
+  element: HTMLElement,
+  property: StyleProperty,
+): HTMLElement {
+  if (!shouldPromoteContainerStyle(property, element)) {
+    return element;
+  }
+
+  const promoted = findNearestVisibleSurface(element);
+  return promoted ?? element;
+}
+
+function shouldPromoteContainerStyle(property: StyleProperty, element: HTMLElement): boolean {
+  if (!isContainerStyleProperty(property)) {
+    return false;
+  }
+
+  const tag = element.tagName.toLowerCase();
+  if (INLINE_TEXT_TAGS.has(tag)) {
+    return true;
+  }
+
+  if (hasSurfaceClues(element)) {
+    return false;
+  }
+
+  const parent = element.parentElement;
+  if (!parent || isBlockedSurfaceAncestor(parent)) {
+    return false;
+  }
+
+  if (element.children.length === 0 && hasMeaningfulText(element)) {
+    return hasSurfaceClues(parent);
+  }
+
+  return false;
+}
+
+function findNearestVisibleSurface(element: HTMLElement): HTMLElement | null {
+  let current = element.parentElement;
+  while (current && !isBlockedSurfaceAncestor(current)) {
+    if (isSafeSurfaceCandidate(current, element)) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
+function isSafeSurfaceCandidate(candidate: HTMLElement, original: HTMLElement): boolean {
+  if (candidate === original || isBlockedTextEditElement(candidate)) {
+    return false;
+  }
+
+  const text = candidate.textContent.replace(/\s+/g, " ").trim();
+  if (text.length > MAX_SURFACE_PROMOTION_TEXT_LENGTH) {
+    return false;
+  }
+
+  if (candidate.querySelectorAll("*").length > MAX_SURFACE_PROMOTION_DESCENDANTS) {
+    return false;
+  }
+
+  return hasSurfaceClues(candidate);
+}
+
+function isBlockedSurfaceAncestor(element: HTMLElement): boolean {
+  const tag = element.tagName.toLowerCase();
+  return tag === "html" || tag === "body" || isExtensionRoot(element);
+}
+
+function hasSurfaceClues(element: HTMLElement): boolean {
+  const tag = element.tagName.toLowerCase();
+  if (BLOCK_SURFACE_TAGS.has(tag)) {
+    return true;
+  }
+
+  const role = element.getAttribute("role");
+  if (role === "button" || role === "article" || role === "listitem") {
+    return true;
+  }
+
+  const name = `${element.id} ${Array.from(element.classList).join(" ")}`.toLowerCase();
+  if (/\b(card|container|panel|tile|item|notification|message|profile|surface|box)\b/.test(name)) {
+    return true;
+  }
+
+  const view = element.ownerDocument.defaultView;
+  if (!view) {
+    return false;
+  }
+  const style = view.getComputedStyle(element);
+  if (style.display === "inline" || style.display === "contents") {
+    return false;
+  }
+
+  return (
+    hasVisiblePaint(style.backgroundColor) ||
+    hasVisiblePaint(style.borderColor) ||
+    style.borderRadius !== "0px" ||
+    style.boxShadow !== "none" ||
+    Number.parseFloat(style.paddingTop) > 0 ||
+    Number.parseFloat(style.paddingLeft) > 0
+  );
+}
+
+function hasVisiblePaint(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return Boolean(normalized && normalized !== "transparent" && normalized !== "rgba(0, 0, 0, 0)");
 }
 
 function resolveLiveElement(target: TransformTarget, document: Document): HTMLElement | null {
