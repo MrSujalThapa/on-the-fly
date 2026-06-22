@@ -492,5 +492,6 @@ export function buildDomSelectionTarget(
     childIds: [],
     isLikelyContainer: isLikelyContainer(element, kind),
     isPageLevel: isGiantPageWrapper(element, viewport),
+    ...(element instanceof HTMLElement ? { element } : {}),
   };
 }

@@ -224,6 +224,40 @@ export type {
   VirtualGroup,
   VirtualGroupMember,
 } from "./selection/index.js";
+export type {
+  BuildOperationOptions,
+  LayerCommand,
+  Point,
+  ResizeHandleId,
+  ResizePayloadInput,
+  ResizeResult,
+  TransformTarget,
+} from "./transform/index.js";
+export {
+  angleForPointer,
+  BACK_LAYER,
+  buildMoveOperation,
+  buildMoveOperations,
+  buildResizeOperation,
+  buildRotateOperation,
+  buildZIndexOperation,
+  computeNextLayer,
+  computeResize,
+  createOperationId,
+  FRONT_LAYER,
+  isResizeHandleId,
+  LAYER_STEP,
+  MIN_RESIZE_SIZE_PX,
+  normalizeDegrees,
+  parseLayer,
+  rectCenterPoint,
+  RESIZE_HANDLE_IDS,
+  snapDegrees,
+  toTransformTarget,
+  toTransformTargets,
+  transformTargetToEditorTarget,
+} from "./transform/index.js";
+
 export {
   SelectionController,
   buildDomSelectionTarget,

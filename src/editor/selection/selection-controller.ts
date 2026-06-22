@@ -225,6 +225,10 @@ export class SelectionController {
       return node ? { ...node.rect } : null;
     }
 
+    if (member.element?.isConnected) {
+      return rectToVisualNodeRect(extractBoundingBox(member.element));
+    }
+
     const document = this.getDocument?.();
     if (!document) {
       return null;

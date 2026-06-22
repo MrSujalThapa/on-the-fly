@@ -5,6 +5,19 @@ const ROOT_HOST_ID = "on-the-fly-root-host";
 
 export type SelectionOutlineVariant = "node" | "group";
 
+export const TRANSFORM_HANDLE_ATTR = "data-otf-handle";
+export const ROTATE_HANDLE_ID = "rotate";
+
+const RESIZE_HANDLE_LAYOUT = ["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const;
+
+export type TransformHandleId = (typeof RESIZE_HANDLE_LAYOUT)[number] | typeof ROTATE_HANDLE_ID;
+
+export interface RenderSelectionOptions {
+  handles?: boolean;
+}
+
+export type HandlePointerDownHandler = (handleId: TransformHandleId, event: PointerEvent) => void;
+
 export interface EditorShellMountOptions {
   onDeactivate: () => void;
   onEscape?: () => boolean;
@@ -17,6 +30,8 @@ export class EditorShell {
   private escapeHandler: ((event: KeyboardEvent) => void) | null = null;
   private onDeactivate: (() => void) | null = null;
   private onEscape: (() => boolean) | null = null;
+  private handlePointerDownHandler: HandlePointerDownHandler | null = null;
+  private overlayPointerDownListener: ((event: Event) => void) | null = null;
 
   isMounted(): boolean {
     return this.rootHost !== null;
@@ -54,29 +69,55 @@ export class EditorShell {
     this.shadow = shadow;
     this.overlayLayer = shadow.querySelector(".otf-overlay-layer");
     this.attachEscapeHandler();
+    this.attachOverlayPointerDownListener();
   }
 
   unmount(): void {
     this.detachEscapeHandler();
+    this.detachOverlayPointerDownListener();
     this.rootHost?.remove();
     this.rootHost = null;
     this.shadow = null;
     this.overlayLayer = null;
     this.onDeactivate = null;
     this.onEscape = null;
+    this.handlePointerDownHandler = null;
+  }
+
+  setHandlePointerDownHandler(handler: HandlePointerDownHandler | null): void {
+    this.handlePointerDownHandler = handler;
+  }
+
+  /** Live-preview helper: shifts the whole overlay layer during a move drag. */
+  translateOverlay(dx: number, dy: number): void {
+    if (this.overlayLayer) {
+      this.overlayLayer.style.transform = `translate(${String(dx)}px, ${String(dy)}px)`;
+    }
+  }
+
+  clearOverlayTranslate(): void {
+    if (this.overlayLayer) {
+      this.overlayLayer.style.removeProperty("transform");
+    }
   }
 
   renderSelectionOutlines(
     rects: VisualNodeRect[],
     variant: SelectionOutlineVariant = "node",
+    options: RenderSelectionOptions = {},
   ): void {
     if (!this.overlayLayer) {
       return;
     }
 
     this.overlayLayer.replaceChildren();
+    const withHandles = options.handles === true && rects.length === 1;
     for (const rect of rects) {
-      this.overlayLayer.appendChild(createOutlineElement(rect, variant));
+      const outline = createOutlineElement(rect, variant);
+      if (withHandles) {
+        appendTransformHandles(outline);
+      }
+      this.overlayLayer.appendChild(outline);
     }
   }
 
@@ -97,6 +138,37 @@ export class EditorShell {
 
   clearOverlays(): void {
     this.overlayLayer?.replaceChildren();
+    this.clearOverlayTranslate();
+  }
+
+  private attachOverlayPointerDownListener(): void {
+    if (!this.overlayLayer || this.overlayPointerDownListener) {
+      return;
+    }
+
+    this.overlayPointerDownListener = (event: Event) => {
+      if (!(event instanceof PointerEvent) || event.button !== 0) {
+        return;
+      }
+
+      const handleId = findHandleId(event);
+      if (!handleId || !this.handlePointerDownHandler) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      this.handlePointerDownHandler(handleId, event);
+    };
+
+    this.overlayLayer.addEventListener("pointerdown", this.overlayPointerDownListener);
+  }
+
+  private detachOverlayPointerDownListener(): void {
+    if (this.overlayLayer && this.overlayPointerDownListener) {
+      this.overlayLayer.removeEventListener("pointerdown", this.overlayPointerDownListener);
+    }
+    this.overlayPointerDownListener = null;
   }
 
   private attachEscapeHandler(): void {
@@ -193,8 +265,79 @@ function createShellStyles(): HTMLStyleElement {
       background: rgba(37, 99, 235, 0.08);
       pointer-events: none;
     }
+
+    .otf-handle {
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      margin: -6px 0 0 -6px;
+      box-sizing: border-box;
+      border: 1.5px solid #2563eb;
+      border-radius: 3px;
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+      pointer-events: auto;
+    }
+
+    .otf-handle-nw { top: 0; left: 0; cursor: nwse-resize; }
+    .otf-handle-n { top: 0; left: 50%; cursor: ns-resize; }
+    .otf-handle-ne { top: 0; left: 100%; cursor: nesw-resize; }
+    .otf-handle-e { top: 50%; left: 100%; cursor: ew-resize; }
+    .otf-handle-se { top: 100%; left: 100%; cursor: nwse-resize; }
+    .otf-handle-s { top: 100%; left: 50%; cursor: ns-resize; }
+    .otf-handle-sw { top: 100%; left: 0; cursor: nesw-resize; }
+    .otf-handle-w { top: 50%; left: 0; cursor: ew-resize; }
+
+    .otf-handle-rotate {
+      top: -28px;
+      left: 50%;
+      border-radius: 50%;
+      cursor: grab;
+    }
+
+    .otf-handle-rotate::after {
+      content: "";
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      width: 1.5px;
+      height: 16px;
+      margin-left: -0.75px;
+      background: #2563eb;
+    }
   `;
   return style;
+}
+
+function appendTransformHandles(outline: HTMLElement): void {
+  for (const id of RESIZE_HANDLE_LAYOUT) {
+    outline.appendChild(createHandleElement(id, `otf-handle otf-handle-${id}`));
+  }
+  outline.appendChild(
+    createHandleElement(ROTATE_HANDLE_ID, "otf-handle otf-handle-rotate"),
+  );
+}
+
+function createHandleElement(id: TransformHandleId, className: string): HTMLElement {
+  const handle = document.createElement("div");
+  handle.className = className;
+  handle.setAttribute(TRANSFORM_HANDLE_ATTR, id);
+  return handle;
+}
+
+function findHandleId(event: PointerEvent): TransformHandleId | null {
+  const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+  for (const target of path) {
+    if (target instanceof Element && target.hasAttribute(TRANSFORM_HANDLE_ATTR)) {
+      return target.getAttribute(TRANSFORM_HANDLE_ATTR) as TransformHandleId;
+    }
+  }
+
+  if (event.target instanceof Element && event.target.hasAttribute(TRANSFORM_HANDLE_ATTR)) {
+    return event.target.getAttribute(TRANSFORM_HANDLE_ATTR) as TransformHandleId;
+  }
+
+  return null;
 }
 
 function createActiveIndicator(): HTMLElement {

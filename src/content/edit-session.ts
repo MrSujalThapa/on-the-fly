@@ -1,6 +1,7 @@
 import {
   beginPointerGesture,
   getEventComposedPath,
+  isLassoGesture,
   normalizeLassoRect,
   resolvePointerGestureAction,
   updatePointerGesture,
@@ -14,9 +15,18 @@ import {
   createSelectionController,
   type SelectionController,
 } from "../editor/selection/selection-controller.js";
+import type { EditorSelection } from "../editor/editor-selection.js";
+import type { SelectionResolveResult } from "../editor/selection/selection-resolver.js";
+import type { LayerCommand, TransformTarget } from "../editor/transform/index.js";
+import { createDomRuntimeAdapter, type DomRuntimeAdapter } from "../editor/dom/dom-runtime-adapter.js";
 import { attachEditModePointerPipeline } from "./edit-mode-pointer-pipeline.js";
 import type { EditModePointerPipeline } from "./edit-mode-pointer-pipeline.js";
 import type { EditorShell } from "./editor-shell.js";
+import {
+  createTransformController,
+  type TransformController,
+  type TransformSelectionInput,
+} from "./transform-controller.js";
 
 export interface EditSessionOptions {
   shell: EditorShell;
@@ -30,10 +40,14 @@ export class EditSession {
   private readonly onDebug: (message: string, data?: unknown) => void;
   private cacheController: ReturnType<typeof createGeometryCacheController> | null = null;
   private selectionController: SelectionController | null = null;
+  private transformController: TransformController | null = null;
+  private adapter: DomRuntimeAdapter | null = null;
   private pointerPipeline: EditModePointerPipeline | null = null;
   private activeGesture: PointerGestureState | null = null;
   private captureTarget: HTMLElement | null = null;
   private keyHandler: ((event: KeyboardEvent) => void) | null = null;
+  private movePending = false;
+  private moveActive = false;
 
   constructor(options: EditSessionOptions) {
     this.shell = options.shell;
@@ -54,6 +68,15 @@ export class EditSession {
       },
     });
 
+    this.adapter = createDomRuntimeAdapter(this.root);
+    this.transformController = createTransformController({
+      shell: this.shell,
+      document: this.root,
+      adapter: this.adapter,
+      getPageKey: () => this.computePageKey(),
+      onDebug: this.onDebug,
+    });
+
     this.selectionController = createSelectionController({
       getGraph: () => {
         if (!this.cacheController) {
@@ -62,13 +85,8 @@ export class EditSession {
         return this.cacheController.cache.ensureFresh();
       },
       getDocument: () => this.root,
-      onSelectionChange: (_selection, result) => {
-        if (result.group) {
-          this.shell.renderSelectionOutlines([result.group.unionRect], "group");
-        } else {
-          this.shell.renderSelectionOutlines(result.resolvedNodes.map((node) => node.rect));
-        }
-        this.shell.renderLassoBox(null);
+      onSelectionChange: (selection, result) => {
+        this.handleSelectionChange(selection, result);
       },
     });
 
@@ -103,12 +121,37 @@ export class EditSession {
     this.pointerPipeline?.detach();
     this.pointerPipeline = null;
     this.detachKeyHandler();
+    this.transformController?.dispose();
+    this.transformController = null;
+    this.adapter = null;
     this.cacheController?.dispose();
     this.cacheController = null;
     this.selectionController = null;
     this.shell.clearOverlays();
     this.activeGesture = null;
     this.captureTarget = null;
+    this.movePending = false;
+    this.moveActive = false;
+  }
+
+  private handleSelectionChange(
+    _selection: EditorSelection,
+    result: SelectionResolveResult,
+  ): void {
+    if (!this.transformController) {
+      return;
+    }
+
+    const input = toTransformSelectionInput(result);
+    this.transformController.setSelection(input);
+  }
+
+  private computePageKey(): string {
+    const location = this.root.defaultView?.location;
+    if (location) {
+      return `${location.origin}${location.pathname}`;
+    }
+    return "otf://unknown";
   }
 
   groupSelection(): void {
@@ -138,22 +181,39 @@ export class EditSession {
     }
 
     this.keyHandler = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() !== "g" || !(event.ctrlKey || event.metaKey)) {
+      if (!(event.ctrlKey || event.metaKey)) {
         return;
       }
 
-      const selection = this.selectionController?.getSelection();
-      if (!selection) {
+      const key = event.key.toLowerCase();
+
+      if (key === "g") {
+        if (!this.selectionController?.getSelection()) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.shiftKey) {
+          this.ungroupSelection();
+        } else {
+          this.groupSelection();
+        }
         return;
       }
 
-      event.preventDefault();
-      event.stopPropagation();
-
-      if (event.shiftKey) {
-        this.ungroupSelection();
-      } else {
-        this.groupSelection();
+      // Layer shortcuts must key off `event.code` (physical key), not
+      // `event.key`: with Shift held the browser reports "}"/"{" for the
+      // bracket keys, so the Ctrl+Shift+] / Ctrl+Shift+[ variants would never
+      // match. The code stays "BracketRight"/"BracketLeft" regardless of Shift.
+      if (event.code === "BracketRight" || event.code === "BracketLeft") {
+        if (!this.transformController?.hasSelection()) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        this.transformController.applyLayerCommand(
+          resolveLayerCommand(event.code, event.shiftKey),
+        );
       }
     };
 
@@ -171,9 +231,17 @@ export class EditSession {
   }
 
   handleEscape(): boolean {
+    if (this.transformController?.isTransforming()) {
+      this.transformController.cancelMove();
+      this.movePending = false;
+      this.moveActive = false;
+      return true;
+    }
+
     const selection = this.selectionController?.getSelection();
     if (selection && selection.selectedNodeIds.length > 0) {
       this.selectionController?.clearSelection();
+      this.transformController?.clearSelection();
       this.shell.clearOverlays();
       return true;
     }
@@ -192,6 +260,11 @@ export class EditSession {
       event.clientY,
       event.shiftKey,
     );
+    this.movePending =
+      !event.shiftKey &&
+      (this.transformController?.hasSelection() ?? false) &&
+      (this.transformController?.hitTestSelection(event.clientX, event.clientY) ?? false);
+    this.moveActive = false;
     this.captureTarget = this.resolveCaptureTarget(event);
 
     try {
@@ -212,6 +285,28 @@ export class EditSession {
   private handlePointerMove(event: PointerEvent): void {
     if (!this.activeGesture || event.pointerId !== this.activeGesture.pointerId) {
       return;
+    }
+
+    if (this.movePending && this.transformController) {
+      if (
+        !this.moveActive &&
+        isLassoGesture(
+          this.activeGesture.startX,
+          this.activeGesture.startY,
+          event.clientX,
+          event.clientY,
+        )
+      ) {
+        this.moveActive = this.transformController.beginMove(
+          this.activeGesture.startX,
+          this.activeGesture.startY,
+        );
+      }
+
+      if (this.moveActive) {
+        this.transformController.updateMove(event.clientX, event.clientY);
+        return;
+      }
     }
 
     const previousKind = this.activeGesture.kind;
@@ -246,6 +341,17 @@ export class EditSession {
     }
 
     const gesture = this.activeGesture;
+    const wasMoveActive = this.moveActive;
+    this.movePending = false;
+    this.moveActive = false;
+
+    if (wasMoveActive && this.transformController) {
+      this.activeGesture = null;
+      this.releasePointerCapture(gesture.pointerId);
+      this.transformController.endMove(event.clientX, event.clientY);
+      return;
+    }
+
     const action = resolvePointerGestureAction(
       gesture,
       event.clientX,
@@ -302,6 +408,11 @@ export class EditSession {
       return;
     }
 
+    if (this.moveActive) {
+      this.transformController?.cancelMove();
+    }
+    this.movePending = false;
+    this.moveActive = false;
     this.activeGesture = null;
     this.releasePointerCapture(event.pointerId);
     this.shell.renderLassoBox(null);
@@ -326,4 +437,51 @@ export class EditSession {
 
 export function createEditSession(options: EditSessionOptions): EditSession {
   return new EditSession(options);
+}
+
+function resolveLayerCommand(code: string, shiftKey: boolean): LayerCommand {
+  if (code === "BracketRight") {
+    return shiftKey ? "front" : "forward";
+  }
+  return shiftKey ? "back" : "backward";
+}
+
+function toTransformSelectionInput(
+  result: SelectionResolveResult,
+): TransformSelectionInput | null {
+  if (result.group) {
+    const targets: TransformTarget[] = result.group.members.map((member) => ({
+      nodeId: member.nodeId,
+      signature: member.signature,
+      rect: { ...member.rect },
+      ...(member.element ? { element: member.element } : {}),
+    }));
+    if (targets.length === 0) {
+      return null;
+    }
+    return {
+      targets,
+      outlineRects: [result.group.unionRect],
+      variant: "group",
+      handleTarget: null,
+    };
+  }
+
+  if (result.resolvedNodes.length === 0) {
+    return null;
+  }
+
+  const targets: TransformTarget[] = result.resolvedNodes.map((node) => ({
+    nodeId: node.id,
+    signature: node.signature,
+    rect: { ...node.rect },
+    ...(node.element ? { element: node.element } : {}),
+  }));
+
+  return {
+    targets,
+    outlineRects: targets.map((target) => ({ ...target.rect })),
+    variant: "node",
+    handleTarget: targets.length === 1 ? (targets[0] ?? null) : null,
+  };
 }

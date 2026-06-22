@@ -21,6 +21,8 @@ export interface VirtualGroupMember {
   rect: VisualNodeRect;
   source: GroupMemberSource;
   isPageLevel: boolean;
+  /** Runtime-only live DOM element reference (DOM-first members). Not serialized. */
+  element?: HTMLElement;
 }
 
 export interface VirtualGroup {
@@ -54,6 +56,7 @@ export function toGroupMember(node: VisualNode, source: GroupMemberSource): Virt
     rect: { ...node.rect },
     source,
     isPageLevel: node.isPageLevel === true,
+    ...(node.element ? { element: node.element } : {}),
   };
 }
 
@@ -178,5 +181,6 @@ export function memberToVisualNode(member: VirtualGroupMember): VisualNode {
     computed: {},
     childIds: [],
     ...(member.isPageLevel ? { isPageLevel: true } : {}),
+    ...(member.element ? { element: member.element } : {}),
   };
 }

@@ -73,15 +73,21 @@ export function applyResizeOperation(
   snapshotStore.captureIfNeeded(element);
   const previousWidth = element.style.width;
   const previousHeight = element.style.height;
+  const previousBoxSizing = element.style.boxSizing;
 
   if (operation.payload.mode === "font-aware") {
     element.style.fontSize = `${String(operation.payload.height)}px`;
 
     return {
       operationId: operation.id,
-      changes: [{ kind: "size", previousWidth, previousHeight }],
+      changes: [{ kind: "size", previousWidth, previousHeight, previousBoxSizing }],
     };
   }
+
+  // Computed/selection rects are border-box. Pin box-sizing so the inline
+  // width/height we apply match the visible box on block/card/container
+  // elements that carry padding or borders (common for white card wrappers).
+  element.style.boxSizing = "border-box";
 
   const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
   state.width = operation.payload.width;
@@ -91,7 +97,7 @@ export function applyResizeOperation(
     operationId: operation.id,
     changes: [
       ...commitTransformState(element, state, previousSerialized),
-      { kind: "size", previousWidth, previousHeight },
+      { kind: "size", previousWidth, previousHeight, previousBoxSizing },
     ],
   };
 }
@@ -142,6 +148,12 @@ export function revertSizeChange(
     element.style.height = change.previousHeight;
   } else {
     element.style.removeProperty("height");
+  }
+
+  if (change.previousBoxSizing) {
+    element.style.boxSizing = change.previousBoxSizing;
+  } else {
+    element.style.removeProperty("box-sizing");
   }
 
   element.style.removeProperty("font-size");

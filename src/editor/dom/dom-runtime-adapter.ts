@@ -23,6 +23,7 @@ import {
 } from "./handlers/text-handler.js";
 import {
   applyZIndexOperation,
+  revertPositionChange,
   revertZIndexChange,
 } from "./handlers/z-index-handler.js";
 import { resolveTargetElement } from "./resolve-target.js";
@@ -50,7 +51,14 @@ export class DomRuntimeAdapter {
     return this.snapshotStore;
   }
 
-  applyOperation(operation: EditorOperation): DomApplyResult {
+  /**
+   * Applies an operation to the DOM. When `overrideElement` is supplied and is
+   * still connected, it is used directly instead of re-resolving the target by
+   * signature. This lets an active editing session transform the exact element
+   * that was selected (DOM-first selection) even if its signature would match a
+   * different element or fail to match at all.
+   */
+  applyOperation(operation: EditorOperation, overrideElement?: HTMLElement | null): DomApplyResult {
     const validation = validateOperationForDom(operation);
     if (!validation.ok) {
       return createDomApplyFailure(
@@ -70,7 +78,10 @@ export class DomRuntimeAdapter {
         );
       }
 
-      const element = resolveTargetElement(this.root, operation.target);
+      const element =
+        overrideElement && overrideElement.isConnected
+          ? overrideElement
+          : resolveTargetElement(this.root, operation.target);
       if (!element) {
         return createDomApplyFailure("target_not_found", "target_not_found");
       }
@@ -165,8 +176,10 @@ export class DomRuntimeAdapter {
         case "size":
           revertSizeChange(effect.element, change);
           break;
-        case "visibility":
         case "position":
+          revertPositionChange(effect.element, change);
+          break;
+        case "visibility":
           break;
       }
     }
