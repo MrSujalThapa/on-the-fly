@@ -87,13 +87,8 @@ export async function setLastEditModeEnabled(enabled: boolean): Promise<void> {
   });
 }
 
-export async function shouldRestoreEditModeForTab(tabId: number): Promise<boolean> {
-  if (tabId <= 0) {
-    return false;
-  }
-
-  const snapshot = await loadSettingsSnapshot();
-  return snapshot.settings.restoreEditModeOnLoad && snapshot.lastEditModeEnabled;
+export function shouldRestoreEditModeForTab(): boolean {
+  return false;
 }
 
 export function getSettingsDiagnostics(): SettingsDiagnostics {

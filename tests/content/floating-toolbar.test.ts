@@ -40,7 +40,7 @@ describe("FloatingToolbar", () => {
     };
 
     toolbar.renderCommands([], null);
-    const toolbarEl = shadow.querySelector(".otf-toolbar");
+    const toolbarEl = shadow.querySelector(".otf-curved-toolbar");
     expect(toolbarEl).toBeInstanceOf(HTMLElement);
     expect((toolbarEl as HTMLElement).hidden).toBe(true);
 
@@ -86,6 +86,65 @@ describe("FloatingToolbar", () => {
     const button = shadow.querySelector("[data-command-id='bring-forward']") as HTMLButtonElement;
     button.click();
     expect(onCommand).toHaveBeenCalledWith("bring-forward");
+
+    shell.unmount();
+  });
+
+  it("renders only one contextual curved toolbar without a duplicate top-left panel", () => {
+    const shell = new EditorShell();
+    shell.mount({ onDeactivate: () => undefined });
+    const shadow = shell.getShadowRoot();
+    if (!shadow) {
+      throw new Error("expected shadow root");
+    }
+
+    const toolbar = new FloatingToolbar({
+      shadowRoot: shadow,
+      callbacks: {
+        onCommand: vi.fn(),
+        onStyleChange: vi.fn(),
+        onTextCommit: vi.fn(),
+        onTextCancel: vi.fn(),
+      },
+    });
+    toolbar.mount();
+    toolbar.renderCommands([], { x: 10, y: 10, width: 100, height: 40 });
+
+    expect(shadow.querySelectorAll(".otf-curved-toolbar")).toHaveLength(1);
+    expect(shadow.querySelector(".rotation-controls")).toBeNull();
+    expect(shadow.querySelectorAll('[data-otf-ui="toolbar"]')).toHaveLength(1);
+
+    shell.unmount();
+  });
+
+  it("closes the style panel from the close button", () => {
+    const shell = new EditorShell();
+    shell.mount({ onDeactivate: () => undefined });
+    const shadow = shell.getShadowRoot();
+    if (!shadow) {
+      throw new Error("expected shadow root");
+    }
+
+    const onStylePanelClose = vi.fn();
+    const toolbar = new FloatingToolbar({
+      shadowRoot: shadow,
+      callbacks: {
+        onCommand: vi.fn(),
+        onStyleChange: vi.fn(),
+        onTextCommit: vi.fn(),
+        onTextCancel: vi.fn(),
+        onStylePanelClose,
+      },
+    });
+    toolbar.mount();
+    toolbar.renderCommands([], { x: 10, y: 10, width: 100, height: 40 });
+    toolbar.toggleStylePanel(true, { opacity: "1" });
+
+    expect(toolbar.isStylePanelOpen()).toBe(true);
+    const closeButton = shadow.querySelector("[data-style-close]") as HTMLButtonElement;
+    closeButton.click();
+    expect(toolbar.isStylePanelOpen()).toBe(false);
+    expect(onStylePanelClose).toHaveBeenCalled();
 
     shell.unmount();
   });

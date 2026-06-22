@@ -6,9 +6,13 @@ import {
 } from "../shared/messages.js";
 import { createEditSession, type EditSession } from "./edit-session.js";
 import { EditorShell } from "./editor-shell.js";
+import { PageCustomizationController } from "./page-customization-controller.js";
 
 const shell = new EditorShell();
+const pageCustomization = new PageCustomizationController(document);
 let editSession: EditSession | null = null;
+
+void pageCustomization.ensureReplayed();
 
 async function requestEditModeDisable(): Promise<void> {
   const response = parseEditModeResponse(
@@ -30,6 +34,7 @@ function applyEditMode(enabled: boolean): void {
     const session = createEditSession({
       shell,
       root: document,
+      pageCustomization,
     });
 
     shell.mount({
@@ -38,7 +43,7 @@ function applyEditMode(enabled: boolean): void {
       },
       onEscape: () => session.handleEscape(),
     });
-    session.start();
+    void session.start();
     editSession = session;
     return;
   }
@@ -72,13 +77,9 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   }
 
   if (isClearPageRequestMessage(message)) {
-    if (!editSession) {
-      sendResponse({ ok: false, error: "edit_mode_inactive" });
-      return true;
-    }
-
-    void editSession.clearPage().then(
+    void pageCustomization.clearPage().then(
       () => {
+        editSession?.afterExternalClearPage();
         sendResponse({ ok: true });
       },
       () => {

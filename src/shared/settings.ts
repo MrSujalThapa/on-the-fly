@@ -91,10 +91,7 @@ export function normalizeExtensionSettings(value: unknown): ExtensionSettings {
 
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
-    restoreEditModeOnLoad:
-      typeof candidate.restoreEditModeOnLoad === "boolean"
-        ? candidate.restoreEditModeOnLoad
-        : DEFAULT_EXTENSION_SETTINGS.restoreEditModeOnLoad,
+    restoreEditModeOnLoad: false,
     toolbarPlacement: isToolbarPlacement(candidate.toolbarPlacement)
       ? candidate.toolbarPlacement
       : DEFAULT_EXTENSION_SETTINGS.toolbarPlacement,

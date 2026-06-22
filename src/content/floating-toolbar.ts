@@ -1,14 +1,7 @@
 import type { StyleProperty } from "../editor/operations.js";
 import type { VisualNodeRect } from "../editor/visual-node.js";
 import type { ResolvedCommand } from "../editor/commands/command-registry.js";
-
-export interface ToolbarButtonView {
-  id: string;
-  label: string;
-  icon: string;
-  enabled: boolean;
-  active?: boolean;
-}
+import { OPACITY_MAX, OPACITY_MIN, OPACITY_STEP } from "../editor/style/opacity-value.js";
 
 export interface StylePanelValues {
   backgroundColor: string;
@@ -24,6 +17,7 @@ export interface FloatingToolbarCallbacks {
   onStyleChange: (property: StyleProperty, value: string) => void;
   onTextCommit: (value: string) => void;
   onTextCancel: () => void;
+  onStylePanelClose?: () => void;
 }
 
 export interface FloatingToolbarOptions {
@@ -31,23 +25,31 @@ export interface FloatingToolbarOptions {
   callbacks: FloatingToolbarCallbacks;
 }
 
-const ICONS: Record<string, string> = {
-  "eye-off":
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 5c-4.5 0-8.2 2.6-10 6.5 1.8 3.9 5.5 6.5 10 6.5s8.2-2.6 10-6.5C20.2 7.6 16.5 5 12 5Zm0 11a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9Zm0-2.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"/></svg>',
-  "layer-up":
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 4 3 10l1.5 1.2L12 6.8l7.5 4.4L21 10 12 4Zm0 6-7.5 4.5L12 17l7.5-2.5L12 10Z"/></svg>',
-  "layer-down":
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 20 21 14l-1.5-1.2L12 17.2 4.5 12.8 3 14l9 6Zm0-6 7.5-4.5L12 7 4.5 9.5 12 14Z"/></svg>',
-  crop:
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 17V7H17v2h-6v8H7Zm10-2V7h2v10h-8v-2h6Z"/></svg>',
-  palette:
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 0 0-1 17.9V19a2 2 0 0 0 2-2v-.5c3.1-.4 5.5-3 5.5-6.2C18.5 6.5 15.6 3 12 3Zm-3.5 7a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Zm3-3.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Zm3.5 1a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Zm3 3.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Z"/></svg>',
-  text:
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M5 5v3h5v11h3V8h5V5H5Z"/></svg>',
-  undo:
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 7h8a5 5 0 0 1 0 10H9v-2h6a3 3 0 1 0 0-6H9l3 3-2 2-5-5 5-5 2 2-3 3Z"/></svg>',
-  redo:
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M17 7H9a5 5 0 0 0 0 10h6v-2H9a3 3 0 1 1 0-6h6l-3-3 2-2 5 5-5 5-2-2 3-3Z"/></svg>',
+const VIEWBOX_WIDTH = 520;
+const VIEWBOX_HEIGHT = 420;
+const MAIN_PATH = "M 90 300 C 55 185 140 82 270 78 C 335 76 390 92 432 120";
+const MAIN_DIVIDERS = [0.12, 0.24, 0.36, 0.48, 0.6, 0.72, 0.84] as const;
+
+const COMMAND_LAYOUT: Array<{ id: string; tool: string; label: string; at: number }> = [
+  { id: "hide", tool: "hide", label: "Hide", at: 0.06 },
+  { id: "send-backward", tool: "backward", label: "Send backward", at: 0.18 },
+  { id: "bring-forward", tool: "forward", label: "Send forward", at: 0.3 },
+  { id: "crop-mode", tool: "crop", label: "Crop mode", at: 0.42 },
+  { id: "style-panel", tool: "style", label: "Style", at: 0.54 },
+  { id: "text-edit", tool: "text", label: "Edit text", at: 0.66 },
+  { id: "undo", tool: "undo", label: "Undo", at: 0.78 },
+  { id: "redo", tool: "redo", label: "Redo", at: 0.9 },
+];
+
+const TOOL_ICONS: Record<string, string> = {
+  hide: `<svg viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="3"/><path d="M4 4l16 16"/></svg>`,
+  backward: `<svg viewBox="0 0 24 24"><rect x="8" y="8" width="9" height="9" rx="1.5"/><path d="M5 5h9"/><path d="M5 5v9"/></svg>`,
+  forward: `<svg viewBox="0 0 24 24"><rect x="7" y="7" width="9" height="9" rx="1.5"/><path d="M10 4h9"/><path d="M19 4v9"/></svg>`,
+  crop: `<svg viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M2 6h14a2 2 0 0 1 2 2v14"/></svg>`,
+  style: `<svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0 0 18h1.5a1.8 1.8 0 0 0 1.3-3.05 1.2 1.2 0 0 1 .85-2.05H17a4 4 0 0 0 4-4c0-4.9-4-8.9-9-8.9Z"/><circle cx="7.5" cy="10" r="1"/><circle cx="10.5" cy="7.5" r="1"/><circle cx="14" cy="7.5" r="1"/><circle cx="16.5" cy="10.5" r="1"/></svg>`,
+  text: `<svg viewBox="0 0 24 24"><path d="M4 6V4h16v2"/><path d="M12 4v16"/><path d="M8 20h8"/></svg>`,
+  undo: `<svg viewBox="0 0 24 24"><path d="M4 7v6h6"/><path d="M20 17A8 8 0 0 0 6.5 11.2L4 13"/></svg>`,
+  redo: `<svg viewBox="0 0 24 24"><path d="M20 7v6h-6"/><path d="M4 17a8 8 0 0 1 13.5-5.8L20 13"/></svg>`,
 };
 
 export class FloatingToolbar {
@@ -57,6 +59,11 @@ export class FloatingToolbar {
   private stylePanelEl: HTMLElement | null = null;
   private textEditorEl: HTMLElement | null = null;
   private styleOpen = false;
+  private textEditorOpen = false;
+  private toolbarWasDragged = false;
+  private panelWasDragged = false;
+  private styleAnchorButton: HTMLButtonElement | null = null;
+  private outsidePointerListener: ((event: PointerEvent) => void) | null = null;
   private lastAnchor: VisualNodeRect | null = null;
 
   constructor(options: FloatingToolbarOptions) {
@@ -71,24 +78,30 @@ export class FloatingToolbar {
     }
 
     this.toolbarEl = document.createElement("div");
-    this.toolbarEl.className = "otf-toolbar";
+    this.toolbarEl.className = "otf-curved-toolbar";
+    this.toolbarEl.setAttribute("data-otf-ui", "toolbar");
     this.toolbarEl.setAttribute("role", "toolbar");
     this.toolbarEl.hidden = true;
+    this.renderToolbarStructure();
+    this.wireToolbarInteractions();
 
-    this.stylePanelEl = document.createElement("div");
+    this.stylePanelEl = document.createElement("aside");
     this.stylePanelEl.className = "otf-style-panel";
+    this.stylePanelEl.setAttribute("data-otf-ui", "style-panel");
     this.stylePanelEl.hidden = true;
     this.stylePanelEl.innerHTML = createStylePanelMarkup();
+    this.wireStylePanel();
 
     this.textEditorEl = document.createElement("div");
     this.textEditorEl.className = "otf-text-editor";
+    this.textEditorEl.setAttribute("data-otf-ui", "text-editor");
     this.textEditorEl.hidden = true;
 
     this.shadowRoot.append(this.toolbarEl, this.stylePanelEl, this.textEditorEl);
-    this.wireStylePanel();
   }
 
   unmount(): void {
+    this.detachOutsideListener();
     this.toolbarEl?.remove();
     this.stylePanelEl?.remove();
     this.textEditorEl?.remove();
@@ -96,6 +109,7 @@ export class FloatingToolbar {
     this.stylePanelEl = null;
     this.textEditorEl = null;
     this.styleOpen = false;
+    this.textEditorOpen = false;
     this.lastAnchor = null;
   }
 
@@ -108,42 +122,45 @@ export class FloatingToolbar {
       return;
     }
 
-    if (!anchorRect || commands.length === 0) {
-      this.hide();
+    if (!anchorRect) {
+      this.hideToolbarOnly();
       return;
     }
 
     this.lastAnchor = anchorRect;
-    this.toolbarEl.replaceChildren();
-    for (const entry of commands) {
-      const button = createToolbarButton(
-        entry.command.id,
-        entry.command.label,
-        entry.command.icon,
-        entry.enabled,
-        activeStates[entry.command.id] === true,
-      );
-      this.toolbarEl.appendChild(button);
+    if (!this.toolbarWasDragged) {
+      this.positionToolbarNearSelection(anchorRect);
+    }
+    this.updateToolButtonPositions();
+
+    for (const layout of COMMAND_LAYOUT) {
+      const button = this.toolbarEl.querySelector<HTMLButtonElement>(`[data-command-id="${layout.id}"]`);
+      if (!button) {
+        continue;
+      }
+      const entry = commands.find((item) => item.command.id === layout.id);
+      button.disabled = entry ? !entry.enabled : true;
+      button.classList.toggle("selected", activeStates[layout.id] === true);
     }
 
-    this.wireToolbarButtons();
-    this.positionNearRect(this.toolbarEl, anchorRect);
     this.toolbarEl.hidden = false;
 
-    if (this.styleOpen && this.stylePanelEl) {
-      this.stylePanelEl.hidden = false;
-      this.positionNearRect(this.stylePanelEl, anchorRect, 48);
+    if (this.styleOpen) {
+      this.positionStylePanel();
     }
   }
 
   hide(): void {
+    this.hideToolbarOnly();
+    this.closeStylePanel();
+    this.closeTextEditor(true);
+    this.lastAnchor = null;
+  }
+
+  hideToolbarOnly(): void {
     if (this.toolbarEl) {
       this.toolbarEl.hidden = true;
-      this.toolbarEl.replaceChildren();
     }
-    this.closeStylePanel();
-    this.closeTextEditor();
-    this.lastAnchor = null;
   }
 
   toggleStylePanel(open: boolean, values?: Partial<StylePanelValues>): void {
@@ -151,50 +168,70 @@ export class FloatingToolbar {
       return;
     }
 
-    this.styleOpen = open;
-    this.stylePanelEl.hidden = !open;
-
-    if (open && values) {
-      this.setStylePanelValues(values);
+    if (open) {
+      this.styleAnchorButton =
+        this.toolbarEl?.querySelector<HTMLButtonElement>('[data-command-id="style-panel"]') ?? null;
+      this.panelWasDragged = false;
+      this.stylePanelEl.hidden = false;
+      if (values) {
+        this.setStylePanelValues(values);
+      }
+      this.positionStylePanel(true);
+      requestAnimationFrame(() => {
+        this.stylePanelEl?.classList.add("is-open");
+      });
+      this.styleOpen = true;
+      this.attachOutsideListener();
+      return;
     }
 
-    if (open && this.lastAnchor) {
-      this.positionNearRect(this.stylePanelEl, this.lastAnchor, 48);
-    }
+    this.closeStylePanel();
   }
 
   closeStylePanel(): void {
-    this.styleOpen = false;
-    if (this.stylePanelEl) {
-      this.stylePanelEl.hidden = true;
+    if (!this.stylePanelEl || !this.styleOpen) {
+      return;
     }
+    this.styleOpen = false;
+    this.stylePanelEl.classList.remove("is-open");
+    this.detachOutsideListener();
+    window.setTimeout(() => {
+      if (this.stylePanelEl && !this.styleOpen) {
+        this.stylePanelEl.hidden = true;
+      }
+    }, 160);
+    this.styleAnchorButton = null;
+    this.panelWasDragged = false;
+    this.callbacks.onStylePanelClose?.();
   }
 
   isStylePanelOpen(): boolean {
     return this.styleOpen;
   }
 
+  isTextEditorOpen(): boolean {
+    return this.textEditorOpen;
+  }
+
   setStylePanelValues(values: Partial<StylePanelValues>): void {
     if (!this.stylePanelEl) {
       return;
     }
-
-    const set = (name: string, value: string | undefined): void => {
-      if (value === undefined) {
-        return;
+    setInputValue(this.stylePanelEl, "backgroundColor", values.backgroundColor);
+    setInputValue(this.stylePanelEl, "color", values.color);
+    setInputValue(this.stylePanelEl, "fontSize", values.fontSize);
+    setInputValue(this.stylePanelEl, "fontWeight", values.fontWeight);
+    setInputValue(this.stylePanelEl, "borderRadius", values.borderRadius);
+    if (values.opacity !== undefined) {
+      const range = this.stylePanelEl.querySelector<HTMLInputElement>('[data-style-field="opacity"]');
+      if (range) {
+        range.value = values.opacity;
       }
-      const input = this.stylePanelEl?.querySelector<HTMLInputElement>(`[data-style-field="${name}"]`);
-      if (input) {
-        input.value = value;
+      const readout = this.stylePanelEl.querySelector<HTMLSpanElement>('[data-opacity-readout]');
+      if (readout) {
+        readout.textContent = values.opacity;
       }
-    };
-
-    set("backgroundColor", values.backgroundColor);
-    set("color", values.color);
-    set("fontSize", values.fontSize);
-    set("fontWeight", values.fontWeight);
-    set("borderRadius", values.borderRadius);
-    set("opacity", values.opacity);
+    }
   }
 
   openTextEditor(rect: VisualNodeRect, initialText: string): void {
@@ -214,13 +251,17 @@ export class FloatingToolbar {
     this.textEditorEl.style.width = `${String(Math.max(rect.width, 120))}px`;
     this.textEditorEl.style.minHeight = `${String(Math.max(rect.height, 32))}px`;
     this.textEditorEl.hidden = false;
+    this.textEditorOpen = true;
 
     textarea.focus();
     textarea.select();
 
     const commit = (): void => {
+      if (!this.textEditorOpen) {
+        return;
+      }
       this.callbacks.onTextCommit(textarea.value);
-      this.closeTextEditor();
+      this.closeTextEditor(false);
     };
 
     textarea.addEventListener("keydown", (event) => {
@@ -230,8 +271,7 @@ export class FloatingToolbar {
       }
       if (event.key === "Escape") {
         event.preventDefault();
-        this.callbacks.onTextCancel();
-        this.closeTextEditor();
+        this.closeTextEditor(true);
       }
     });
 
@@ -240,20 +280,58 @@ export class FloatingToolbar {
     });
   }
 
-  closeTextEditor(): void {
-    if (this.textEditorEl) {
-      this.textEditorEl.hidden = true;
-      this.textEditorEl.replaceChildren();
+  closeTextEditor(cancel: boolean): void {
+    if (!this.textEditorEl || !this.textEditorOpen) {
+      return;
     }
+    if (cancel) {
+      this.callbacks.onTextCancel();
+    }
+    this.textEditorOpen = false;
+    this.textEditorEl.hidden = true;
+    this.textEditorEl.replaceChildren();
   }
 
-  private wireToolbarButtons(): void {
+  private renderToolbarStructure(): void {
     if (!this.toolbarEl) {
       return;
     }
 
-    for (const button of Array.from(this.toolbarEl.querySelectorAll<HTMLButtonElement>("[data-command-id]"))) {
-      button.onclick = (event: MouseEvent) => {
+    this.toolbarEl.innerHTML = `
+      <svg class="otf-toolbar-svg" viewBox="0 0 ${String(VIEWBOX_WIDTH)} ${String(VIEWBOX_HEIGHT)}" aria-hidden="true">
+        <path class="otf-toolbar-path" d="${MAIN_PATH}" />
+      </svg>
+    `;
+
+    const path = this.toolbarEl.querySelector("path");
+    if (!path) {
+      return;
+    }
+
+    for (const dividerAt of MAIN_DIVIDERS) {
+      this.toolbarEl.appendChild(createDivider(path, dividerAt, this.toolbarEl));
+    }
+
+    for (const item of COMMAND_LAYOUT) {
+      this.toolbarEl.appendChild(createToolButton(path, item, this.toolbarEl));
+    }
+
+    const rotateHandle = document.createElement("button");
+    rotateHandle.type = "button";
+    rotateHandle.className = "otf-rotate-handle";
+    rotateHandle.title = "Drag to rotate toolbar";
+    rotateHandle.innerHTML =
+      '<svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
+    this.toolbarEl.appendChild(rotateHandle);
+  }
+
+  private wireToolbarInteractions(): void {
+    if (!this.toolbarEl) {
+      return;
+    }
+
+    for (const button of Array.from(this.toolbarEl.querySelectorAll<HTMLButtonElement>(".otf-tool-btn"))) {
+      button.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
         if (button.disabled) {
@@ -263,8 +341,11 @@ export class FloatingToolbar {
         if (id) {
           this.callbacks.onCommand(id);
         }
-      };
+      });
     }
+
+    this.makeToolbarDraggable();
+    this.makeToolbarRotatable();
   }
 
   private wireStylePanel(): void {
@@ -272,24 +353,26 @@ export class FloatingToolbar {
       return;
     }
 
+    const closeButton = this.stylePanelEl.querySelector<HTMLButtonElement>("[data-style-close]");
+    closeButton?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeStylePanel();
+    });
+
     const bindings: Array<{ field: string; property: StyleProperty; transform?: (v: string) => string }> = [
       { field: "backgroundColor", property: "backgroundColor" },
       { field: "color", property: "color" },
       { field: "fontSize", property: "fontSize", transform: (v) => (/^\d+$/.test(v) ? `${v}px` : v) },
       { field: "fontWeight", property: "fontWeight" },
       { field: "borderRadius", property: "borderRadius", transform: (v) => (/^\d+$/.test(v) ? `${v}px` : v) },
-      { field: "opacity", property: "opacity" },
     ];
 
     for (const binding of bindings) {
       const input = this.stylePanelEl.querySelector<HTMLInputElement>(
         `[data-style-field="${binding.field}"]`,
       );
-      if (!input) {
-        continue;
-      }
-
-      input.addEventListener("change", () => {
+      input?.addEventListener("change", () => {
         const raw = input.value.trim();
         if (!raw) {
           return;
@@ -298,159 +381,572 @@ export class FloatingToolbar {
         this.callbacks.onStyleChange(binding.property, value);
       });
     }
+
+    const opacityRange = this.stylePanelEl.querySelector<HTMLInputElement>('[data-style-field="opacity"]');
+    const opacityReadout = this.stylePanelEl.querySelector<HTMLSpanElement>("[data-opacity-readout]");
+    opacityRange?.addEventListener("input", () => {
+      if (opacityReadout) {
+        opacityReadout.textContent = opacityRange.value;
+      }
+    });
+    opacityRange?.addEventListener("change", () => {
+      const raw = opacityRange.value.trim();
+      if (!raw) {
+        return;
+      }
+      this.callbacks.onStyleChange("opacity", raw);
+    });
+
+    const header = this.stylePanelEl.querySelector<HTMLElement>(".otf-style-panel-header");
+    header?.addEventListener("pointerdown", (event) => {
+      if (event.target instanceof Element && event.target.closest("button")) {
+        return;
+      }
+      this.makePanelDraggable(event);
+    });
   }
 
-  private positionNearRect(element: HTMLElement, rect: VisualNodeRect, offsetY = 0): void {
-    const margin = 8;
-    const toolbarHeight = 40;
-    let top = rect.y - toolbarHeight - margin + offsetY;
-    if (top < margin) {
-      top = rect.y + rect.height + margin + offsetY;
+  private updateToolButtonPositions(): void {
+    if (!this.toolbarEl) {
+      return;
+    }
+    const path = this.toolbarEl.querySelector("path");
+    if (!path) {
+      return;
+    }
+    const scale = this.toolbarEl.offsetWidth > 0 ? this.toolbarEl.offsetWidth / VIEWBOX_WIDTH : 1;
+    this.toolbarEl.style.setProperty("--scale", String(scale));
+
+    for (const layout of COMMAND_LAYOUT) {
+      const button = this.toolbarEl.querySelector<HTMLButtonElement>(`[data-command-id="${layout.id}"]`);
+      if (!button) {
+        continue;
+      }
+      const point = pointOnPath(path, layout.at, this.toolbarEl);
+      button.style.left = `${String(point.x)}px`;
+      button.style.top = `${String(point.y)}px`;
+      button.style.setProperty("--angle", `${String(point.angle + 90)}deg`);
     }
 
-    element.style.left = `${String(Math.max(margin, rect.x))}px`;
-    element.style.top = `${String(top)}px`;
+    for (const dividerAt of MAIN_DIVIDERS) {
+      const index = MAIN_DIVIDERS.indexOf(dividerAt);
+      const divider = this.toolbarEl.querySelectorAll(".otf-divider")[index];
+      if (!(divider instanceof HTMLElement)) {
+        continue;
+      }
+      const point = pointOnPath(path, dividerAt, this.toolbarEl);
+      divider.style.left = `${String(point.x)}px`;
+      divider.style.top = `${String(point.y)}px`;
+      divider.style.setProperty("--angle", `${String(point.angle + 90)}deg`);
+    }
+  }
+
+  private positionToolbarNearSelection(rect: VisualNodeRect): void {
+    if (!this.toolbarEl) {
+      return;
+    }
+    const width = Math.min(440, Math.max(280, rect.width + 120));
+    const x = Math.max(14, rect.x + rect.width / 2 - width / 2);
+    const y = Math.max(14, rect.y - 130);
+    this.setToolbarPlacement(x, y, width, -82);
+  }
+
+  private setToolbarPlacement(x: number, y: number, width: number, rotation: number): void {
+    if (!this.toolbarEl) {
+      return;
+    }
+    this.toolbarEl.dataset.x = String(x);
+    this.toolbarEl.dataset.y = String(y);
+    this.toolbarEl.dataset.rotation = String(rotation);
+    this.toolbarEl.dataset.width = String(width);
+    this.toolbarEl.style.setProperty("--x", `${String(x)}px`);
+    this.toolbarEl.style.setProperty("--y", `${String(y)}px`);
+    this.toolbarEl.style.setProperty("--rotation", `${String(rotation)}deg`);
+    this.toolbarEl.style.setProperty("--toolbar-width", `${String(width)}px`);
+    this.toolbarEl.style.setProperty("--scale", String(width / VIEWBOX_WIDTH));
+    const handle = this.toolbarEl.querySelector<HTMLElement>(".otf-rotate-handle");
+    handle?.style.setProperty("--counter-angle", `${String(-rotation)}deg`);
+  }
+
+  private positionStylePanel(force = false): void {
+    if (!this.stylePanelEl || !this.styleAnchorButton || !this.toolbarEl) {
+      return;
+    }
+    if (this.panelWasDragged && !force) {
+      return;
+    }
+
+    const anchorRect = this.styleAnchorButton.getBoundingClientRect();
+    const width = 350;
+    let x = anchorRect.right + 18;
+    let y = anchorRect.top - 36;
+    x = clamp(x, 14, window.innerWidth - width - 14);
+    y = clamp(y, 14, window.innerHeight - 260);
+
+    this.stylePanelEl.style.setProperty("--panel-x", `${String(x)}px`);
+    this.stylePanelEl.style.setProperty("--panel-y", `${String(y)}px`);
+  }
+
+  private makeToolbarDraggable(): void {
+    if (!this.toolbarEl) {
+      return;
+    }
+
+    let startX = 0;
+    let startY = 0;
+    let originX = 0;
+    let originY = 0;
+
+    this.toolbarEl.addEventListener("pointerdown", (event) => {
+      if (!(event.target instanceof Element)) {
+        return;
+      }
+      if (event.target.closest(".otf-tool-btn") || event.target.closest(".otf-rotate-handle")) {
+        return;
+      }
+      this.toolbarEl?.setPointerCapture(event.pointerId);
+      startX = event.clientX;
+      startY = event.clientY;
+      originX = Number(this.toolbarEl?.dataset.x ?? 0);
+      originY = Number(this.toolbarEl?.dataset.y ?? 0);
+      if (this.toolbarEl) {
+        this.toolbarEl.dataset.dragging = "true";
+      }
+    });
+
+    this.toolbarEl.addEventListener("pointermove", (event) => {
+      if (this.toolbarEl?.dataset.dragging !== "true") {
+        return;
+      }
+      const nextX = originX + (event.clientX - startX);
+      const nextY = originY + (event.clientY - startY);
+      this.toolbarWasDragged = true;
+      this.setToolbarPlacement(
+        nextX,
+        nextY,
+        Number(this.toolbarEl.dataset.width ?? 440),
+        Number(this.toolbarEl.dataset.rotation ?? -82),
+      );
+      this.positionStylePanel();
+    });
+
+    const endDrag = (event: PointerEvent): void => {
+      if (this.toolbarEl?.dataset.dragging === "true") {
+        this.toolbarEl.dataset.dragging = "false";
+        if (this.toolbarEl.hasPointerCapture(event.pointerId)) {
+          this.toolbarEl.releasePointerCapture(event.pointerId);
+        }
+      }
+    };
+    this.toolbarEl.addEventListener("pointerup", endDrag);
+    this.toolbarEl.addEventListener("pointercancel", endDrag);
+  }
+
+  private makeToolbarRotatable(): void {
+    if (!this.toolbarEl) {
+      return;
+    }
+
+    let startAngle = 0;
+    let startRotation = 0;
+
+    this.toolbarEl.addEventListener("pointerdown", (event) => {
+      if (!(event.target instanceof Element) || !event.target.closest(".otf-rotate-handle")) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      this.toolbarEl?.setPointerCapture(event.pointerId);
+      const toolbar = this.toolbarEl;
+      if (!toolbar) {
+        return;
+      }
+      const rect = toolbar.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      startAngle = Math.atan2(event.clientY - cy, event.clientX - cx) * (180 / Math.PI);
+      startRotation = Number(this.toolbarEl?.dataset.rotation ?? -82);
+      if (this.toolbarEl) {
+        this.toolbarEl.dataset.rotating = "true";
+      }
+    });
+
+    this.toolbarEl.addEventListener("pointermove", (event) => {
+      if (this.toolbarEl?.dataset.rotating !== "true") {
+        return;
+      }
+      const rect = this.toolbarEl.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const angle = Math.atan2(event.clientY - cy, event.clientX - cx) * (180 / Math.PI);
+      const rotation = Math.round(startRotation + (angle - startAngle));
+      this.toolbarWasDragged = true;
+      this.setToolbarPlacement(
+        Number(this.toolbarEl.dataset.x ?? 0),
+        Number(this.toolbarEl.dataset.y ?? 0),
+        Number(this.toolbarEl.dataset.width ?? 440),
+        rotation,
+      );
+      this.positionStylePanel();
+    });
+
+    const endRotate = (event: PointerEvent): void => {
+      if (this.toolbarEl?.dataset.rotating === "true") {
+        this.toolbarEl.dataset.rotating = "false";
+        if (this.toolbarEl.hasPointerCapture(event.pointerId)) {
+          this.toolbarEl.releasePointerCapture(event.pointerId);
+        }
+      }
+    };
+    this.toolbarEl.addEventListener("pointerup", endRotate);
+    this.toolbarEl.addEventListener("pointercancel", endRotate);
+  }
+
+  private makePanelDraggable(startEvent: PointerEvent): void {
+    if (!this.stylePanelEl) {
+      return;
+    }
+
+    this.panelWasDragged = true;
+    const startX = startEvent.clientX;
+    const startY = startEvent.clientY;
+    const currentX = Number.parseFloat(this.stylePanelEl.style.getPropertyValue("--panel-x")) || 0;
+    const currentY = Number.parseFloat(this.stylePanelEl.style.getPropertyValue("--panel-y")) || 0;
+
+    const onMove = (event: PointerEvent): void => {
+      const x = currentX + (event.clientX - startX);
+      const y = currentY + (event.clientY - startY);
+      this.stylePanelEl?.style.setProperty("--panel-x", `${String(x)}px`);
+      this.stylePanelEl?.style.setProperty("--panel-y", `${String(y)}px`);
+    };
+
+    const onUp = (): void => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
+  private attachOutsideListener(): void {
+    this.detachOutsideListener();
+    this.outsidePointerListener = (event: PointerEvent) => {
+      if (this.isInsideOtfUi(event)) {
+        return;
+      }
+      this.closeStylePanel();
+    };
+    window.addEventListener("pointerdown", this.outsidePointerListener, true);
+  }
+
+  private detachOutsideListener(): void {
+    if (this.outsidePointerListener) {
+      window.removeEventListener("pointerdown", this.outsidePointerListener, true);
+      this.outsidePointerListener = null;
+    }
+  }
+
+  private isInsideOtfUi(event: PointerEvent): boolean {
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    for (const node of path) {
+      if (node instanceof Element && node.getAttribute("data-otf-ui")) {
+        return true;
+      }
+      if (node instanceof Element && node.id === "on-the-fly-root-host") {
+        return true;
+      }
+    }
+    return false;
   }
 
   private ensureStyles(): void {
     if (this.shadowRoot.querySelector(".otf-toolbar-styles")) {
       return;
     }
-
     const style = document.createElement("style");
     style.className = "otf-toolbar-styles";
-    style.textContent = `
-      .otf-toolbar {
-        position: fixed;
-        display: inline-flex;
-        align-items: center;
-        gap: 2px;
-        padding: 4px;
-        border-radius: 999px;
-        background: rgba(17, 24, 39, 0.94);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
-        pointer-events: auto;
-        z-index: 2;
-      }
-
-      .otf-toolbar-btn {
-        all: unset;
-        box-sizing: border-box;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 32px;
-        height: 32px;
-        border-radius: 999px;
-        color: #f9fafb;
-        cursor: pointer;
-      }
-
-      .otf-toolbar-btn svg {
-        width: 16px;
-        height: 16px;
-      }
-
-      .otf-toolbar-btn:hover:not(:disabled) {
-        background: rgba(255, 255, 255, 0.12);
-      }
-
-      .otf-toolbar-btn:disabled {
-        opacity: 0.35;
-        cursor: default;
-      }
-
-      .otf-toolbar-btn-active {
-        background: rgba(37, 99, 235, 0.45);
-      }
-
-      .otf-style-panel {
-        position: fixed;
-        display: grid;
-        grid-template-columns: repeat(2, minmax(120px, 1fr));
-        gap: 8px;
-        padding: 10px;
-        border-radius: 12px;
-        background: rgba(17, 24, 39, 0.96);
-        color: #f9fafb;
-        font: 12px/1.3 system-ui, -apple-system, sans-serif;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
-        pointer-events: auto;
-        z-index: 2;
-      }
-
-      .otf-style-field {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-
-      .otf-style-field label {
-        font-size: 11px;
-        opacity: 0.8;
-      }
-
-      .otf-style-field input {
-        width: 100%;
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        border-radius: 6px;
-        background: rgba(255, 255, 255, 0.08);
-        color: inherit;
-        padding: 4px 6px;
-        font: inherit;
-      }
-
-      .otf-text-editor {
-        position: fixed;
-        pointer-events: auto;
-        z-index: 3;
-      }
-
-      .otf-text-editor-input {
-        width: 100%;
-        min-height: inherit;
-        box-sizing: border-box;
-        border: 2px solid #2563eb;
-        border-radius: 6px;
-        padding: 6px 8px;
-        font: inherit;
-        color: inherit;
-        background: #ffffff;
-        resize: vertical;
-      }
-    `;
+    style.textContent = CURVED_TOOLBAR_CSS;
     this.shadowRoot.appendChild(style);
   }
 }
 
-function createToolbarButton(
-  id: string,
-  label: string,
-  icon: string,
-  enabled: boolean,
-  active: boolean,
+function createToolButton(
+  path: SVGPathElement,
+  item: { id: string; tool: string; label: string; at: number },
+  toolbar: HTMLElement,
 ): HTMLButtonElement {
+  const point = pointOnPath(path, item.at, toolbar);
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "otf-toolbar-btn";
-  button.setAttribute("data-command-id", id);
-  button.setAttribute("aria-label", label);
-  button.title = label;
-  button.disabled = !enabled;
-  if (active) {
-    button.classList.add("otf-toolbar-btn-active");
-  }
-  button.innerHTML = ICONS[icon] ?? `<span>${icon}</span>`;
+  button.className = "otf-tool-btn";
+  button.setAttribute("data-command-id", item.id);
+  button.setAttribute("data-tool", item.tool);
+  button.setAttribute("aria-label", item.label);
+  button.title = item.label;
+  button.innerHTML = TOOL_ICONS[item.tool] ?? "";
+  button.style.left = `${String(point.x)}px`;
+  button.style.top = `${String(point.y)}px`;
+  button.style.setProperty("--angle", `${String(point.angle + 90)}deg`);
   return button;
+}
+
+function createDivider(path: SVGPathElement, at: number, toolbar: HTMLElement): HTMLElement {
+  const point = pointOnPath(path, at, toolbar);
+  const divider = document.createElement("span");
+  divider.className = "otf-divider";
+  divider.style.left = `${String(point.x)}px`;
+  divider.style.top = `${String(point.y)}px`;
+  divider.style.setProperty("--angle", `${String(point.angle + 90)}deg`);
+  return divider;
+}
+
+function pointOnPath(path: SVGPathElement, percent: number, toolbar: HTMLElement): {
+  x: number;
+  y: number;
+  angle: number;
+} {
+  const length = path.getTotalLength();
+  const point = path.getPointAtLength(length * percent);
+  const before = path.getPointAtLength(length * Math.max(0, percent - 0.01));
+  const after = path.getPointAtLength(length * Math.min(1, percent + 0.01));
+  const angle = Math.atan2(after.y - before.y, after.x - before.x) * (180 / Math.PI);
+  const scale = toolbar.offsetWidth > 0 ? toolbar.offsetWidth / VIEWBOX_WIDTH : 1;
+  return {
+    x: point.x * scale,
+    y: point.y * scale,
+    angle,
+  };
+}
+
+function setInputValue(root: HTMLElement, field: string, value: string | undefined): void {
+  if (value === undefined) {
+    return;
+  }
+  const input = root.querySelector<HTMLInputElement>(`[data-style-field="${field}"]`);
+  if (input) {
+    input.value = value;
+  }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 function createStylePanelMarkup(): string {
   return `
-    <div class="otf-style-field"><label>Background</label><input type="color" data-style-field="backgroundColor" /></div>
-    <div class="otf-style-field"><label>Text color</label><input type="color" data-style-field="color" /></div>
-    <div class="otf-style-field"><label>Font size</label><input type="text" data-style-field="fontSize" placeholder="16px" /></div>
-    <div class="otf-style-field"><label>Font weight</label><input type="text" data-style-field="fontWeight" placeholder="400" /></div>
-    <div class="otf-style-field"><label>Radius</label><input type="text" data-style-field="borderRadius" placeholder="8px" /></div>
-    <div class="otf-style-field"><label>Opacity</label><input type="text" data-style-field="opacity" placeholder="1" /></div>
+    <div class="otf-style-panel-header">
+      <div class="otf-style-panel-title"><span class="otf-style-panel-title-dot"></span><span>Style</span></div>
+      <button type="button" class="otf-style-panel-close" data-style-close aria-label="Close style panel">×</button>
+    </div>
+    <div class="otf-style-panel-grid">
+      <label class="otf-style-field"><span>Background</span><input type="color" data-style-field="backgroundColor" /></label>
+      <label class="otf-style-field"><span>Text color</span><input type="color" data-style-field="color" /></label>
+      <label class="otf-style-field"><span>Font size</span><input type="text" data-style-field="fontSize" placeholder="16px" /></label>
+      <label class="otf-style-field"><span>Font weight</span><input type="text" data-style-field="fontWeight" placeholder="400" /></label>
+      <label class="otf-style-field"><span>Radius</span><input type="text" data-style-field="borderRadius" placeholder="0px" /></label>
+      <label class="otf-style-field otf-opacity-field">
+        <span>Opacity <strong data-opacity-readout>1</strong></span>
+        <input type="range" min="${String(OPACITY_MIN)}" max="${String(OPACITY_MAX)}" step="${String(OPACITY_STEP)}" value="1" data-style-field="opacity" />
+      </label>
+    </div>
   `;
 }
+
+const CURVED_TOOLBAR_CSS = `
+  .otf-curved-toolbar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: var(--toolbar-width, 440px);
+    aspect-ratio: 520 / 420;
+    --scale: 1;
+    --x: 0px;
+    --y: 0px;
+    --rotation: -82deg;
+    transform: translate(var(--x), var(--y)) rotate(var(--rotation));
+    transform-origin: center center;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    pointer-events: auto;
+    z-index: 2;
+  }
+  .otf-curved-toolbar:active { cursor: grabbing; }
+  .otf-toolbar-svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+    pointer-events: none;
+  }
+  .otf-toolbar-path {
+    fill: none;
+    stroke: #f1eee4;
+    stroke-width: 54;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    filter: drop-shadow(0 12px 20px rgba(0,0,0,0.42)) drop-shadow(0 1px 0 rgba(255,255,255,0.35));
+  }
+  .otf-tool-btn {
+    position: absolute;
+    width: calc(44px * var(--scale));
+    height: calc(44px * var(--scale));
+    border: 0;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    background: transparent;
+    color: #202020;
+    cursor: pointer;
+    transform: translate(-50%, -50%) rotate(var(--angle));
+  }
+  .otf-tool-btn.selected, .otf-tool-btn:hover:not(:disabled) {
+    background: rgba(0,0,0,0.08);
+    border-radius: 999px;
+  }
+  .otf-tool-btn:disabled { opacity: 0.35; cursor: default; }
+  .otf-tool-btn svg {
+    width: calc(25px * var(--scale));
+    height: calc(25px * var(--scale));
+    stroke: currentColor;
+    stroke-width: 2;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .otf-divider {
+    position: absolute;
+    width: calc(1px * var(--scale));
+    height: calc(42px * var(--scale));
+    background: rgba(25,25,25,0.18);
+    border-radius: 999px;
+    transform: translate(-50%, -50%) rotate(var(--angle));
+    pointer-events: none;
+  }
+  .otf-rotate-handle {
+    position: absolute;
+    left: 52%;
+    top: 8%;
+    width: calc(34px * var(--scale));
+    height: calc(34px * var(--scale));
+    border: calc(1px * var(--scale)) solid rgba(32,32,32,0.12);
+    border-radius: 999px;
+    display: grid;
+    place-items: center;
+    background: radial-gradient(circle at top left, rgba(255,255,255,0.85), transparent 46%), #f1eee4;
+    color: #202020;
+    box-shadow: 0 calc(10px * var(--scale)) calc(22px * var(--scale)) rgba(0,0,0,0.26), inset 0 calc(1px * var(--scale)) 0 rgba(255,255,255,0.8);
+    cursor: grab;
+    transform: translate(-50%, -50%) rotate(var(--counter-angle, 0deg));
+    z-index: 10;
+  }
+  .otf-rotate-handle svg {
+    width: calc(18px * var(--scale));
+    height: calc(18px * var(--scale));
+    stroke: currentColor;
+    stroke-width: 2.3;
+    fill: none;
+  }
+  .otf-style-panel {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 3;
+    width: 350px;
+    padding: 18px;
+    border-radius: 30px;
+    background: radial-gradient(circle at top left, rgba(255,255,255,0.88), transparent 45%), linear-gradient(145deg, #f6f1e6 0%, #e8dfcf 100%);
+    border: 1px solid rgba(255,255,255,0.65);
+    box-shadow: 0 24px 55px rgba(0,0,0,0.48), inset 0 1px 0 rgba(255,255,255,0.9);
+    color: #202020;
+    transform: translate(var(--panel-x, 0px), var(--panel-y, 0px)) scale(0.97);
+    transform-origin: top left;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 160ms ease, transform 160ms ease;
+  }
+  .otf-style-panel.is-open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(var(--panel-x, 0px), var(--panel-y, 0px)) scale(1);
+  }
+  .otf-style-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid rgba(32,32,32,0.12);
+    cursor: grab;
+  }
+  .otf-style-panel-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 16px;
+    font-weight: 760;
+  }
+  .otf-style-panel-title-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #202020;
+    opacity: 0.8;
+  }
+  .otf-style-panel-close {
+    width: 30px;
+    height: 30px;
+    border: 0;
+    border-radius: 999px;
+    background: rgba(0,0,0,0.075);
+    color: #202020;
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .otf-style-panel-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .otf-style-field {
+    display: grid;
+    gap: 7px;
+    font-size: 12px;
+    font-weight: 700;
+    color: rgba(32,32,32,0.62);
+  }
+  .otf-style-field input[type="text"],
+  .otf-style-field input[type="color"] {
+    width: 100%;
+    height: 40px;
+    border: 1px solid rgba(32,32,32,0.16);
+    border-radius: 15px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.56), rgba(255,255,255,0.32));
+    color: #202020;
+    padding: 0 12px;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 650;
+  }
+  .otf-opacity-field input[type="range"] { width: 100%; }
+  .otf-text-editor {
+    position: fixed;
+    pointer-events: auto;
+    z-index: 4;
+  }
+  .otf-text-editor-input {
+    width: 100%;
+    min-height: inherit;
+    box-sizing: border-box;
+    border: 2px solid #2563eb;
+    border-radius: 6px;
+    padding: 6px 8px;
+    font: inherit;
+    color: inherit;
+    background: #ffffff;
+    resize: vertical;
+  }
+`;

@@ -27,7 +27,6 @@ import {
 import {
   getSettingsResponse,
   setLastEditModeEnabled,
-  shouldRestoreEditModeForTab,
   updateExtensionSettings,
 } from "./settings-storage.js";
 
@@ -65,20 +64,6 @@ async function pushEditModeToTab(tabId: number, enabled: boolean): Promise<void>
   }
 }
 
-async function resolveEditModeEnabled(tabId: number): Promise<boolean> {
-  const inMemoryEnabled = getEditModeForTab(tabId);
-  if (inMemoryEnabled) {
-    return true;
-  }
-
-  if (await shouldRestoreEditModeForTab(tabId)) {
-    setEditModeForTab(tabId, true);
-    return true;
-  }
-
-  return false;
-}
-
 async function handleGetEditMode(tabId: number | undefined): Promise<EditModeResponse> {
   const tab = await resolveTab(tabId);
   if (!tab?.id) {
@@ -89,10 +74,7 @@ async function handleGetEditMode(tabId: number | undefined): Promise<EditModeRes
     return unavailableResponse("restricted_page");
   }
 
-  const enabled = await resolveEditModeEnabled(tab.id);
-  if (enabled && !getEditModeForTab(tab.id)) {
-    await pushEditModeToTab(tab.id, true);
-  }
+  const enabled = getEditModeForTab(tab.id);
 
   return {
     ok: true,

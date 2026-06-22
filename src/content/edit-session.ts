@@ -25,15 +25,10 @@ import {
   createCommandRegistry,
   findCommandForKeyboardEvent,
 } from "../editor/commands/command-registry.js";
-import { createDomRuntimeAdapter, type DomRuntimeAdapter } from "../editor/dom/dom-runtime-adapter.js";
+import type { DomRuntimeAdapter } from "../editor/dom/dom-runtime-adapter.js";
 import type { VisualNodeRect, VisualNode } from "../editor/visual-node.js";
 import type { VisualNodeId } from "../editor/ids.js";
-import {
-  clearPageOperations,
-  loadPageOperations,
-  replacePageOperations,
-  savePageOperations,
-} from "./storage-client.js";
+import { savePageOperations } from "./storage-client.js";
 import { attachEditModePointerPipeline } from "./edit-mode-pointer-pipeline.js";
 import type { EditModePointerPipeline } from "./edit-mode-pointer-pipeline.js";
 import type { EditorShell } from "./editor-shell.js";
@@ -57,10 +52,19 @@ import {
 } from "./session-history.js";
 import { createStyleTextController, StyleTextController } from "./style-text-controller.js";
 import { FloatingToolbar } from "./floating-toolbar.js";
+import {
+  PageCustomizationController,
+  computePageKey as computeDocumentPageKey,
+} from "./page-customization-controller.js";
+import {
+  resolveTextEditTargetAtPoint,
+  resolveTextEditTargetForSelection,
+} from "../editor/style/text-target-resolver.js";
 
 export interface EditSessionOptions {
   shell: EditorShell;
   root: Document;
+  pageCustomization: PageCustomizationController;
   onDebug?: (message: string, data?: unknown) => void;
 }
 
@@ -69,6 +73,7 @@ const DOUBLE_CLICK_MS = 400;
 export class EditSession implements SessionCommandHost {
   private readonly shell: EditorShell;
   private readonly root: Document;
+  private readonly pageCustomization: PageCustomizationController;
   private readonly onDebug: (message: string, data?: unknown) => void;
   private cacheController: ReturnType<typeof createGeometryCacheController> | null = null;
   private selectionController: SelectionController | null = null;
@@ -88,14 +93,17 @@ export class EditSession implements SessionCommandHost {
   private lastSelectionResult: SelectionResolveResult | null = null;
   private lastClickTime = 0;
   private lastClickNodeId: string | null = null;
+  private lastSelectionKey: string | null = null;
+  private textEditTarget: TransformTarget | null = null;
 
   constructor(options: EditSessionOptions) {
     this.shell = options.shell;
     this.root = options.root;
+    this.pageCustomization = options.pageCustomization;
     this.onDebug = options.onDebug ?? logSelectionDebug;
   }
 
-  start(): void {
+  async start(): Promise<void> {
     if (this.cacheController) {
       return;
     }
@@ -108,7 +116,10 @@ export class EditSession implements SessionCommandHost {
       },
     });
 
-    this.adapter = createDomRuntimeAdapter(this.root);
+    await this.pageCustomization.ensureReplayed(this.onDebug);
+    this.adapter = this.pageCustomization.getAdapter();
+    this.pageOperations = [...this.pageCustomization.getPageOperations()];
+
     this.transformController = createTransformController({
       shell: this.shell,
       document: this.root,
@@ -125,10 +136,11 @@ export class EditSession implements SessionCommandHost {
       adapter: this.adapter,
       getPageKey: () => this.computePageKey(),
       resolveTargets: () => this.transformController?.getTargets() ?? [],
-      resolveTextTarget: () => this.transformController?.getHandleTarget() ?? null,
+      resolveTextTarget: () => this.textEditTarget ?? this.transformController?.getHandleTarget() ?? null,
       onApply: (operations) => {
         this.recordOperations(operations);
       },
+      onDebug: this.onDebug,
     });
 
     this.commandRegistry = createCommandRegistry(createDefaultCommands(this));
@@ -148,7 +160,10 @@ export class EditSession implements SessionCommandHost {
             this.applyText(value);
           },
           onTextCancel: () => {
-            this.toolbar?.closeTextEditor();
+            this.toolbar?.closeTextEditor(true);
+          },
+          onStylePanelClose: () => {
+            this.updateToolbar();
           },
         },
       });
@@ -193,34 +208,18 @@ export class EditSession implements SessionCommandHost {
 
     this.attachKeyHandler(windowRef);
     this.cacheController.cache.ensureFresh();
-    void this.loadAndReplaySavedOperations();
   }
 
-  private async loadAndReplaySavedOperations(): Promise<void> {
-    const adapter = this.adapter;
-    if (!adapter) {
-      return;
-    }
-
-    const pageKey = this.computePageKey();
-    const operations = await loadPageOperations(pageKey);
-    this.pageOperations = [...operations];
-
-    if (operations.length === 0) {
-      this.onDebug("replay", { pageKey, count: 0, failed: 0, resolved: 0, unresolved: 0 });
-      return;
-    }
-
-    const batch = adapter.replayOperationsWithDiagnostics(operations);
-    const failed = batch.results.filter((result) => !result.ok).length;
-    const resolved = batch.diagnostics.filter((entry) => entry.resolved).length;
-    const unresolved = batch.diagnostics.length - resolved;
-
-    for (const entry of batch.diagnostics) {
-      this.onDebug("replay-op", entry);
-    }
-
-    this.onDebug("replay", { pageKey, count: operations.length, failed, resolved, unresolved });
+  afterExternalClearPage(): void {
+    this.pageOperations = [];
+    this.sessionHistory = createSessionHistory();
+    this.transformController?.setCropMode(false);
+    this.selectionController?.clearSelection();
+    this.transformController?.clearSelection();
+    this.toolbar?.hide();
+    this.shell.clearOverlays();
+    this.lastSelectionKey = null;
+    this.textEditTarget = null;
   }
 
   private recordOperations(operations: EditorOperation[]): void {
@@ -230,6 +229,7 @@ export class EditSession implements SessionCommandHost {
 
     this.sessionHistory = recordHistoryBatch(this.sessionHistory, operations);
     this.pageOperations = appendOperations(this.pageOperations, operations);
+    this.pageCustomization.recordAppliedOperations(operations);
     this.persistOperations(operations);
     this.updateToolbar();
   }
@@ -264,9 +264,7 @@ export class EditSession implements SessionCommandHost {
   }
 
   async clearPage(): Promise<void> {
-    const pageKey = this.computePageKey();
-    await clearPageOperations(pageKey);
-    this.adapter?.clearAppliedEffects();
+    await this.pageCustomization.clearPage();
     this.pageOperations = [];
     this.sessionHistory = createSessionHistory();
     this.transformController?.setCropMode(false);
@@ -274,7 +272,9 @@ export class EditSession implements SessionCommandHost {
     this.transformController?.clearSelection();
     this.toolbar?.hide();
     this.shell.clearOverlays();
-    this.onDebug("clear-page", { pageKey });
+    this.lastSelectionKey = null;
+    this.textEditTarget = null;
+    this.onDebug("clear-page", { pageKey: this.computePageKey() });
   }
 
   stop(): void {
@@ -347,7 +347,8 @@ export class EditSession implements SessionCommandHost {
 
     const ids = new Set(batch.map((operation) => operation.id));
     this.pageOperations = removeOperationsById(this.pageOperations, ids);
-    void replacePageOperations(this.computePageKey(), this.pageOperations);
+    this.pageCustomization.setPageOperations(this.pageOperations);
+    void this.pageCustomization.syncOperationsToStorage();
     this.transformController?.refreshSelectionOutline();
     this.updateToolbar();
     this.onDebug("undo", { count: batch.length });
@@ -367,6 +368,7 @@ export class EditSession implements SessionCommandHost {
     }
 
     this.pageOperations = appendOperations(this.pageOperations, batch);
+    this.pageCustomization.recordAppliedOperations(batch);
     void savePageOperations(this.computePageKey(), batch);
     this.transformController?.refreshSelectionOutline();
     this.updateToolbar();
@@ -392,21 +394,45 @@ export class EditSession implements SessionCommandHost {
     this.transformController?.refreshSelectionOutline();
   }
 
-  openTextEditor(): void {
-    const target = this.transformController?.getHandleTarget();
-    const rect = this.getAnchorRect();
-    if (!target || !rect || !this.styleTextController || !this.toolbar) {
+  openTextEditor(clientX?: number, clientY?: number): void {
+    const handleTarget = this.transformController?.getHandleTarget() ?? null;
+    const selectedElement = handleTarget?.element ?? null;
+    const resolution =
+      clientX !== undefined && clientY !== undefined
+        ? resolveTextEditTargetAtPoint(this.root, clientX, clientY, selectedElement, handleTarget)
+        : resolveTextEditTargetForSelection(this.root, selectedElement, handleTarget);
+
+    if (!resolution.ok) {
+      this.onDebug("text-edit-refused", {
+        reason: resolution.reason,
+        detail: resolution.detail,
+      });
       return;
     }
 
-    const initialText = this.styleTextController.readTextForTarget(target);
+    this.textEditTarget = resolution.target;
+    const rect = resolution.target.rect;
+    if (!this.styleTextController || !this.toolbar) {
+      return;
+    }
+
+    const initialText = this.styleTextController.readTextForTarget(resolution.target);
     this.toolbar.openTextEditor(rect, initialText);
   }
 
   private handleSelectionChange(
-    _selection: EditorSelection,
+    selection: EditorSelection,
     result: SelectionResolveResult,
   ): void {
+    const selectionKey = selectionKeyFrom(selection);
+    if (
+      this.lastSelectionKey !== null &&
+      selectionKey !== this.lastSelectionKey &&
+      this.toolbar?.isStylePanelOpen()
+    ) {
+      this.toolbar.closeStylePanel();
+    }
+    this.lastSelectionKey = selectionKey;
     this.lastSelectionResult = result;
     if (!this.transformController) {
       return;
@@ -541,11 +567,7 @@ export class EditSession implements SessionCommandHost {
   }
 
   private computePageKey(): string {
-    const location = this.root.defaultView?.location;
-    if (location) {
-      return `${location.origin}${location.pathname}`;
-    }
-    return "otf://unknown";
+    return computeDocumentPageKey(this.root);
   }
 
   groupSelection(): void {
@@ -626,6 +648,11 @@ export class EditSession implements SessionCommandHost {
   }
 
   handleEscape(): boolean {
+    if (this.toolbar?.isTextEditorOpen()) {
+      this.toolbar.closeTextEditor(true);
+      return true;
+    }
+
     if (this.toolbar?.isStylePanelOpen()) {
       this.toolbar.closeStylePanel();
       this.updateToolbar();
@@ -805,10 +832,15 @@ export class EditSession implements SessionCommandHost {
     });
     this.shell.renderLassoBox(null);
 
-    this.handleClickDoubleTap(result, gesture.shiftKey);
+    this.handleClickDoubleTap(result, gesture.shiftKey, event.clientX, event.clientY);
   }
 
-  private handleClickDoubleTap(result: SelectionResolveResult, shiftKey: boolean): void {
+  private handleClickDoubleTap(
+    result: SelectionResolveResult,
+    shiftKey: boolean,
+    clientX: number,
+    clientY: number,
+  ): void {
     const nodeId = result.resolvedNodes[0]?.id ?? null;
     const now = Date.now();
     const isDoubleClick =
@@ -828,10 +860,7 @@ export class EditSession implements SessionCommandHost {
       return;
     }
 
-    const node = result.resolvedNodes[0];
-    if (node && (node.kind === "text" || node.kind === "button" || node.kind === "input")) {
-      this.openTextEditor();
-    }
+    this.openTextEditor(clientX, clientY);
   }
 
   private handlePointerCancel(event: PointerEvent): void {
@@ -868,6 +897,10 @@ export class EditSession implements SessionCommandHost {
 
 export function createEditSession(options: EditSessionOptions): EditSession {
   return new EditSession(options);
+}
+
+function selectionKeyFrom(selection: EditorSelection): string {
+  return `${selection.selectedNodeIds.join(",")}:${selection.activeGroupId ?? ""}`;
 }
 
 function toTransformSelectionInput(

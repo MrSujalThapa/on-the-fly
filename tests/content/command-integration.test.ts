@@ -1,5 +1,6 @@
 import { describe, expect, it, afterEach } from "vitest";
 import { createEditSession } from "../../src/content/edit-session.js";
+import { createTestPageCustomization } from "./edit-session-test-helpers.js";
 import { EditorShell } from "../../src/content/editor-shell.js";
 import { layoutElement } from "../editor/measurement/layout-helpers.js";
 
@@ -28,7 +29,7 @@ describe("EditSession command integration", () => {
     globalThis.document.getElementById("on-the-fly-root-host")?.remove();
   });
 
-  it("supports current-session undo after style edits", () => {
+  it("supports current-session undo after style edits", async () => {
     const doc = globalThis.document;
     const win = globalThis.window;
 
@@ -40,8 +41,8 @@ describe("EditSession command integration", () => {
 
     const shell = new EditorShell();
     shell.mount({ onDeactivate: () => undefined });
-    const session = createEditSession({ shell, root: doc });
-    session.start();
+    const session = createEditSession({ shell, root: doc, pageCustomization: createTestPageCustomization(doc) });
+    await session.start();
 
     dispatchPointer(win, copy, "pointerdown", { clientX: 15, clientY: 15, buttons: 1 });
     dispatchPointer(win, copy, "pointerup", { clientX: 15, clientY: 15, buttons: 0 });
@@ -58,7 +59,7 @@ describe("EditSession command integration", () => {
     shell.unmount();
   });
 
-  it("routes undo keyboard shortcut through command registry", () => {
+  it("routes undo keyboard shortcut through command registry", async () => {
     const doc = globalThis.document;
     const win = globalThis.window;
 
@@ -69,8 +70,8 @@ describe("EditSession command integration", () => {
 
     const shell = new EditorShell();
     shell.mount({ onDeactivate: () => undefined });
-    const session = createEditSession({ shell, root: doc });
-    session.start();
+    const session = createEditSession({ shell, root: doc, pageCustomization: createTestPageCustomization(doc) });
+    await session.start();
 
     dispatchPointer(win, copy, "pointerdown", { clientX: 15, clientY: 15, buttons: 1 });
     dispatchPointer(win, copy, "pointerup", { clientX: 15, clientY: 15, buttons: 0 });
