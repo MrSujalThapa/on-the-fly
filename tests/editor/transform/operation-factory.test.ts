@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildCropOperation,
+  buildHideOperation,
   buildMoveOperation,
   buildMoveOperations,
   buildResizeOperation,
@@ -83,6 +85,34 @@ describe("transform operation factory", () => {
 
     expect(op.type).toBe("zIndex");
     expect(op.payload).toEqual({ layer: 5, previousLayer: 2 });
+    expect(validateOperationForDom(op).ok).toBe(true);
+  });
+
+  it("builds a hide operation that records the previous display", () => {
+    const op = buildHideOperation(makeTarget("hidden", "Hidden"), true, baseOptions, "block");
+
+    expect(op.type).toBe("hide");
+    expect(op.payload).toEqual({ hidden: true, previousDisplay: "block" });
+    expect(validateOperationForDom(op).ok).toBe(true);
+  });
+
+  it("builds a show (hidden:false) operation without a previous display", () => {
+    const op = buildHideOperation(makeTarget("shown", "Shown"), false, baseOptions);
+
+    expect(op.type).toBe("hide");
+    expect(op.payload).toEqual({ hidden: false });
+    expect(validateOperationForDom(op).ok).toBe(true);
+  });
+
+  it("builds a crop operation clamping negative insets to zero", () => {
+    const op = buildCropOperation(
+      makeTarget("cropme", "Crop"),
+      { top: 10, right: -5, bottom: 20, left: 0 },
+      baseOptions,
+    );
+
+    expect(op.type).toBe("crop");
+    expect(op.payload).toEqual({ top: 10, right: 0, bottom: 20, left: 0 });
     expect(validateOperationForDom(op).ok).toBe(true);
   });
 });

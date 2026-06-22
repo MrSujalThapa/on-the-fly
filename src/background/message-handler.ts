@@ -8,8 +8,20 @@ import {
   isSetSettingsMessage,
   OTF_MESSAGE,
 } from "../shared/messages.js";
+import {
+  isClearPageMessage,
+  isGetPageOperationCountMessage,
+  isLoadPageStateMessage,
+  isSaveOperationsMessage,
+} from "../shared/storage-messages.js";
 import { isRestrictedUrl } from "../shared/restricted-url.js";
 import { getEditModeForTab, setEditModeForTab } from "./edit-mode-state.js";
+import {
+  handleClearPage,
+  handleGetPageOperationCount,
+  handleLoadPageState,
+  handleSaveOperations,
+} from "./storage/storage-gateway.js";
 import {
   getSettingsResponse,
   setLastEditModeEnabled,
@@ -133,6 +145,26 @@ export function registerBackgroundMessageHandler(): void {
 
       if (isSetSettingsMessage(message)) {
         sendResponse(await updateExtensionSettings(message.settings));
+        return;
+      }
+
+      if (isLoadPageStateMessage(message)) {
+        sendResponse(await handleLoadPageState(message.pageKey));
+        return;
+      }
+
+      if (isSaveOperationsMessage(message)) {
+        sendResponse(await handleSaveOperations(message.pageKey, message.operations));
+        return;
+      }
+
+      if (isClearPageMessage(message)) {
+        sendResponse(await handleClearPage(message.pageKey));
+        return;
+      }
+
+      if (isGetPageOperationCountMessage(message)) {
+        sendResponse(await handleGetPageOperationCount(message.pageKey));
         return;
       }
 

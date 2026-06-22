@@ -73,6 +73,21 @@ function parseElementSignature(value: unknown): ElementSignature | null {
   if (typeof value.parentFingerprint === "string") {
     signature.parentFingerprint = value.parentFingerprint;
   }
+  if (typeof value.parentCssPath === "string") {
+    signature.parentCssPath = value.parentCssPath;
+  }
+  if (typeof value.titleAttr === "string") {
+    signature.titleAttr = value.titleAttr;
+  }
+  if (typeof value.altAttr === "string") {
+    signature.altAttr = value.altAttr;
+  }
+  if (typeof value.srcFingerprint === "string") {
+    signature.srcFingerprint = value.srcFingerprint;
+  }
+  if (typeof value.ancestorTextContext === "string") {
+    signature.ancestorTextContext = value.ancestorTextContext;
+  }
 
   return signature;
 }

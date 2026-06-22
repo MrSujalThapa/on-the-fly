@@ -3,19 +3,26 @@ import type { EditorOperation } from "../editor/operations.js";
 import type { VisualNodeRect } from "../editor/visual-node.js";
 import { matchElementBySignature } from "../editor/dom/signature-matcher.js";
 import { readStoredTransformState } from "../editor/dom/element-snapshot.js";
+import { readStoredCropInsets } from "../editor/dom/handlers/crop-handler.js";
 import type { DomRuntimeAdapter } from "../editor/dom/dom-runtime-adapter.js";
 import {
   angleForPointer,
+  applyCropToRect,
+  buildCropOperation,
+  buildHideOperation,
   buildMoveOperation,
   buildResizeOperation,
   buildRotateOperation,
   buildZIndexOperation,
+  computeCrop,
   computeNextLayer,
   computeResize,
+  cropInsetsToClipPath,
   isResizeHandleId,
   rectCenterPoint,
   resolveCurrentManagedLayer,
   snapDegrees,
+  type CropInsets,
   type LayerCommand,
   type ResizeHandleId,
   type TransformTarget,
@@ -76,6 +83,21 @@ interface RotateDragState {
   shiftKey: boolean;
 }
 
+interface CropDragState {
+  element: HTMLElement;
+  handle: ResizeHandleId;
+  startX: number;
+  startY: number;
+  startRect: VisualNodeRect;
+  baseInsets: CropInsets;
+  clipSnapshot: ClipSnapshot;
+}
+
+interface ClipSnapshot {
+  clipPath: string;
+  webkitClipPath: string;
+}
+
 const ROTATE_SNAP_DEGREES = 15;
 
 export class TransformController {
@@ -97,6 +119,7 @@ export class TransformController {
   private moveDrag: MoveDragState | null = null;
   private resizeDrag: ResizeDragState | null = null;
   private rotateDrag: RotateDragState | null = null;
+  private cropDrag: CropDragState | null = null;
   private handleWindowListeners: (() => void) | null = null;
   private rafId: number | null = null;
   private pendingTask: (() => void) | null = null;
@@ -130,7 +153,12 @@ export class TransformController {
   }
 
   isTransforming(): boolean {
-    return this.moveDrag !== null || this.resizeDrag !== null || this.rotateDrag !== null;
+    return (
+      this.moveDrag !== null ||
+      this.resizeDrag !== null ||
+      this.rotateDrag !== null ||
+      this.cropDrag !== null
+    );
   }
 
   hitTestSelection(x: number, y: number): boolean {
@@ -302,6 +330,110 @@ export class TransformController {
     return operations;
   }
 
+  // --- Hide / show (5C) ---
+
+  /** Hides the current selection (Delete/Backspace). Reversible via undo/replay. */
+  hideSelection(): EditorOperation[] {
+    return this.applyHideToTargets(true);
+  }
+
+  /** Toggles hidden state for the current selection (Ctrl+Shift+H). */
+  toggleHideSelection(): EditorOperation[] {
+    return this.applyHideToTargets(!this.isSelectionHidden());
+  }
+
+  private isSelectionHidden(): boolean {
+    const targets = this.selection?.targets ?? [];
+    if (targets.length === 0) {
+      return false;
+    }
+
+    return targets.every((target) => {
+      const element = this.resolveElement(target);
+      return element ? isElementHidden(element) : false;
+    });
+  }
+
+  private applyHideToTargets(hidden: boolean): EditorOperation[] {
+    const targets = this.selection?.targets ?? [];
+    if (targets.length === 0) {
+      return [];
+    }
+
+    const pageKey = this.getPageKey();
+    const operations: EditorOperation[] = [];
+    for (const target of targets) {
+      const element = this.resolveElement(target);
+      if (!element) {
+        continue;
+      }
+
+      const alreadyHidden = isElementHidden(element);
+      if (hidden && alreadyHidden) {
+        this.onDebug("transform-hide-skip", {
+          reason: "already-hidden",
+          selected: describeSignature(target),
+        });
+        continue;
+      }
+      if (!hidden && !alreadyHidden) {
+        this.onDebug("transform-hide-skip", {
+          reason: "already-visible",
+          selected: describeSignature(target),
+        });
+        continue;
+      }
+
+      const previousDisplay = element.style.display || readComputedDisplay(element);
+      operations.push(
+        buildHideOperation(
+          target,
+          hidden,
+          { pageKey },
+          hidden ? previousDisplay : undefined,
+          element,
+        ),
+      );
+    }
+
+    if (operations.length === 0) {
+      return [];
+    }
+
+    this.applyOperations(operations);
+    if (hidden) {
+      this.shell.clearOverlays();
+    } else {
+      this.refreshOutlineFromDom();
+    }
+    this.onDebug("transform-hide", { hidden, count: operations.length });
+    return operations;
+  }
+
+  // --- Crop (5C) ---
+
+  /**
+   * Crops the single handle target to the given insets (px from each edge).
+   * Crop clips the visible region without resizing/distorting the content.
+   */
+  cropSelection(insets: CropInsets): EditorOperation[] {
+    const target = this.selection?.handleTarget;
+    if (!target) {
+      return [];
+    }
+
+    const element = this.resolveElement(target);
+    if (!element) {
+      return [];
+    }
+
+    const operation = buildCropOperation(target, insets, { pageKey: this.getPageKey() });
+    this.applyOperations([operation]);
+    this.refreshOutlineFromDom();
+    this.onDebug("transform-crop-commit", { insets });
+    return [operation];
+  }
+
   // --- Resize + rotate (5B) ---
 
   private handleHandlePointerDown(handleId: TransformHandleId, event: PointerEvent): void {
@@ -337,6 +469,17 @@ export class TransformController {
         baseDx: stored?.dx ?? 0,
         baseDy: stored?.dy ?? 0,
         shiftKey: event.shiftKey,
+      };
+    } else if (isResizeHandleId(handleId) && event.altKey) {
+      // Alt + handle drag crops (clips) instead of resizing: distinct concept.
+      this.cropDrag = {
+        element,
+        handle: handleId,
+        startX: event.clientX,
+        startY: event.clientY,
+        startRect,
+        baseInsets: readStoredCropInsets(element),
+        clipSnapshot: captureClipSnapshot(element),
       };
     } else if (isResizeHandleId(handleId)) {
       this.resizeDrag = {
@@ -451,6 +594,41 @@ export class TransformController {
     return operations;
   }
 
+  private updateCrop(x: number, y: number): void {
+    const drag = this.cropDrag;
+    if (!drag) {
+      return;
+    }
+
+    const insets = computeCrop(drag.startRect, drag.handle, drag.baseInsets, x - drag.startX, y - drag.startY);
+    this.scheduleFrame(() => {
+      const clipPath = cropInsetsToClipPath(insets);
+      drag.element.style.clipPath = clipPath;
+      drag.element.style.setProperty("-webkit-clip-path", clipPath);
+      this.renderOutlineRect(applyCropToRect(drag.startRect, insets));
+    });
+  }
+
+  private endCrop(x: number, y: number): EditorOperation[] {
+    const drag = this.cropDrag;
+    this.cropDrag = null;
+    if (!drag) {
+      return [];
+    }
+
+    this.cancelScheduledFrame();
+    restoreClipSnapshot(drag.element, drag.clipSnapshot);
+
+    const target = this.selection?.handleTarget;
+    if (!target) {
+      this.renderSelection();
+      return [];
+    }
+
+    const insets = computeCrop(drag.startRect, drag.handle, drag.baseInsets, x - drag.startX, y - drag.startY);
+    return this.cropSelection(insets);
+  }
+
   private rotationForPointer(drag: RotateDragState, x: number, y: number): number {
     const center = rectCenterPoint(drag.startRect);
     const raw = angleForPointer(center, { x, y });
@@ -468,6 +646,10 @@ export class TransformController {
     if (this.rotateDrag) {
       restoreInlineSnapshot(this.rotateDrag.element, this.rotateDrag.snapshot);
       this.rotateDrag = null;
+    }
+    if (this.cropDrag) {
+      restoreClipSnapshot(this.cropDrag.element, this.cropDrag.clipSnapshot);
+      this.cropDrag = null;
     }
     this.detachHandleWindowListeners();
     this.cancelScheduledFrame();
@@ -488,6 +670,8 @@ export class TransformController {
         this.updateResize(event.clientX, event.clientY);
       } else if (this.rotateDrag) {
         this.updateRotate(event.clientX, event.clientY);
+      } else if (this.cropDrag) {
+        this.updateCrop(event.clientX, event.clientY);
       }
     };
     const onUp = (event: PointerEvent): void => {
@@ -495,6 +679,8 @@ export class TransformController {
         this.endResize(event.clientX, event.clientY);
       } else if (this.rotateDrag) {
         this.endRotate(event.clientX, event.clientY);
+      } else if (this.cropDrag) {
+        this.endCrop(event.clientX, event.clientY);
       }
       this.detachHandleWindowListeners();
     };
@@ -677,6 +863,30 @@ function captureInlineSnapshot(element: HTMLElement): InlineSnapshot {
     width: element.style.width,
     height: element.style.height,
   };
+}
+
+function captureClipSnapshot(element: HTMLElement): ClipSnapshot {
+  return {
+    clipPath: element.style.clipPath,
+    webkitClipPath: element.style.getPropertyValue("-webkit-clip-path"),
+  };
+}
+
+function restoreClipSnapshot(element: HTMLElement, snapshot: ClipSnapshot): void {
+  setOrRemove(element, "clip-path", snapshot.clipPath);
+  setOrRemove(element, "-webkit-clip-path", snapshot.webkitClipPath);
+}
+
+function isElementHidden(element: HTMLElement): boolean {
+  if (element.style.display === "none") {
+    return true;
+  }
+  return readComputedDisplay(element) === "none";
+}
+
+function readComputedDisplay(element: HTMLElement): string {
+  const view = element.ownerDocument.defaultView;
+  return view ? view.getComputedStyle(element).display : element.style.display;
 }
 
 function restoreInlineSnapshot(element: HTMLElement, snapshot: InlineSnapshot): void {

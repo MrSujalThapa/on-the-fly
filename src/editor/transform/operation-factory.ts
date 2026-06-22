@@ -1,11 +1,16 @@
 import type { OperationId, PageKey } from "../ids.js";
 import type {
+  CropOperation,
+  HideOperation,
   MoveOperation,
   ResizeMode,
   ResizeOperation,
   RotateOperation,
   ZIndexOperation,
 } from "../operations.js";
+import type { EditorTarget } from "../editor-target.js";
+import { buildPersistableElementSignature } from "../measurement/signature-builder.js";
+import type { CropInsets } from "./crop-geometry.js";
 import { createOperationId } from "./operation-id.js";
 import {
   transformTargetToEditorTarget,
@@ -93,6 +98,56 @@ export function buildRotateOperation(
     pageKey: options.pageKey,
     target: transformTargetToEditorTarget(target),
     payload: { degrees },
+    createdAt,
+    source: "manual",
+    status: "approved",
+  };
+}
+
+export function buildHideOperation(
+  target: TransformTarget,
+  hidden: boolean,
+  options: BuildOperationOptions,
+  previousDisplay?: string,
+  liveElement?: HTMLElement,
+): HideOperation {
+  const { id, createdAt } = resolveMeta(options);
+  const payload: HideOperation["payload"] =
+    previousDisplay === undefined ? { hidden } : { hidden, previousDisplay };
+
+  const persistedTarget: EditorTarget = liveElement
+    ? { signature: buildPersistableElementSignature(liveElement) }
+    : transformTargetToEditorTarget(target);
+
+  return {
+    id,
+    type: "hide",
+    pageKey: options.pageKey,
+    target: persistedTarget,
+    payload,
+    createdAt,
+    source: "manual",
+    status: "approved",
+  };
+}
+
+export function buildCropOperation(
+  target: TransformTarget,
+  insets: CropInsets,
+  options: BuildOperationOptions,
+): CropOperation {
+  const { id, createdAt } = resolveMeta(options);
+  return {
+    id,
+    type: "crop",
+    pageKey: options.pageKey,
+    target: transformTargetToEditorTarget(target),
+    payload: {
+      top: Math.max(0, insets.top),
+      right: Math.max(0, insets.right),
+      bottom: Math.max(0, insets.bottom),
+      left: Math.max(0, insets.left),
+    },
     createdAt,
     source: "manual",
     status: "approved",

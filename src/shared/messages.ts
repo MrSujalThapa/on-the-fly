@@ -4,6 +4,7 @@ export {
   OTF_STORAGE_MESSAGE,
   type OtfClearPageMessage,
   type OtfExportDataMessage,
+  type OtfGetPageOperationCountMessage,
   type OtfImportDataMessage,
   type OtfLoadPageStateMessage,
   type OtfSaveOperationsMessage,
@@ -11,6 +12,7 @@ export {
   type StorageMutationResponse,
   type StorageRequestMessage,
   isClearPageMessage,
+  isGetPageOperationCountMessage,
   isLoadPageStateMessage,
   isSaveOperationsMessage,
 } from "./storage-messages.js";
@@ -21,6 +23,7 @@ export const OTF_MESSAGE = {
   EDIT_MODE_CHANGED: "OTF_EDIT_MODE_CHANGED",
   GET_SETTINGS: "OTF_GET_SETTINGS",
   SET_SETTINGS: "OTF_SET_SETTINGS",
+  CLEAR_PAGE_REQUEST: "OTF_CLEAR_PAGE_REQUEST",
 } as const;
 
 export type EditModeStatus = "inactive" | "active" | "unavailable";
@@ -41,6 +44,10 @@ export type OtfEditModeChangedMessage = {
   enabled: boolean;
 };
 
+export type OtfClearPageRequestMessage = {
+  type: typeof OTF_MESSAGE.CLEAR_PAGE_REQUEST;
+};
+
 export type OtfGetSettingsMessage = {
   type: typeof OTF_MESSAGE.GET_SETTINGS;
 };
@@ -56,7 +63,7 @@ export type ExtensionRequestMessage =
   | OtfGetSettingsMessage
   | OtfSetSettingsMessage;
 
-export type ExtensionPushMessage = OtfEditModeChangedMessage;
+export type ExtensionPushMessage = OtfEditModeChangedMessage | OtfClearPageRequestMessage;
 
 export interface EditModeResponse {
   ok: boolean;
@@ -114,6 +121,15 @@ export function isSetSettingsMessage(value: unknown): value is OtfSetSettingsMes
     "settings" in value &&
     typeof value.settings === "object" &&
     value.settings !== null
+  );
+}
+
+export function isClearPageRequestMessage(value: unknown): value is OtfClearPageRequestMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === OTF_MESSAGE.CLEAR_PAGE_REQUEST
   );
 }
 

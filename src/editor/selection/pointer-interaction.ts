@@ -10,6 +10,7 @@ export interface PointerGestureState {
   startX: number;
   startY: number;
   shiftKey: boolean;
+  altKey: boolean;
   kind: PointerGestureKind;
 }
 
@@ -18,12 +19,14 @@ export function beginPointerGesture(
   startX: number,
   startY: number,
   shiftKey: boolean,
+  altKey = false,
 ): PointerGestureState {
   return {
     pointerId,
     startX,
     startY,
     shiftKey,
+    altKey,
     kind: "pending",
   };
 }

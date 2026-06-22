@@ -2,6 +2,7 @@ import type { OperationId } from "../ids.js";
 
 export const OTF_MANAGED_ATTR = "data-otf-managed";
 export const OTF_TRANSFORM_ATTR = "data-otf-transform";
+export const OTF_CROP_ATTR = "data-otf-crop";
 
 export interface ElementStyleSnapshot {
   inlineStyle: string;
@@ -23,7 +24,13 @@ export type DomChange =
   | { kind: "transform-state"; previousState: string | null }
   | { kind: "size"; previousWidth: string; previousHeight: string; previousBoxSizing: string }
   | { kind: "zIndex"; previousValue: string }
-  | { kind: "position"; previousValue: string };
+  | { kind: "position"; previousValue: string }
+  | {
+      kind: "clip";
+      previousClipPath: string;
+      previousWebkitClipPath: string;
+      previousCropAttr: string | null;
+    };
 
 export interface AppliedDomEffect {
   operationId: OperationId;

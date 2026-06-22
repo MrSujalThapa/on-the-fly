@@ -8,6 +8,7 @@ import {
 } from "../visual-graph/container-detection.js";
 import type { VisualLayoutGraph } from "../visual-graph/visual-layout-graph.js";
 import {
+  buildAltClickChain,
   resolveClickTargetNode,
   shouldSkipContainerPromotion,
 } from "./dom-target-matching.js";
@@ -35,6 +36,10 @@ export interface SelectionResolveResult {
 
 export interface ClickResolveOptions {
   document?: Document;
+  /** When true, select the direct/deeper child under the cursor (Alt+Click). */
+  altKey?: boolean;
+  /** Monotonic counter so repeated Alt+Click cycles child → parent → container. */
+  altCycleIndex?: number;
 }
 
 export function resolveClickSelection(
@@ -46,6 +51,17 @@ export function resolveClickSelection(
   composedPath: EventTarget[] = [],
   options: ClickResolveOptions = {},
 ): SelectionResolveResult {
+  if (options.altKey) {
+    return resolveAltClickSelection(
+      graph,
+      x,
+      y,
+      composedPath,
+      options.document,
+      options.altCycleIndex ?? 0,
+    );
+  }
+
   const hit = resolveClickTargetNode(graph, x, y, composedPath, options.document);
   if (!hit || !isSelectableForInteraction(hit)) {
     return {
@@ -97,6 +113,53 @@ export function resolveClickSelection(
       source: "click",
     },
     resolvedNodes: [promoted],
+    rejectedWholePage: false,
+  };
+}
+
+/**
+ * Resolves an Alt+Click into the child/parent/container chain entry selected by
+ * `cycleIndex`. Index 0 is the direct/deeper child under the cursor; higher
+ * indices walk up the chain. Container promotion is intentionally skipped so
+ * clicking inside an anchor selects the child (ad title/image) rather than the
+ * surrounding link.
+ */
+function resolveAltClickSelection(
+  graph: VisualLayoutGraph,
+  x: number,
+  y: number,
+  composedPath: EventTarget[],
+  document: Document | undefined,
+  cycleIndex: number,
+): SelectionResolveResult {
+  const chain = buildAltClickChain(graph, x, y, composedPath, document);
+  if (chain.length === 0) {
+    return {
+      selection: createEmptySelection(),
+      resolvedNodes: [],
+      rejectedWholePage: false,
+      rejectionReason: "empty",
+    };
+  }
+
+  const index = ((cycleIndex % chain.length) + chain.length) % chain.length;
+  const picked = chain[index] ?? chain[0];
+  if (!picked) {
+    return {
+      selection: createEmptySelection(),
+      resolvedNodes: [],
+      rejectedWholePage: false,
+      rejectionReason: "empty",
+    };
+  }
+
+  return {
+    selection: {
+      selectedNodeIds: [picked.id],
+      activeNodeId: picked.id,
+      source: "click",
+    },
+    resolvedNodes: [picked],
     rejectedWholePage: false,
   };
 }

@@ -37,15 +37,16 @@ describe("validation hardening", () => {
   });
 
   it("rejects unsupported DOM operations and nodeId-only targets", () => {
-    const cropLike = validateOperationForDom({
+    // `ungroup` is a valid editor operation but is not applicable to the DOM.
+    const unsupported = validateOperationForDom({
       ...createHideOperation(),
-      type: "crop",
-      payload: { top: 0, right: 0, bottom: 0, left: 0 },
+      type: "ungroup",
+      payload: { groupId: "group-1" },
     });
 
-    expect(cropLike.ok).toBe(false);
-    if (!cropLike.ok) {
-      expect(cropLike.codes).toContain("unsupported_dom_operation");
+    expect(unsupported.ok).toBe(false);
+    if (!unsupported.ok) {
+      expect(unsupported.codes).toContain("unsupported_dom_operation");
     }
 
     const nodeOnly = validateOperationForDom(

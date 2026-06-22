@@ -382,6 +382,166 @@ describe("TransformController", () => {
     expect(elementA.style.zIndex).toBe("2147483000");
   });
 
+  it("hides the selection via a hide operation and clears the overlay", () => {
+    const { document } = createTestDocument(
+      `<main><div class="box-a">Box A</div></main>`,
+    );
+    const elementA = document.querySelector(".box-a") as HTMLElement;
+    layoutWithTransform(elementA, { x: 20, y: 20, width: 100, height: 40 });
+
+    const { shell } = createFakeShell();
+    const adapter = new DomRuntimeAdapter(document);
+    const applied: string[] = [];
+    const controller = createTransformController({
+      shell,
+      document,
+      adapter,
+      getPageKey: () => "https://example.com/",
+      onApply: (ops) => {
+        ops.forEach((op) => {
+          applied.push(op.type);
+        });
+      },
+    });
+
+    const target = makeTarget("box-a", "Box A", { x: 20, y: 20, width: 100, height: 40 });
+    controller.setSelection(nodeInput([target]));
+
+    const ops = controller.hideSelection();
+
+    expect(ops).toHaveLength(1);
+    expect(ops[0]?.type).toBe("hide");
+    expect((ops[0]?.payload as { hidden: boolean }).hidden).toBe(true);
+    expect(elementA.style.display).toBe("none");
+    expect(applied).toContain("hide");
+  });
+
+  it("does not create a hide operation when the target is already hidden", () => {
+    const { document } = createTestDocument(
+      `<main><div class="box-a">Box A</div></main>`,
+    );
+    const elementA = document.querySelector(".box-a") as HTMLElement;
+    layoutWithTransform(elementA, { x: 20, y: 20, width: 100, height: 40 });
+    elementA.style.display = "none";
+
+    const { shell } = createFakeShell();
+    const adapter = new DomRuntimeAdapter(document);
+    const applied: string[] = [];
+    const controller = createTransformController({
+      shell,
+      document,
+      adapter,
+      getPageKey: () => "https://example.com/",
+      onApply: (ops) => {
+        ops.forEach((op) => {
+          applied.push(op.type);
+        });
+      },
+    });
+
+    const target = makeTarget("box-a", "Box A", { x: 20, y: 20, width: 100, height: 40 });
+    controller.setSelection(nodeInput([target]));
+
+    const ops = controller.hideSelection();
+
+    expect(ops).toEqual([]);
+    expect(applied).toEqual([]);
+    expect(elementA.style.display).toBe("none");
+  });
+
+  it("clears selection state after hide via clearSelection", () => {
+    const { document } = createTestDocument(
+      `<main><div class="box-a">Box A</div></main>`,
+    );
+    const elementA = document.querySelector(".box-a") as HTMLElement;
+    layoutWithTransform(elementA, { x: 20, y: 20, width: 100, height: 40 });
+
+    const { shell } = createFakeShell();
+    const adapter = new DomRuntimeAdapter(document);
+    const controller = createTransformController({
+      shell,
+      document,
+      adapter,
+      getPageKey: () => "https://example.com/",
+    });
+
+    const target = makeTarget("box-a", "Box A", { x: 20, y: 20, width: 100, height: 40 });
+    controller.setSelection(nodeInput([target]));
+    expect(controller.hasSelection()).toBe(true);
+
+    controller.hideSelection();
+    controller.clearSelection();
+
+    expect(controller.hasSelection()).toBe(false);
+  });
+
+  it("toggles a hidden element back to visible", () => {
+    const { document } = createTestDocument(
+      `<main><div class="box-a">Box A</div></main>`,
+    );
+    const elementA = document.querySelector(".box-a") as HTMLElement;
+    layoutWithTransform(elementA, { x: 20, y: 20, width: 100, height: 40 });
+
+    const { shell } = createFakeShell();
+    const adapter = new DomRuntimeAdapter(document);
+    const controller = createTransformController({
+      shell,
+      document,
+      adapter,
+      getPageKey: () => "https://example.com/",
+    });
+
+    const target = makeTarget("box-a", "Box A", { x: 20, y: 20, width: 100, height: 40 });
+    controller.setSelection(nodeInput([target]));
+
+    controller.toggleHideSelection();
+    expect(elementA.style.display).toBe("none");
+
+    const showOps = controller.toggleHideSelection();
+    expect(showOps[0]?.type).toBe("hide");
+    expect((showOps[0]?.payload as { hidden: boolean }).hidden).toBe(false);
+    expect(elementA.style.display).not.toBe("none");
+  });
+
+  it("crops the handle target with inline clip-path without resizing it", () => {
+    const { document } = createTestDocument(
+      `<main><img class="photo" alt="x" /></main>`,
+    );
+    const image = document.querySelector(".photo") as HTMLElement;
+    layoutResizable(image, { x: 0, y: 0, width: 200, height: 160 });
+
+    const { shell } = createFakeShell();
+    const adapter = new DomRuntimeAdapter(document);
+    const controller = createTransformController({
+      shell,
+      document,
+      adapter,
+      getPageKey: () => "https://example.com/",
+    });
+
+    const target: TransformTarget = {
+      nodeId: "photo",
+      signature: signatureFor("photo", ""),
+      rect: { x: 0, y: 0, width: 200, height: 160 },
+      element: image,
+    };
+    controller.setSelection({
+      targets: [target],
+      outlineRects: [{ ...target.rect }],
+      variant: "node",
+      handleTarget: target,
+    });
+
+    const ops = controller.cropSelection({ top: 10, right: 20, bottom: 0, left: 5 });
+
+    expect(ops).toHaveLength(1);
+    expect(ops[0]?.type).toBe("crop");
+    expect(image.style.clipPath).toBe("inset(10px 20px 0px 5px)");
+    // Crop must not stretch/resize the element.
+    expect(image.style.width).toBe("");
+    expect(image.style.height).toBe("");
+  });
+
   it("recomputes the outline after a resize", () => {
     const { document } = createTestDocument(
       `<main><section class="card"><p class="copy">Card copy</p></section></main>`,

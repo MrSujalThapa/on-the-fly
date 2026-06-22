@@ -87,12 +87,13 @@ describe("transform composition", () => {
     const { root } = createTestDocument(`<main><p class="target">Block</p></main>`);
     const adapter = new DomRuntimeAdapter(root);
 
+    // `ungroup` is a valid editor operation but cannot be applied to the DOM.
     const result = adapter.applyOperation({
-      id: "crop-1",
-      type: "crop",
+      id: "ungroup-1",
+      type: "ungroup",
       pageKey: PAGE_KEY,
       target: targetSignature("Block"),
-      payload: { top: 0, right: 0, bottom: 0, left: 0 },
+      payload: { groupId: "group-1" },
       createdAt: 1,
       source: "manual",
       status: "approved",

@@ -3,6 +3,10 @@ import type { EditorOperation } from "../operations.js";
 import { validateOperationForDom } from "../validation/validate-dom-operation.js";
 import { ElementSnapshotStore } from "./element-snapshot.js";
 import {
+  applyCropOperation,
+  revertClipChange,
+} from "./handlers/crop-handler.js";
+import {
   applyHideOperation,
   revertDisplayChange,
 } from "./handlers/hide-handler.js";
@@ -26,7 +30,11 @@ import {
   revertPositionChange,
   revertZIndexChange,
 } from "./handlers/z-index-handler.js";
-import { resolveTargetElement } from "./resolve-target.js";
+import { resolveTargetElementDetailed } from "./resolve-target.js";
+import {
+  summarizeElementSignature,
+  type SignatureMatchDiagnostics,
+} from "./signature-matcher.js";
 import {
   createDomApplyFailure,
   createDomApplySuccess,
@@ -36,6 +44,24 @@ import {
 
 interface StoredDomEffect extends AppliedDomEffect {
   element: HTMLElement;
+}
+
+export interface ReplayOperationDiagnostic {
+  operationId: string;
+  operationType: string;
+  signatureSummary: string;
+  resolved: boolean;
+  matchStrategy?: SignatureMatchDiagnostics["matchStrategy"];
+  resolvedTag?: string;
+  resolvedClasses?: string[];
+  failureReason?: string;
+  error?: string;
+  code?: string;
+}
+
+export interface ReplayBatchResult {
+  results: DomApplyResult[];
+  diagnostics: ReplayOperationDiagnostic[];
 }
 
 export class DomRuntimeAdapter {
@@ -59,42 +85,111 @@ export class DomRuntimeAdapter {
    * different element or fail to match at all.
    */
   applyOperation(operation: EditorOperation, overrideElement?: HTMLElement | null): DomApplyResult {
+    return this.applyOperationDetailed(operation, overrideElement).result;
+  }
+
+  applyOperationDetailed(
+    operation: EditorOperation,
+    overrideElement?: HTMLElement | null,
+  ): { result: DomApplyResult; diagnostic: ReplayOperationDiagnostic } {
+    const diagnostic: ReplayOperationDiagnostic = {
+      operationId: operation.id,
+      operationType: operation.type,
+      signatureSummary: summarizeElementSignature(operation.target.signature),
+      resolved: false,
+    };
+
     const validation = validateOperationForDom(operation);
     if (!validation.ok) {
-      return createDomApplyFailure(
+      const result = createDomApplyFailure(
         validation.codes.includes("unsupported_dom_operation")
           ? "unsupported_dom_operation"
           : "validation_failed",
         validation.errors.join("; "),
         validation.errors,
       );
+      diagnostic.failureReason = result.error;
+      diagnostic.code = result.code;
+      diagnostic.error = result.error;
+      return { result, diagnostic };
     }
 
     try {
       if (this.effects.has(operation.id)) {
-        return createDomApplyFailure(
+        const result = createDomApplyFailure(
           "operation_already_applied",
           `operation_already_applied:${operation.id}`,
         );
+        diagnostic.failureReason = result.error;
+        diagnostic.code = result.code;
+        diagnostic.error = result.error;
+        return { result, diagnostic };
       }
 
-      const element =
-        overrideElement && overrideElement.isConnected
-          ? overrideElement
-          : resolveTargetElement(this.root, operation.target);
+      let element: HTMLElement | null = null;
+      if (overrideElement && overrideElement.isConnected) {
+        element = overrideElement;
+        diagnostic.resolved = true;
+        diagnostic.matchStrategy = "live-session";
+        diagnostic.resolvedTag = element.tagName.toLowerCase();
+        diagnostic.resolvedClasses = Array.from(element.classList);
+      } else {
+        const resolution = resolveTargetElementDetailed(this.root, operation.target);
+        element = resolution.element;
+        diagnostic.resolved = resolution.diagnostics.resolved;
+        diagnostic.matchStrategy = resolution.diagnostics.matchStrategy;
+        if (resolution.diagnostics.resolvedTag) {
+          diagnostic.resolvedTag = resolution.diagnostics.resolvedTag;
+        }
+        if (resolution.diagnostics.resolvedClasses) {
+          diagnostic.resolvedClasses = resolution.diagnostics.resolvedClasses;
+        }
+        if (resolution.diagnostics.failureReason) {
+          diagnostic.failureReason = resolution.diagnostics.failureReason;
+        }
+        diagnostic.signatureSummary = resolution.diagnostics.signatureSummary;
+      }
+
       if (!element) {
-        return createDomApplyFailure("target_not_found", "target_not_found");
+        const result = createDomApplyFailure("target_not_found", "target_not_found");
+        diagnostic.code = result.code;
+        diagnostic.error = result.error;
+        if (!diagnostic.failureReason) {
+          diagnostic.failureReason = "target_not_found";
+        }
+        return { result, diagnostic };
       }
 
       const effect = this.applyToElement(element, validation.operation);
       this.effects.set(operation.id, { ...effect, element });
-      return createDomApplySuccess();
+      return { result: createDomApplySuccess(), diagnostic };
     } catch (error) {
-      return createDomApplyFailure(
+      const result = createDomApplyFailure(
         "dom_apply_failed",
         error instanceof Error ? error.message : "dom_apply_failed",
       );
+      diagnostic.failureReason = result.error;
+      diagnostic.code = result.code;
+      diagnostic.error = result.error;
+      return { result, diagnostic };
     }
+  }
+
+  replayOperations(operations: EditorOperation[]): DomApplyResult[] {
+    return this.replayOperationsWithDiagnostics(operations).results;
+  }
+
+  replayOperationsWithDiagnostics(operations: EditorOperation[]): ReplayBatchResult {
+    const results: DomApplyResult[] = [];
+    const diagnostics: ReplayOperationDiagnostic[] = [];
+
+    for (const operation of operations) {
+      const applied = this.applyOperationDetailed(operation);
+      results.push(applied.result);
+      diagnostics.push(applied.diagnostic);
+    }
+
+    return { results, diagnostics };
   }
 
   revertOperation(operation: EditorOperation): DomApplyResult {
@@ -123,10 +218,6 @@ export class DomRuntimeAdapter {
     }
   }
 
-  replayOperations(operations: EditorOperation[]): DomApplyResult[] {
-    return operations.map((operation) => this.applyOperation(operation));
-  }
-
   clearAppliedEffects(): void {
     for (const effect of [...this.effects.values()].reverse()) {
       this.revertEffect(effect);
@@ -142,6 +233,8 @@ export class DomRuntimeAdapter {
         return applyTextOperation(element, operation, this.snapshotStore);
       case "hide":
         return applyHideOperation(element, operation, this.snapshotStore);
+      case "crop":
+        return applyCropOperation(element, operation, this.snapshotStore);
       case "zIndex":
         return applyZIndexOperation(element, operation, this.snapshotStore);
       case "move":
@@ -178,6 +271,9 @@ export class DomRuntimeAdapter {
           break;
         case "position":
           revertPositionChange(effect.element, change);
+          break;
+        case "clip":
+          revertClipChange(effect.element, change);
           break;
         case "visibility":
           break;

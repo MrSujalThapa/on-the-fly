@@ -9,12 +9,24 @@ export { createOperationId } from "./operation-id.js";
 
 export type { BuildOperationOptions, ResizePayloadInput } from "./operation-factory.js";
 export {
+  buildCropOperation,
+  buildHideOperation,
   buildMoveOperation,
   buildMoveOperations,
   buildResizeOperation,
   buildRotateOperation,
   buildZIndexOperation,
 } from "./operation-factory.js";
+
+export type { CropInsets } from "./crop-geometry.js";
+export {
+  applyCropToRect,
+  computeCrop,
+  createEmptyCropInsets,
+  cropInsetsToClipPath,
+  isCropped,
+  MIN_CROP_VISIBLE_PX,
+} from "./crop-geometry.js";
 
 export type { LayerCommand } from "./layer-order.js";
 export {

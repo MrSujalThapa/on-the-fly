@@ -1,4 +1,5 @@
 import {
+  isClearPageRequestMessage,
   isEditModeChangedMessage,
   OTF_MESSAGE,
   parseEditModeResponse,
@@ -64,13 +65,30 @@ async function syncEditModeFromBackground(): Promise<void> {
 }
 
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
-  if (!isEditModeChangedMessage(message)) {
-    return;
+  if (isEditModeChangedMessage(message)) {
+    applyEditMode(message.enabled);
+    sendResponse({ ok: true });
+    return true;
   }
 
-  applyEditMode(message.enabled);
-  sendResponse({ ok: true });
-  return true;
+  if (isClearPageRequestMessage(message)) {
+    if (!editSession) {
+      sendResponse({ ok: false, error: "edit_mode_inactive" });
+      return true;
+    }
+
+    void editSession.clearPage().then(
+      () => {
+        sendResponse({ ok: true });
+      },
+      () => {
+        sendResponse({ ok: false, error: "clear_failed" });
+      },
+    );
+    return true;
+  }
+
+  return undefined;
 });
 
 void syncEditModeFromBackground();
