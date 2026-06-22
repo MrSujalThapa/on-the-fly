@@ -9,6 +9,7 @@ export class GeometryCache {
   private readonly root: ParentNode;
   private readonly scanOptions: GeometryCacheOptions["scanOptions"];
   private readonly now: () => number;
+  private readonly onRebuild: GeometryCacheOptions["onRebuild"];
   private graph: VisualLayoutGraph | null = null;
   private dirty = true;
   private version = 0;
@@ -19,6 +20,7 @@ export class GeometryCache {
     this.root = options.root;
     this.scanOptions = options.scanOptions;
     this.now = options.now ?? (() => Date.now());
+    this.onRebuild = options.onRebuild;
   }
 
   invalidate(reason: InvalidationReason = "manual"): void {
@@ -48,6 +50,7 @@ export class GeometryCache {
   }
 
   rebuild(): VisualLayoutGraph {
+    const startedAt = performance.now();
     const result = scanVisualNodes(this.root, this.scanOptions ?? {});
     const viewport = this.scanOptions?.viewport ?? getMatchViewport(this.root);
     enrichNodeContainerMetadata(result.nodes, viewport);
@@ -60,6 +63,11 @@ export class GeometryCache {
       this.version,
     );
     this.dirty = false;
+    this.onRebuild?.({
+      durationMs: performance.now() - startedAt,
+      reason: this.lastInvalidationReason,
+      nodeCount: result.nodes.size,
+    });
     return this.graph;
   }
 

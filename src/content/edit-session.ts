@@ -9,6 +9,10 @@ import {
 } from "../editor/selection/pointer-interaction.js";
 import { logSelectionDebug } from "../editor/selection/selection-debug.js";
 import {
+  createPerformanceInstrumentation,
+  type PerformanceInstrumentation,
+} from "../editor/performance/performance-instrumentation.js";
+import {
   createGeometryCacheController,
 } from "../editor/visual-graph/dom-invalidation-listener.js";
 import {
@@ -29,7 +33,13 @@ import type { DomRuntimeAdapter } from "../editor/dom/dom-runtime-adapter.js";
 import { matchElementBySignature } from "../editor/dom/signature-matcher.js";
 import type { VisualNodeRect, VisualNode } from "../editor/visual-node.js";
 import type { VisualNodeId } from "../editor/ids.js";
-import { savePageOperations } from "./storage-client.js";
+import {
+  captureEditorClipboard,
+  createDuplicateOperations,
+  resolveDuplicateElement,
+  type EditorClipboardEntry,
+} from "../editor/duplicate/duplicate-element.js";
+import { createOperationId } from "../editor/transform/operation-id.js";
 import { attachEditModePointerPipeline } from "./edit-mode-pointer-pipeline.js";
 import type { EditModePointerPipeline } from "./edit-mode-pointer-pipeline.js";
 import type { EditorShell } from "./editor-shell.js";
@@ -41,26 +51,38 @@ import {
 import { createDefaultCommands, TOOLBAR_COMMAND_IDS } from "./default-commands.js";
 import type { SessionCommandHost } from "./session-command-host.js";
 import {
-  appendOperations,
   canRedo,
   canUndo,
   createSessionHistory,
   popRedoBatch,
   popUndoBatch,
   recordHistoryBatch,
-  removeOperationsById,
   type SessionHistory,
 } from "./session-history.js";
+import {
+  appendDraftOperations,
+  clearAllOperations,
+  createSessionOperationState,
+  hasUnsavedChanges,
+  promoteAllDraftToSaved,
+  removeDraftOperationsById,
+  unsavedChangeCount,
+  type SessionOperationState,
+} from "./session-operation-state.js";
 import { createStyleTextController, StyleTextController } from "./style-text-controller.js";
 import { FloatingToolbar } from "./floating-toolbar.js";
 import {
   PageCustomizationController,
   computePageKey as computeDocumentPageKey,
 } from "./page-customization-controller.js";
+import { isInsideEphemeralSurface } from "./ephemeral-surface.js";
 import {
+  extractEditableText,
   resolveTextEditTargetAtPoint,
   resolveTextEditTargetForSelection,
 } from "../editor/style/text-target-resolver.js";
+import { SaveWindowController } from "./save-window-controller.js";
+import { createEmptyBatchSnapshot } from "../editor/dom/operation-batch-snapshot.js";
 
 export interface EditSessionOptions {
   shell: EditorShell;
@@ -97,7 +119,7 @@ export class EditSession implements SessionCommandHost {
   private commandRegistry: CommandRegistry | null = null;
   private toolbar: FloatingToolbar | null = null;
   private sessionHistory: SessionHistory = createSessionHistory();
-  private pageOperations: EditorOperation[] = [];
+  private operationState: SessionOperationState = createSessionOperationState();
   private activeGesture: PointerGestureState | null = null;
   private captureTarget: HTMLElement | null = null;
   private keyHandler: ((event: KeyboardEvent) => void) | null = null;
@@ -110,6 +132,12 @@ export class EditSession implements SessionCommandHost {
   private textEditTarget: TransformTarget | null = null;
   private inPlaceTextEdit: InPlaceTextEditState | null = null;
   private toolbarOpen = false;
+  private interactMode = false;
+  private perf: PerformanceInstrumentation = createPerformanceInstrumentation();
+  private lassoFrameId: number | null = null;
+  private pendingLassoRect: ReturnType<typeof normalizeLassoRect> | null = null;
+  private editorClipboard: EditorClipboardEntry[] | null = null;
+  private saveWindowController: SaveWindowController | null = null;
 
   constructor(options: EditSessionOptions) {
     this.shell = options.shell;
@@ -124,7 +152,16 @@ export class EditSession implements SessionCommandHost {
     }
 
     this.cacheController = createGeometryCacheController({
-      cacheOptions: { root: this.root },
+      cacheOptions: {
+        root: this.root,
+        onRebuild: ({ durationMs, reason, nodeCount }) => {
+          this.perf.record("geometry-rebuild", durationMs, { reason, nodeCount });
+        },
+      },
+      schedulerOptions: {
+        throttleMs: 120,
+        debounceMs: 200,
+      },
       listeners: {
         window: this.root.defaultView as Window,
         root: this.root,
@@ -133,7 +170,36 @@ export class EditSession implements SessionCommandHost {
 
     await this.pageCustomization.ensureReplayed(this.onDebug);
     this.adapter = this.pageCustomization.getAdapter();
-    this.pageOperations = [...this.pageCustomization.getPageOperations()];
+    this.operationState = createSessionOperationState([
+      ...this.pageCustomization.getPageOperations(),
+    ]);
+
+    this.shell.setSaveButton({
+      visible: false,
+      count: 0,
+      onSave: () => {
+        void this.saveAll();
+      },
+    });
+
+    this.saveWindowController = new SaveWindowController({
+      shell: this.shell,
+      root: this.root,
+      adapter: this.adapter,
+      getOperationState: () => this.operationState,
+      setOperationState: (state) => {
+        this.operationState = state;
+        this.pageCustomization.setPageOperations(state.savedOperations);
+        this.updateSaveButton();
+      },
+      syncSavedOperationsToStorage: () => this.pageCustomization.syncOperationsToStorage(),
+      getSessionHistory: () => this.sessionHistory,
+      setSessionHistory: (history) => {
+        this.sessionHistory = history;
+        this.updateSaveButton();
+      },
+      onDebug: this.onDebug,
+    });
 
     this.transformController = createTransformController({
       shell: this.shell,
@@ -144,6 +210,15 @@ export class EditSession implements SessionCommandHost {
         this.recordOperations(operations);
       },
       onDebug: this.onDebug,
+      onInteractionStart: () => {
+        this.cacheController?.scheduler.suspend();
+      },
+      onInteractionEnd: () => {
+        this.cacheController?.scheduler.resume();
+      },
+      onFrame: (durationMs) => {
+        this.perf.record("transform-frame", durationMs);
+      },
     });
 
     this.styleTextController = createStyleTextController({
@@ -199,7 +274,7 @@ export class EditSession implements SessionCommandHost {
         if (!this.cacheController) {
           throw new Error("EditSession is not started");
         }
-        return this.cacheController.cache.ensureFresh();
+        return this.cacheController.cache.getGraph() ?? this.cacheController.cache.ensureFresh();
       },
       getDocument: () => this.root,
       onSelectionChange: (selection, result) => {
@@ -237,13 +312,14 @@ export class EditSession implements SessionCommandHost {
   afterExternalClearPage(): void {
     this.closeInPlaceTextEditor(true);
     this.cancelStylePreview();
-    this.pageOperations = [];
+    this.operationState = clearAllOperations();
     this.sessionHistory = createSessionHistory();
     this.transformController?.setCropMode(false);
     this.selectionController?.clearSelection();
     this.transformController?.clearSelection();
     this.closeToolbar();
     this.shell.clearOverlays();
+    this.updateSaveButton();
     this.lastSelectionKey = null;
     this.textEditTarget = null;
   }
@@ -253,58 +329,77 @@ export class EditSession implements SessionCommandHost {
       return;
     }
 
-    this.sessionHistory = recordHistoryBatch(this.sessionHistory, operations);
-    this.pageOperations = appendOperations(this.pageOperations, operations);
-    this.pageCustomization.recordAppliedOperations(operations);
-    this.persistOperations(operations);
+    const snapshot = this.adapter?.buildBatchSnapshot(operations) ?? createEmptyBatchSnapshot();
+    this.sessionHistory = recordHistoryBatch(this.sessionHistory, operations, snapshot);
+    const ephemeral = this.usesEphemeralSelectionTargets();
+    if (ephemeral) {
+      this.onDebug("ephemeral-surface-not-persistable", {
+        count: operations.length,
+        note: "skipped draft tracking for ephemeral dropdown/popover surface",
+      });
+    } else {
+      this.operationState = appendDraftOperations(this.operationState, operations);
+    }
+    this.updateSaveButton();
     this.updateToolbar();
   }
 
-  private persistOperations(operations: EditorOperation[]): void {
-    if (operations.length === 0) {
-      return;
-    }
-
-    const pageKey = this.computePageKey();
-    void savePageOperations(pageKey, operations).then((result) => {
-      if (!result.ok) {
-        this.onDebug("storage-save-failed", {
-          pageKey,
-          error: result.error ?? "unknown",
-          batchSize: operations.length,
-        });
-        return;
-      }
-
-      this.onDebug("storage-save", {
-        pageKey,
-        saved: result.saved ?? 0,
-        skipped: result.skipped ?? 0,
-        operationCount: result.operationCount ?? 0,
-        trimmed: result.trimmed ?? 0,
-        capReached: result.capReached === true,
-        ...(result.capReached ? { warning: "operation_cap_reached" } : {}),
-        ...(result.error ? { note: result.error } : {}),
-      });
+  private usesEphemeralSelectionTargets(): boolean {
+    const targets = this.transformController?.getTargets() ?? [];
+    return targets.some((target) => {
+      const element = target.element?.isConnected
+        ? target.element
+        : matchElementBySignature(this.root, target.signature);
+      return element ? isInsideEphemeralSurface(element, this.root) : false;
     });
   }
 
+  async saveAll(): Promise<boolean> {
+    if (!hasUnsavedChanges(this.operationState)) {
+      return false;
+    }
+
+    const draftCount = unsavedChangeCount(this.operationState);
+    const nextState = promoteAllDraftToSaved(this.operationState);
+    this.operationState = nextState;
+    this.pageCustomization.setPageOperations(nextState.savedOperations);
+
+    await this.pageCustomization.syncOperationsToStorage();
+    this.updateSaveButton();
+    this.onDebug("explicit-save", {
+      pageKey: this.computePageKey(),
+      savedCount: nextState.savedOperations.length,
+      draftPromoted: draftCount,
+    });
+    return true;
+  }
+
   async clearPage(): Promise<void> {
+    this.saveWindowController?.cancel();
     this.cancelStylePreview();
-    await this.pageCustomization.clearPage();
-    this.pageOperations = [];
+    await this.pageCustomization.clearPage((operationId, error) => {
+      this.onDebug("clear-page-revert-failed", { operationId, error });
+    });
+    this.operationState = clearAllOperations();
     this.sessionHistory = createSessionHistory();
     this.transformController?.setCropMode(false);
     this.selectionController?.clearSelection();
     this.transformController?.clearSelection();
     this.closeToolbar();
     this.shell.clearOverlays();
+    this.updateSaveButton();
     this.lastSelectionKey = null;
     this.textEditTarget = null;
     this.onDebug("clear-page", { pageKey: this.computePageKey() });
   }
 
   stop(): void {
+    if (this.interactMode) {
+      this.interactMode = false;
+      this.pointerPipeline?.setPassThrough(false);
+      this.shell.setSessionMode("edit");
+    }
+    this.resetActiveInteractionState();
     this.closeInPlaceTextEditor(true);
     this.cancelStylePreview();
     this.pointerPipeline?.detach();
@@ -326,9 +421,73 @@ export class EditSession implements SessionCommandHost {
     this.movePending = false;
     this.moveActive = false;
     this.lastSelectionResult = null;
-    this.pageOperations = [];
+    this.operationState = createSessionOperationState();
     this.sessionHistory = createSessionHistory();
+    this.shell.setSaveButton({ visible: false, count: 0 });
     this.toolbarOpen = false;
+    this.perf.reset();
+    this.saveWindowController = null;
+  }
+
+  isInteractMode(): boolean {
+    return this.interactMode;
+  }
+
+  getPerformanceSamples(kind?: Parameters<PerformanceInstrumentation["getSamples"]>[0]) {
+    return this.perf.getSamples(kind);
+  }
+
+  toggleInteractMode(): void {
+    this.setInteractMode(!this.interactMode);
+  }
+
+  setInteractMode(enabled: boolean): void {
+    if (this.interactMode === enabled) {
+      return;
+    }
+
+    if (enabled) {
+      this.interactMode = true;
+      this.pointerPipeline?.setPassThrough(true);
+      this.shell.setSessionMode("interact");
+      this.resetActiveInteractionState();
+      this.closeInPlaceTextEditor(true);
+      this.cancelStylePreview();
+      this.closeToolbar();
+      this.shell.clearOverlays();
+      this.onDebug("interact-mode", { enabled: true });
+      return;
+    }
+
+    this.interactMode = false;
+    this.pointerPipeline?.setPassThrough(false);
+    this.shell.setSessionMode("edit");
+    this.transformController?.refreshSelectionOutline();
+    this.updateToolbar();
+    this.onDebug("interact-mode", { enabled: false });
+  }
+
+  resetActiveInteractionState(): void {
+    this.saveWindowController?.cancel();
+    if (this.activeGesture) {
+      this.releasePointerCapture(this.activeGesture.pointerId);
+      this.activeGesture = null;
+    }
+    this.movePending = false;
+    this.moveActive = false;
+    this.cancelPendingLassoFrame();
+    this.shell.renderLassoBox(null);
+    this.transformController?.cancelActiveTransform();
+    this.transformController?.setCropMode(false);
+  }
+
+  private cancelPendingLassoFrame(): void {
+    const view = this.root.defaultView;
+    if (this.lassoFrameId !== null && view && typeof view.cancelAnimationFrame === "function") {
+      view.cancelAnimationFrame(this.lassoFrameId);
+    }
+    this.lassoFrameId = null;
+    this.pendingLassoRect = null;
   }
 
   hideSelection(): void {
@@ -363,6 +522,29 @@ export class EditSession implements SessionCommandHost {
     return this.resolveTextEditSelection().ok;
   }
 
+  canStartSaveWindow(): boolean {
+    return (
+      !this.interactMode &&
+      !this.isSaveWindowActive() &&
+      this.operationState.draftOperations.length > 0
+    );
+  }
+
+  isSaveWindowActive(): boolean {
+    return this.saveWindowController?.isActive() ?? false;
+  }
+
+  startSaveWindow(): boolean {
+    if (!this.canStartSaveWindow()) {
+      return false;
+    }
+
+    this.resetActiveInteractionState();
+    this.clearSelection();
+    this.closeToolbar();
+    return this.saveWindowController?.start() ?? false;
+  }
+
   clearSelection(): void {
     this.closeInPlaceTextEditor(true);
     this.cancelStylePreview();
@@ -381,17 +563,14 @@ export class EditSession implements SessionCommandHost {
     }
 
     this.sessionHistory = popped.history;
-    for (const operation of [...batch].reverse()) {
-      this.adapter.revertOperation(operation);
-    }
+    this.adapter.restoreBatchSnapshot(batch.snapshot, "before");
 
-    const ids = new Set(batch.map((operation) => operation.id));
-    this.pageOperations = removeOperationsById(this.pageOperations, ids);
-    this.pageCustomization.setPageOperations(this.pageOperations);
-    void this.pageCustomization.syncOperationsToStorage();
+    const ids = new Set(batch.operations.map((operation) => operation.id));
+    this.operationState = removeDraftOperationsById(this.operationState, ids);
     this.transformController?.refreshSelectionOutline();
+    this.updateSaveButton();
     this.updateToolbar();
-    this.onDebug("undo", { count: batch.length });
+    this.onDebug("undo", { count: batch.operations.length });
     return true;
   }
 
@@ -403,16 +582,13 @@ export class EditSession implements SessionCommandHost {
     }
 
     this.sessionHistory = popped.history;
-    for (const operation of batch) {
-      this.adapter.applyOperation(operation);
-    }
+    this.adapter.restoreBatchSnapshot(batch.snapshot, "after");
 
-    this.pageOperations = appendOperations(this.pageOperations, batch);
-    this.pageCustomization.recordAppliedOperations(batch);
-    void savePageOperations(this.computePageKey(), batch);
+    this.operationState = appendDraftOperations(this.operationState, batch.operations);
     this.transformController?.refreshSelectionOutline();
+    this.updateSaveButton();
     this.updateToolbar();
-    this.onDebug("redo", { count: batch.length });
+    this.onDebug("redo", { count: batch.operations.length });
     return true;
   }
 
@@ -422,6 +598,10 @@ export class EditSession implements SessionCommandHost {
 
   canRedo(): boolean {
     return canRedo(this.sessionHistory);
+  }
+
+  hasUnsavedChanges(): boolean {
+    return hasUnsavedChanges(this.operationState);
   }
 
   applyStyle(property: StyleProperty, value: string): void {
@@ -527,7 +707,23 @@ export class EditSession implements SessionCommandHost {
     this.updateToolbar();
   }
 
+  private updateSaveButton(): void {
+    const dirty = hasUnsavedChanges(this.operationState);
+    this.shell.setSaveButton({
+      visible: dirty,
+      count: unsavedChangeCount(this.operationState),
+      onSave: () => {
+        void this.saveAll();
+      },
+    });
+  }
+
   private updateToolbar(): void {
+    if (this.interactMode) {
+      this.closeToolbar();
+      return;
+    }
+
     if (!this.toolbar || !this.commandRegistry) {
       return;
     }
@@ -709,10 +905,12 @@ export class EditSession implements SessionCommandHost {
 
     const context = this.buildCommandContext();
     await registry.execute(commandId, context);
+    this.transformController?.refreshSelectionOutline();
+    this.updateToolbar();
   }
 
   private buildCommandContext(): CommandContext {
-    const graph = this.cacheController?.cache.ensureFresh();
+    const graph = this.cacheController?.cache.getGraph() ?? this.cacheController?.cache.ensureFresh();
     const selection = this.selectionController?.getSelection() ?? {
       selectedNodeIds: [],
       source: "click" as const,
@@ -780,6 +978,136 @@ export class EditSession implements SessionCommandHost {
     }
   }
 
+  private copySelectionToClipboard(): boolean {
+    const targets = this.transformController?.getTargets() ?? [];
+    if (targets.length === 0) {
+      this.onDebug("editor-clipboard-copy-skipped", { reason: "no-selection" });
+      return false;
+    }
+
+    const entries = captureEditorClipboard(targets, (target) => this.resolveClipboardElement(target));
+    if (entries.length === 0) {
+      this.onDebug("editor-clipboard-copy-skipped", {
+        reason: "no-resolvable-elements",
+        targetCount: targets.length,
+      });
+      return false;
+    }
+
+    this.editorClipboard = entries;
+    this.onDebug("editor-clipboard-copy", { copiedCount: entries.length });
+    return true;
+  }
+
+  private pasteClipboardDuplicates(): boolean {
+    const clipboard = this.editorClipboard;
+    if (!clipboard || clipboard.length === 0) {
+      this.onDebug("editor-clipboard-paste-skipped", { reason: "empty-clipboard" });
+      return false;
+    }
+
+    const adapter = this.adapter;
+    if (!adapter) {
+      this.onDebug("editor-clipboard-paste-skipped", { reason: "no-adapter" });
+      return false;
+    }
+
+    const pageKey = this.computePageKey();
+    const { operations, cloneTargets } = createDuplicateOperations(
+      clipboard,
+      pageKey,
+      createOperationId,
+    );
+
+    if (operations.length === 0) {
+      this.onDebug("editor-clipboard-paste-skipped", { reason: "no-operations-built" });
+      return false;
+    }
+
+    const appliedTargets: TransformTarget[] = [];
+    for (const operation of operations) {
+      if (operation.type !== "duplicate") {
+        continue;
+      }
+      const result = adapter.applyOperation(operation);
+      if (!result.ok) {
+        this.onDebug("editor-clipboard-paste-failed", {
+          operationId: operation.id,
+          error: result.error,
+        });
+        continue;
+      }
+      const clone = resolveDuplicateElement(this.root, operation.payload.cloneId);
+      if (!clone) {
+        continue;
+      }
+      const planned = cloneTargets.find((target) => target.nodeId === operation.payload.cloneId);
+      const signature = planned?.signature ?? operation.target.signature;
+      if (!signature) {
+        continue;
+      }
+      appliedTargets.push({
+        nodeId: operation.payload.cloneId,
+        signature,
+        rect: planned?.rect ?? {
+          x: operation.payload.anchorLeft + operation.payload.offsetDx,
+          y: operation.payload.anchorTop + operation.payload.offsetDy,
+          width: operation.payload.anchorWidth,
+          height: operation.payload.anchorHeight,
+        },
+        element: clone,
+      });
+    }
+
+    if (appliedTargets.length === 0) {
+      this.onDebug("editor-clipboard-paste-skipped", { reason: "apply-failed" });
+      return false;
+    }
+
+    this.recordOperations(operations);
+    this.transformController?.setSelection({
+      targets: appliedTargets,
+      outlineRects: appliedTargets.map((target) => ({ ...target.rect })),
+      variant: appliedTargets.length > 1 ? "group" : "node",
+      handleTarget: appliedTargets.length === 1 ? (appliedTargets[0] ?? null) : null,
+    });
+    this.cacheController?.cache.invalidate();
+    this.onDebug("editor-clipboard-paste", {
+      pastedCount: appliedTargets.length,
+      saveStatus: "queued",
+    });
+    return true;
+  }
+
+  private resolveClipboardElement(target: TransformTarget): HTMLElement | null {
+    if (target.element?.isConnected) {
+      return target.element;
+    }
+    return matchElementBySignature(this.root, target.signature);
+  }
+
+  private shouldIgnoreClipboardShortcut(event: KeyboardEvent): boolean {
+    if (this.toolbar?.isTextEditorOpen() || this.toolbar?.isStylePanelOpen()) {
+      return true;
+    }
+
+    const path = getEventComposedPath(event);
+    for (const target of path) {
+      if (!(target instanceof Element)) {
+        continue;
+      }
+      if (this.isElementInsideExtensionUi(target) || isTextEntryElement(target)) {
+        return true;
+      }
+    }
+
+    const activeElement = this.root.activeElement;
+    return (
+      activeElement instanceof Element &&
+      (this.isElementInsideExtensionUi(activeElement) || isTextEntryElement(activeElement))
+    );
+  }
+
   private attachKeyHandler(windowRef: Window): void {
     if (this.keyHandler) {
       return;
@@ -793,6 +1121,29 @@ export class EditSession implements SessionCommandHost {
 
       if (event.repeat) {
         return;
+      }
+
+      if (event.ctrlKey || event.metaKey) {
+        const key = event.key.toLowerCase();
+        if (key === "c" && !event.shiftKey) {
+          if (!this.shouldIgnoreClipboardShortcut(event)) {
+            if (this.copySelectionToClipboard()) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+          }
+        }
+
+        if (key === "v" && !event.shiftKey) {
+          if (!this.shouldIgnoreClipboardShortcut(event)) {
+            if (this.pasteClipboardDuplicates()) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+          }
+        }
       }
 
       if (
@@ -811,6 +1162,22 @@ export class EditSession implements SessionCommandHost {
         return;
       }
 
+      if (
+        event.key.toLowerCase() === "i" &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !event.shiftKey
+      ) {
+        if (this.shouldIgnoreToolbarShortcut(event)) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        this.toggleInteractMode();
+        return;
+      }
+
       const registry = this.commandRegistry;
       if (!registry) {
         return;
@@ -819,6 +1186,12 @@ export class EditSession implements SessionCommandHost {
       const context = this.buildCommandContext();
       const command = findCommandForKeyboardEvent(registry, event, context);
       if (command) {
+        if (
+          command.id === "saveWindow.start" &&
+          this.shouldIgnoreToolbarShortcut(event)
+        ) {
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
         void this.executeCommand(command.id);
@@ -858,6 +1231,11 @@ export class EditSession implements SessionCommandHost {
   }
 
   handleEscape(): boolean {
+    if (this.saveWindowController?.isActive()) {
+      this.saveWindowController.cancel();
+      return true;
+    }
+
     if (this.inPlaceTextEdit) {
       this.closeInPlaceTextEditor(true);
       return true;
@@ -874,19 +1252,20 @@ export class EditSession implements SessionCommandHost {
       return true;
     }
 
-    if (this.transformController?.isTransforming()) {
-      this.transformController.cancelActiveTransform();
-      this.movePending = false;
-      this.moveActive = false;
+    if (
+      this.activeGesture ||
+      this.transformController?.isTransforming() ||
+      this.transformController?.isCropMode() ||
+      this.movePending ||
+      this.moveActive
+    ) {
+      this.resetActiveInteractionState();
       this.updateToolbar();
       return true;
     }
 
-    if (this.transformController?.isCropMode()) {
-      this.transformController.setCropMode(false);
-      this.movePending = false;
-      this.moveActive = false;
-      this.updateToolbar();
+    if (this.interactMode) {
+      this.setInteractMode(false);
       return true;
     }
 
@@ -905,6 +1284,16 @@ export class EditSession implements SessionCommandHost {
   }
 
   private handlePointerDown(event: PointerEvent): void {
+    if (this.interactMode) {
+      return;
+    }
+
+    if (this.saveWindowController?.handlePointerDown(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (this.inPlaceTextEdit && event.target !== this.inPlaceTextEdit.element) {
       this.closeInPlaceTextEditor(false);
     }
@@ -960,6 +1349,16 @@ export class EditSession implements SessionCommandHost {
   }
 
   private handlePointerMove(event: PointerEvent): void {
+    if (this.interactMode) {
+      return;
+    }
+
+    if (this.saveWindowController?.handlePointerMove(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (!this.activeGesture || event.pointerId !== this.activeGesture.pointerId) {
       return;
     }
@@ -1001,18 +1400,52 @@ export class EditSession implements SessionCommandHost {
     }
 
     if (this.activeGesture.kind === "lasso") {
-      this.shell.renderLassoBox(
-        normalizeLassoRect(
-          this.activeGesture.startX,
-          this.activeGesture.startY,
-          event.clientX,
-          event.clientY,
-        ),
+      this.pendingLassoRect = normalizeLassoRect(
+        this.activeGesture.startX,
+        this.activeGesture.startY,
+        event.clientX,
+        event.clientY,
       );
+      this.scheduleLassoRender();
     }
   }
 
+  private scheduleLassoRender(): void {
+    const view = this.root.defaultView;
+    if (!view || typeof view.requestAnimationFrame !== "function") {
+      if (this.pendingLassoRect) {
+        this.shell.renderLassoBox(this.pendingLassoRect);
+      }
+      return;
+    }
+
+    if (this.lassoFrameId !== null) {
+      return;
+    }
+
+    if (this.pendingLassoRect) {
+      this.shell.renderLassoBox(this.pendingLassoRect);
+    }
+
+    this.lassoFrameId = view.requestAnimationFrame(() => {
+      this.lassoFrameId = null;
+      if (this.pendingLassoRect) {
+        this.shell.renderLassoBox(this.pendingLassoRect);
+      }
+    });
+  }
+
   private handlePointerUp(event: PointerEvent): void {
+    if (this.interactMode) {
+      return;
+    }
+
+    if (this.saveWindowController?.handlePointerUp(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (!this.activeGesture || event.pointerId !== this.activeGesture.pointerId) {
       return;
     }
@@ -1021,6 +1454,7 @@ export class EditSession implements SessionCommandHost {
     const wasMoveActive = this.moveActive;
     this.movePending = false;
     this.moveActive = false;
+    this.cancelPendingLassoFrame();
 
     if (wasMoveActive && this.transformController) {
       this.activeGesture = null;
@@ -1046,6 +1480,7 @@ export class EditSession implements SessionCommandHost {
     const composedPath = getEventComposedPath(event);
 
     if (action === "lasso") {
+      const endLasso = this.perf.begin("lasso");
       const result = this.selectionController.handleLasso(
         gesture.startX,
         gesture.startY,
@@ -1053,6 +1488,7 @@ export class EditSession implements SessionCommandHost {
         event.clientY,
         gesture.shiftKey,
       );
+      endLasso();
       this.onDebug("rectangle-resolve", {
         rect: normalizeLassoRect(gesture.startX, gesture.startY, event.clientX, event.clientY),
         samplePointCount: result.rectangleStats?.samplePointCount ?? 0,
@@ -1066,6 +1502,7 @@ export class EditSession implements SessionCommandHost {
       return;
     }
 
+    const endSelection = this.perf.begin("selection");
     const result = this.selectionController.handlePointerClick(
       event.clientX,
       event.clientY,
@@ -1073,6 +1510,7 @@ export class EditSession implements SessionCommandHost {
       composedPath,
       gesture.altKey,
     );
+    endSelection();
     this.onDebug("click-resolve", {
       count: result.resolvedNodes.length,
       source: result.selection.source,
@@ -1113,18 +1551,21 @@ export class EditSession implements SessionCommandHost {
   }
 
   private handlePointerCancel(event: PointerEvent): void {
+    if (this.interactMode) {
+      return;
+    }
+
+    if (this.saveWindowController?.handlePointerCancel(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (!this.activeGesture || event.pointerId !== this.activeGesture.pointerId) {
       return;
     }
 
-    if (this.moveActive) {
-      this.transformController?.cancelMove();
-    }
-    this.movePending = false;
-    this.moveActive = false;
-    this.activeGesture = null;
-    this.releasePointerCapture(event.pointerId);
-    this.shell.renderLassoBox(null);
+    this.resetActiveInteractionState();
   }
 
   private releasePointerCapture(pointerId: number): void {
@@ -1228,7 +1669,7 @@ export class EditSession implements SessionCommandHost {
     state.finished = true;
     state.element.removeEventListener("keydown", state.keyHandler);
     state.element.removeEventListener("blur", state.blurHandler);
-    const nextText = state.element.textContent;
+    const nextText = extractEditableText(state.element);
     restoreContentEditable(state.element, state.previousContentEditable);
     state.element.style.userSelect = state.previousUserSelect;
     clearSelectionRange(state.element.ownerDocument);

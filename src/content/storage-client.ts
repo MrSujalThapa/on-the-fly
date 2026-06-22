@@ -2,8 +2,11 @@ import type { EditorOperation } from "../editor/operations.js";
 import type { PageKey } from "../editor/ids.js";
 import {
   OTF_STORAGE_MESSAGE,
+  type ExportDataResponse,
+  type ImportDataResponse,
   type PageStateResponse,
   type StorageMutationResponse,
+  type StorageUsageResponse,
 } from "../shared/storage-messages.js";
 
 interface RuntimeMessenger {
@@ -164,7 +167,9 @@ export async function replacePageOperations(
 export async function clearPageOperations(pageKey: PageKey): Promise<boolean> {
   const runtime = getRuntime();
   if (!runtime) {
-    return false;
+    // No extension runtime means nothing was ever persisted via the background
+    // store, so there is nothing to delete: treat the clear as succeeded.
+    return true;
   }
 
   try {
@@ -175,5 +180,59 @@ export async function clearPageOperations(pageKey: PageKey): Promise<boolean> {
     return response?.ok === true;
   } catch {
     return false;
+  }
+}
+
+export async function exportLocalData(): Promise<ExportDataResponse> {
+  const runtime = getRuntime();
+  if (!runtime) {
+    return { ok: false, error: "no_runtime", userMessage: "Extension runtime unavailable." };
+  }
+
+  try {
+    return (await runtime.sendMessage({
+      type: OTF_STORAGE_MESSAGE.EXPORT_DATA,
+    })) as ExportDataResponse;
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "export_failed",
+      userMessage: "Export failed. Please try again.",
+    };
+  }
+}
+
+export async function importLocalData(payload: unknown): Promise<ImportDataResponse> {
+  const runtime = getRuntime();
+  if (!runtime) {
+    return { ok: false, error: "no_runtime", userMessage: "Extension runtime unavailable." };
+  }
+
+  try {
+    return (await runtime.sendMessage({
+      type: OTF_STORAGE_MESSAGE.IMPORT_DATA,
+      payload,
+    })) as ImportDataResponse;
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "import_failed",
+      userMessage: "Import failed. Please try again.",
+    };
+  }
+}
+
+export async function getStorageUsage(): Promise<StorageUsageResponse> {
+  const runtime = getRuntime();
+  if (!runtime) {
+    return { ok: false, error: "no_runtime" };
+  }
+
+  try {
+    return (await runtime.sendMessage({
+      type: OTF_STORAGE_MESSAGE.GET_STORAGE_USAGE,
+    })) as StorageUsageResponse;
+  } catch {
+    return { ok: false, error: "usage_failed" };
   }
 }

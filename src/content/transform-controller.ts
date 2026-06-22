@@ -2,9 +2,14 @@ import type { PageKey, VisualNodeId } from "../editor/ids.js";
 import type { EditorOperation } from "../editor/operations.js";
 import type { VisualNodeRect } from "../editor/visual-node.js";
 import { matchElementBySignature } from "../editor/dom/signature-matcher.js";
+import { findCounterTransformDescendants, tryDetachMovedElement } from "../editor/dom/managed-detach.js";
 import { readStoredTransformState } from "../editor/dom/element-snapshot.js";
+import { buildElementSignature } from "../editor/measurement/signature-builder.js";
 import { readStoredCropInsets } from "../editor/dom/handlers/crop-handler.js";
 import type { DomRuntimeAdapter } from "../editor/dom/dom-runtime-adapter.js";
+import { enrichOperationWithRects } from "../editor/dom/enrich-operation-metadata.js";
+import { extractBoundingBox } from "../editor/measurement/bounding-box.js";
+import { measurementRectToAffectedRect } from "../editor/save-window/operation-metadata.js";
 import {
   angleForPointer,
   applyCropToRect,
@@ -48,6 +53,9 @@ export interface TransformControllerOptions {
   getPageKey: () => PageKey;
   onApply?: (operations: EditorOperation[]) => void;
   onDebug?: (message: string, data?: unknown) => void;
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
+  onFrame?: (durationMs: number, phase: "transform") => void;
 }
 
 interface InlineSnapshot {
@@ -60,6 +68,13 @@ interface MoveDragState {
   startX: number;
   startY: number;
   elements: { element: HTMLElement; snapshot: InlineSnapshot; baseDx: number; baseDy: number; baseRotate: number }[];
+  counterElements: {
+    element: HTMLElement;
+    snapshot: InlineSnapshot;
+    baseDx: number;
+    baseDy: number;
+    baseRotate: number;
+  }[];
 }
 
 interface ResizeDragState {
@@ -113,6 +128,10 @@ export class TransformController {
   private readonly getPageKey: () => PageKey;
   private readonly onApply: ((operations: EditorOperation[]) => void) | undefined;
   private readonly onDebug: (message: string, data?: unknown) => void;
+  private readonly onInteractionStart: (() => void) | undefined;
+  private readonly onInteractionEnd: (() => void) | undefined;
+  private readonly onFrame: ((durationMs: number, phase: "transform") => void) | undefined;
+  private interactionDepth = 0;
 
   private selection: TransformSelectionInput | null = null;
   /**
@@ -138,6 +157,9 @@ export class TransformController {
     this.getPageKey = options.getPageKey;
     this.onApply = options.onApply;
     this.onDebug = options.onDebug ?? (() => undefined);
+    this.onInteractionStart = options.onInteractionStart;
+    this.onInteractionEnd = options.onInteractionEnd;
+    this.onFrame = options.onFrame;
     this.shell.setHandlePointerDownHandler((handleId, event) => {
       this.handleHandlePointerDown(handleId, event);
     });
@@ -272,7 +294,26 @@ export class TransformController {
       return false;
     }
 
-    this.moveDrag = { startX: x, startY: y, elements };
+    const excluded = new Set(elements.map((entry) => entry.element));
+    const counterElements: MoveDragState["counterElements"] = [];
+    for (const entry of elements) {
+      for (const descendant of findCounterTransformDescendants(entry.element, excluded)) {
+        if (counterElements.some((counter) => counter.element === descendant)) {
+          continue;
+        }
+        const stored = readStoredTransformState(descendant);
+        counterElements.push({
+          element: descendant,
+          snapshot: captureInlineSnapshot(descendant),
+          baseDx: stored?.dx ?? 0,
+          baseDy: stored?.dy ?? 0,
+          baseRotate: stored?.rotate ?? 0,
+        });
+      }
+    }
+
+    this.moveDrag = { startX: x, startY: y, elements, counterElements };
+    this.notifyInteractionStart();
     this.onDebug("transform-move-start", { count: elements.length });
     return true;
   }
@@ -293,6 +334,13 @@ export class TransformController {
           entry.baseRotate,
         );
       }
+      for (const entry of drag.counterElements) {
+        entry.element.style.transform = composeTransform(
+          entry.baseDx - dx,
+          entry.baseDy - dy,
+          entry.baseRotate,
+        );
+      }
       this.shell.translateOverlay(dx, dy);
     });
   }
@@ -300,6 +348,9 @@ export class TransformController {
   endMove(x: number, y: number): EditorOperation[] {
     const drag = this.moveDrag;
     this.moveDrag = null;
+    if (drag) {
+      this.notifyInteractionEnd();
+    }
     if (!drag) {
       return [];
     }
@@ -311,6 +362,9 @@ export class TransformController {
     for (const entry of drag.elements) {
       restoreInlineSnapshot(entry.element, entry.snapshot);
     }
+    for (const entry of drag.counterElements) {
+      restoreInlineSnapshot(entry.element, entry.snapshot);
+    }
 
     if (dx === 0 && dy === 0) {
       this.renderSelection();
@@ -318,11 +372,107 @@ export class TransformController {
     }
 
     const pageKey = this.getPageKey();
-    const operations = (this.selection?.targets ?? []).map((target) =>
+    const operations: EditorOperation[] = (this.selection?.targets ?? []).map((target) =>
       buildMoveOperation(target, dx, dy, { pageKey }),
     );
 
-    this.applyOperations(operations);
+    const excluded = new Set(drag.elements.map((entry) => entry.element));
+    const compensated = new Set<HTMLElement>();
+    for (const entry of drag.elements) {
+      for (const descendant of findCounterTransformDescendants(entry.element, excluded)) {
+        if (compensated.has(descendant)) {
+          continue;
+        }
+        compensated.add(descendant);
+        operations.push(
+          buildMoveOperation(targetFromLiveElement(descendant, this.document), -dx, -dy, {
+            pageKey,
+          }),
+        );
+      }
+    }
+
+    const coMoved = drag.elements.map((entry) => entry.element);
+    const operationElements: HTMLElement[] = [];
+    for (const operation of operations) {
+      const nodeId = operation.target.nodeId;
+      const override = nodeId ? this.elementRegistry.get(nodeId) ?? null : null;
+      const element =
+        override?.isConnected
+          ? override
+          : operation.target.signature
+            ? matchElementBySignature(this.document, operation.target.signature)
+            : null;
+      if (element) {
+        operationElements.push(element);
+      }
+    }
+
+    const originalRects = operationElements.map((element) =>
+      measurementRectToAffectedRect(extractBoundingBox(element)),
+    );
+    for (const operation of operations) {
+      const nodeId = operation.target.nodeId;
+      const override = nodeId ? this.elementRegistry.get(nodeId) ?? null : null;
+      const result = this.adapter.applyOperation(
+        operation,
+        override?.isConnected ? override : null,
+      );
+      if (!result.ok) {
+        this.onDebug("transform-apply-failed", { code: result.code, error: result.error });
+      }
+    }
+
+    // Capture every moved element's final geometry now, while all elements are
+    // still in flow with their transforms applied. Detaching one element below
+    // reparents it to <body> and reflows its siblings, so measuring afterwards
+    // would record reflowed (wrong) positions and make grouped elements overlap.
+    const finalRects = operationElements.map((element) =>
+      measurementRectToAffectedRect(extractBoundingBox(element)),
+    );
+
+    const primaryCount = this.selection?.targets.length ?? 0;
+    for (let index = 0; index < primaryCount; index += 1) {
+      const entry = drag.elements[index];
+      const operation = operations[index];
+      if (!entry || operation?.type !== "move") {
+        continue;
+      }
+
+      const placement = tryDetachMovedElement(entry.element, coMoved, finalRects[index]);
+      if (!placement) {
+        continue;
+      }
+
+      operation.payload = {
+        ...operation.payload,
+        detached: true,
+        detachedLeft: placement.left,
+        detachedTop: placement.top,
+        ...(placement.zIndex && placement.zIndex !== "auto"
+          ? { detachedZIndex: placement.zIndex }
+          : {}),
+      };
+      this.onDebug("transform-detach", {
+        tag: entry.element.tagName.toLowerCase(),
+        left: placement.left,
+        top: placement.top,
+      });
+    }
+
+    for (let index = 0; index < operations.length; index += 1) {
+      const operation = operations[index];
+      const originalRect = originalRects[index];
+      const finalRect = finalRects[index];
+      if (!operation || !originalRect || !finalRect) {
+        continue;
+      }
+      operations[index] = enrichOperationWithRects(operation, originalRect, finalRect);
+    }
+
+    if (operations.length > 0) {
+      this.onApply?.(operations);
+    }
     this.refreshOutlineFromDom();
     this.onDebug("transform-move-commit", { dx, dy, count: operations.length });
     return operations;
@@ -331,11 +481,17 @@ export class TransformController {
   cancelMove(): void {
     const drag = this.moveDrag;
     this.moveDrag = null;
+    if (drag) {
+      this.notifyInteractionEnd();
+    }
     if (!drag) {
       return;
     }
     this.cancelScheduledFrame();
     for (const entry of drag.elements) {
+      restoreInlineSnapshot(entry.element, entry.snapshot);
+    }
+    for (const entry of drag.counterElements) {
       restoreInlineSnapshot(entry.element, entry.snapshot);
     }
     this.renderSelection();
@@ -576,6 +732,7 @@ export class TransformController {
       return;
     }
 
+    this.notifyInteractionStart();
     this.attachHandleWindowListeners();
   }
 
@@ -606,6 +763,9 @@ export class TransformController {
   private endResize(x: number, y: number): EditorOperation[] {
     const drag = this.resizeDrag;
     this.resizeDrag = null;
+    if (drag) {
+      this.notifyInteractionEnd();
+    }
     if (!drag) {
       return [];
     }
@@ -627,13 +787,13 @@ export class TransformController {
       operations.push(buildMoveOperation(target, result.dx, result.dy, { pageKey }));
     }
 
-    this.applyOperations(operations);
+    const enriched = this.applyOperations(operations, { elements: operations.map(() => drag.element) });
     this.refreshOutlineFromDom();
     this.onDebug("transform-resize-commit", {
       width: result.width,
       height: result.height,
     });
-    return operations;
+    return enriched;
   }
 
   private updateRotate(x: number, y: number): void {
@@ -651,6 +811,9 @@ export class TransformController {
   private endRotate(x: number, y: number): EditorOperation[] {
     const drag = this.rotateDrag;
     this.rotateDrag = null;
+    if (drag) {
+      this.notifyInteractionEnd();
+    }
     if (!drag) {
       return [];
     }
@@ -691,6 +854,9 @@ export class TransformController {
   private endCrop(x: number, y: number): EditorOperation[] {
     const drag = this.cropDrag;
     this.cropDrag = null;
+    if (drag) {
+      this.notifyInteractionEnd();
+    }
     if (!drag) {
       return [];
     }
@@ -723,10 +889,12 @@ export class TransformController {
     if (this.resizeDrag) {
       restoreInlineSnapshot(this.resizeDrag.element, this.resizeDrag.snapshot);
       this.resizeDrag = null;
+      this.notifyInteractionEnd();
     }
     if (this.rotateDrag) {
       restoreInlineSnapshot(this.rotateDrag.element, this.rotateDrag.snapshot);
       this.rotateDrag = null;
+      this.notifyInteractionEnd();
     }
     if (this.cropDrag) {
       this.cancelCropDrag();
@@ -743,6 +911,7 @@ export class TransformController {
       return;
     }
 
+    this.notifyInteractionEnd();
     this.clearCropDragResources(drag);
     this.cancelScheduledFrame();
     restoreClipSnapshot(drag.element, drag.clipSnapshot);
@@ -840,7 +1009,15 @@ export class TransformController {
     this.handleWindowListeners = null;
   }
 
-  private applyOperations(operations: EditorOperation[]): void {
+  private applyOperations(
+    operations: EditorOperation[],
+    options: { elements?: HTMLElement[] } = {},
+  ): EditorOperation[] {
+    const elements = options.elements ?? [];
+    const originalRects = elements.map((element) =>
+      measurementRectToAffectedRect(extractBoundingBox(element)),
+    );
+
     for (const operation of operations) {
       const nodeId = operation.target.nodeId;
       const override = nodeId ? this.elementRegistry.get(nodeId) ?? null : null;
@@ -852,9 +1029,22 @@ export class TransformController {
         this.onDebug("transform-apply-failed", { code: result.code, error: result.error });
       }
     }
-    if (operations.length > 0) {
-      this.onApply?.(operations);
+
+    const enriched = operations.map((operation, index) => {
+      const element = elements[index];
+      const originalRect = originalRects[index];
+      if (!element || !originalRect) {
+        return operation;
+      }
+      const finalRect = measurementRectToAffectedRect(extractBoundingBox(element));
+      return enrichOperationWithRects(operation, originalRect, finalRect);
+    });
+
+    if (enriched.length > 0) {
+      this.onApply?.(enriched);
     }
+
+    return enriched;
   }
 
   /**
@@ -977,7 +1167,9 @@ export class TransformController {
   private scheduleFrame(task: () => void): void {
     const view = this.document.defaultView;
     if (!view || typeof view.requestAnimationFrame !== "function") {
+      const startedAt = performance.now();
       task();
+      this.onFrame?.(performance.now() - startedAt, "transform");
       return;
     }
 
@@ -987,11 +1179,30 @@ export class TransformController {
     }
 
     this.rafId = view.requestAnimationFrame(() => {
+      const startedAt = performance.now();
       this.rafId = null;
       const pending = this.pendingTask;
       this.pendingTask = null;
       pending?.();
+      this.onFrame?.(performance.now() - startedAt, "transform");
     });
+  }
+
+  private notifyInteractionStart(): void {
+    if (this.interactionDepth === 0) {
+      this.onInteractionStart?.();
+    }
+    this.interactionDepth += 1;
+  }
+
+  private notifyInteractionEnd(): void {
+    if (this.interactionDepth === 0) {
+      return;
+    }
+    this.interactionDepth -= 1;
+    if (this.interactionDepth === 0) {
+      this.onInteractionEnd?.();
+    }
   }
 
   private cancelScheduledFrame(): void {
@@ -1016,6 +1227,25 @@ function pointInRect(x: number, y: number, rect: VisualNodeRect): boolean {
 
 function composeTransform(dx: number, dy: number, rotate: number): string {
   return `translate(${String(dx)}px, ${String(dy)}px) rotate(${String(rotate)}deg)`;
+}
+
+function targetFromLiveElement(element: HTMLElement, document: Document): TransformTarget {
+  const rect = element.getBoundingClientRect();
+  const viewport = document.defaultView
+    ? { width: document.documentElement.clientWidth, height: document.documentElement.clientHeight }
+    : undefined;
+  const signature = buildElementSignature(element, {
+    root: document,
+    ...(viewport ? { viewport } : {}),
+  });
+  const cloneId = element.getAttribute("data-otf-clone-id");
+
+  return {
+    nodeId: cloneId ?? signature.cssPath,
+    signature,
+    rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    element,
+  };
 }
 
 function currentRect(element: HTMLElement): VisualNodeRect {

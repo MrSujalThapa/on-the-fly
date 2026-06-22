@@ -27,6 +27,7 @@ export const SUPPORTED_DOM_OPERATION_TYPES = [
   "move",
   "resize",
   "rotate",
+  "duplicate",
 ] as const;
 
 export type SupportedDomOperationType = (typeof SUPPORTED_DOM_OPERATION_TYPES)[number];
@@ -65,6 +66,7 @@ export function inferValidationErrorCodes(errors: string[]): ValidationErrorCode
       error.startsWith("group.") ||
       error.startsWith("crop.") ||
       error.startsWith("insertImage.") ||
+      error.startsWith("duplicate.") ||
       error.startsWith("resize.")
     ) {
       codes.add("invalid_payload");

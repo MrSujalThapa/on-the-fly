@@ -11,10 +11,15 @@ export interface SessionCommandHost {
   canEditTextSelection(): boolean;
   clearSelection(): void;
   clearPage(): Promise<void>;
+  startSaveWindow(): boolean;
+  isSaveWindowActive(): boolean;
+  canStartSaveWindow(): boolean;
   undo(): boolean;
   redo(): boolean;
   canUndo(): boolean;
   canRedo(): boolean;
+  saveAll(): Promise<boolean>;
+  hasUnsavedChanges(): boolean;
   applyStyle(property: StyleProperty, value: string): void;
   applyText(value: string): void;
   openTextEditor(): void;

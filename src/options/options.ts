@@ -1,5 +1,11 @@
 import { OTF_MESSAGE } from "../shared/messages.js";
 import {
+  OTF_STORAGE_MESSAGE,
+  type ExportDataResponse,
+  type ImportDataResponse,
+  type StorageUsageResponse,
+} from "../shared/storage-messages.js";
+import {
   DEFAULT_EXTENSION_SETTINGS,
   isToolbarPlacementValue,
   parseSettingsResponse,
@@ -11,6 +17,10 @@ const toolbarPlacementSelect = document.querySelector<HTMLSelectElement>("#toolb
 const interactShortcutInput = document.querySelector<HTMLInputElement>("#interact-shortcut");
 const saveButton = document.querySelector<HTMLButtonElement>("#save-settings");
 const saveStatus = document.querySelector<HTMLElement>("#save-status");
+const exportButton = document.querySelector<HTMLButtonElement>("#export-data");
+const importInput = document.querySelector<HTMLInputElement>("#import-data");
+const dataStatus = document.querySelector<HTMLElement>("#data-status");
+const storageUsageEl = document.querySelector<HTMLElement>("#storage-usage");
 const extensionVersionEl = document.querySelector<HTMLElement>("#extension-version");
 const buildModeEl = document.querySelector<HTMLElement>("#build-mode");
 const agentModeEl = document.querySelector<HTMLElement>("#agent-mode");
@@ -19,6 +29,123 @@ const schemaVersionEl = document.querySelector<HTMLElement>("#schema-version");
 
 let currentSettings: ExtensionSettings = { ...DEFAULT_EXTENSION_SETTINGS };
 let isSaving = false;
+
+function setDataStatus(message: string, tone: "idle" | "success" | "error" = "idle"): void {
+  if (!dataStatus) {
+    return;
+  }
+
+  dataStatus.textContent = message;
+  dataStatus.classList.remove("is-success", "is-error");
+
+  if (tone === "success") {
+    dataStatus.classList.add("is-success");
+  }
+
+  if (tone === "error") {
+    dataStatus.classList.add("is-error");
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${String(bytes)} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${String(Math.round(bytes / 1024))} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function loadStorageUsage(): Promise<void> {
+  if (!storageUsageEl) {
+    return;
+  }
+
+  try {
+    const response: StorageUsageResponse = await chrome.runtime.sendMessage({
+      type: OTF_STORAGE_MESSAGE.GET_STORAGE_USAGE,
+    });
+
+    if (!response.ok || typeof response.estimatedBytes !== "number") {
+      storageUsageEl.textContent = "Storage usage: unavailable";
+      return;
+    }
+
+    const base = `Storage usage: ~${formatBytes(response.estimatedBytes)} (${String(response.operationCount ?? 0)} ops across ${String(response.pageCount ?? 0)} pages)`;
+    storageUsageEl.textContent = response.warning ? `${base}. ${response.warning}` : base;
+  } catch {
+    storageUsageEl.textContent = "Storage usage: unavailable";
+  }
+}
+
+async function exportLocalBackup(): Promise<void> {
+  if (exportButton) {
+    exportButton.disabled = true;
+  }
+  setDataStatus("Preparing export…");
+
+  try {
+    const response: ExportDataResponse = await chrome.runtime.sendMessage({
+      type: OTF_STORAGE_MESSAGE.EXPORT_DATA,
+    });
+
+    if (!response.ok || typeof response.json !== "string") {
+      setDataStatus(response.userMessage ?? "Export failed.", "error");
+      return;
+    }
+
+    const blob = new Blob([response.json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `on-the-fly-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+
+    const message = response.warning
+      ? `Backup exported. ${response.warning}`
+      : "Backup exported.";
+    setDataStatus(message, "success");
+    void loadStorageUsage();
+  } catch {
+    setDataStatus("Export failed.", "error");
+  } finally {
+    if (exportButton) {
+      exportButton.disabled = false;
+    }
+  }
+}
+
+async function importLocalBackup(file: File): Promise<void> {
+  setDataStatus("Importing backup…");
+
+  try {
+    const raw = await file.text();
+    const response: ImportDataResponse = await chrome.runtime.sendMessage({
+      type: OTF_STORAGE_MESSAGE.IMPORT_DATA,
+      payload: raw,
+    });
+
+    if (!response.ok) {
+      setDataStatus(response.userMessage ?? "Import failed.", "error");
+      return;
+    }
+
+    const imported = response.imported;
+    const summary = imported
+      ? `Imported ${String(imported.operations)} operations across ${String(imported.pages)} pages.`
+      : "Import complete.";
+    setDataStatus(response.warning ? `${summary} ${response.warning}` : summary, "success");
+    void loadStorageUsage();
+  } catch {
+    setDataStatus("Import failed.", "error");
+  } finally {
+    if (importInput) {
+      importInput.value = "";
+    }
+  }
+}
 
 function setSaveStatus(message: string, tone: "idle" | "success" | "error" = "idle"): void {
   if (!saveStatus) {
@@ -159,4 +286,17 @@ saveButton?.addEventListener("click", () => {
   void saveSettings();
 });
 
+exportButton?.addEventListener("click", () => {
+  void exportLocalBackup();
+});
+
+importInput?.addEventListener("change", () => {
+  const file = importInput.files?.[0];
+  if (!file) {
+    return;
+  }
+  void importLocalBackup(file);
+});
+
 void loadSettings();
+void loadStorageUsage();

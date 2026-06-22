@@ -10,7 +10,10 @@ import {
 } from "../shared/messages.js";
 import {
   isClearPageMessage,
+  isExportDataMessage,
   isGetPageOperationCountMessage,
+  isGetStorageUsageMessage,
+  isImportDataMessage,
   isLoadPageStateMessage,
   isReplacePageOperationsMessage,
   isSaveOperationsMessage,
@@ -19,7 +22,10 @@ import { isRestrictedUrl } from "../shared/restricted-url.js";
 import { getEditModeForTab, setEditModeForTab } from "./edit-mode-state.js";
 import {
   handleClearPage,
+  handleExportData,
   handleGetPageOperationCount,
+  handleGetStorageUsage,
+  handleImportData,
   handleLoadPageState,
   handleReplacePageOperations,
   handleSaveOperations,
@@ -154,6 +160,21 @@ export function registerBackgroundMessageHandler(): void {
 
       if (isGetPageOperationCountMessage(message)) {
         sendResponse(await handleGetPageOperationCount(message.pageKey));
+        return;
+      }
+
+      if (isExportDataMessage(message)) {
+        sendResponse(await handleExportData());
+        return;
+      }
+
+      if (isImportDataMessage(message)) {
+        sendResponse(await handleImportData(message.payload));
+        return;
+      }
+
+      if (isGetStorageUsageMessage(message)) {
+        sendResponse(await handleGetStorageUsage());
         return;
       }
 

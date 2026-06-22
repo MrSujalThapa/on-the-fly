@@ -1,8 +1,15 @@
 import type { EditorOperation } from "../editor/operations.js";
+import type { OperationBatchSnapshot } from "../editor/dom/operation-batch-snapshot.js";
+import { createEmptyBatchSnapshot } from "../editor/dom/operation-batch-snapshot.js";
+
+export interface HistoryBatch {
+  operations: EditorOperation[];
+  snapshot: OperationBatchSnapshot;
+}
 
 export interface SessionHistory {
-  undoStack: EditorOperation[][];
-  redoStack: EditorOperation[][];
+  undoStack: HistoryBatch[];
+  redoStack: HistoryBatch[];
 }
 
 export function createSessionHistory(): SessionHistory {
@@ -12,13 +19,14 @@ export function createSessionHistory(): SessionHistory {
 export function recordHistoryBatch(
   history: SessionHistory,
   operations: EditorOperation[],
+  snapshot: OperationBatchSnapshot = createEmptyBatchSnapshot(),
 ): SessionHistory {
   if (operations.length === 0) {
     return history;
   }
 
   return {
-    undoStack: [...history.undoStack, operations],
+    undoStack: [...history.undoStack, { operations, snapshot }],
     redoStack: [],
   };
 }
@@ -33,7 +41,7 @@ export function canRedo(history: SessionHistory): boolean {
 
 export function popUndoBatch(history: SessionHistory): {
   history: SessionHistory;
-  batch: EditorOperation[] | null;
+  batch: HistoryBatch | null;
 } {
   const batch = history.undoStack.at(-1) ?? null;
   if (!batch) {
@@ -51,7 +59,7 @@ export function popUndoBatch(history: SessionHistory): {
 
 export function popRedoBatch(history: SessionHistory): {
   history: SessionHistory;
-  batch: EditorOperation[] | null;
+  batch: HistoryBatch | null;
 } {
   const batch = history.redoStack.at(-1) ?? null;
   if (!batch) {
@@ -82,4 +90,43 @@ export function appendOperations(
     return existing;
   }
   return [...existing, ...incoming];
+}
+
+/** Drops history batches that only contained reverted operation ids. */
+export function pruneSessionHistory(
+  history: SessionHistory,
+  removedIds: ReadonlySet<string>,
+): SessionHistory {
+  if (removedIds.size === 0) {
+    return history;
+  }
+
+  const filterBatch = (batch: HistoryBatch): HistoryBatch | null => {
+    const operations = batch.operations.filter((operation) => !removedIds.has(operation.id));
+    if (operations.length === 0) {
+      return null;
+    }
+
+    const keptIds = new Set(operations.map((operation) => operation.id));
+    const elements = batch.snapshot.elements
+      .map((entry) => ({
+        ...entry,
+        operationIds: entry.operationIds.filter((id) => keptIds.has(id)),
+      }))
+      .filter((entry) => entry.operationIds.length > 0);
+
+    return {
+      operations,
+      snapshot: { elements },
+    };
+  };
+
+  const undoStack = history.undoStack
+    .map(filterBatch)
+    .filter((batch): batch is HistoryBatch => batch !== null);
+  const redoStack = history.redoStack
+    .map(filterBatch)
+    .filter((batch): batch is HistoryBatch => batch !== null);
+
+  return { undoStack, redoStack };
 }

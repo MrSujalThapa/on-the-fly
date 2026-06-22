@@ -1,10 +1,12 @@
 import type { MoveOperation, ResizeOperation, RotateOperation } from "../../operations.js";
+import { extractBoundingBox } from "../../measurement/bounding-box.js";
 import {
   applyStoredTransformState,
   readStoredTransformState,
   type ElementSnapshotStore,
   writeStoredTransformState,
 } from "../element-snapshot.js";
+import { applyPersistedDetachPlacement } from "../managed-detach.js";
 import { OTF_TRANSFORM_ATTR, type AppliedDomEffect, type StoredTransformState } from "../types.js";
 
 function createInitialTransformState(
@@ -54,22 +56,82 @@ export function applyMoveOperation(
   element: HTMLElement,
   operation: MoveOperation,
   snapshotStore: ElementSnapshotStore,
-): AppliedDomEffect {
+): AppliedDomEffect["changes"] {
+  if (operation.metadata?.finalRect) {
+    return applyMoveToFinalRect(element, operation, snapshotStore);
+  }
+
   const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
   state.dx += operation.payload.dx;
   state.dy += operation.payload.dy;
 
-  return {
-    operationId: operation.id,
-    changes: commitTransformState(element, state, previousSerialized),
-  };
+  const changes = commitTransformState(element, state, previousSerialized);
+
+  if (operation.payload.detached) {
+    applyPersistedDetachPlacement(element, operation);
+  }
+
+  return changes;
+}
+
+function applyMoveToFinalRect(
+  element: HTMLElement,
+  operation: MoveOperation,
+  snapshotStore: ElementSnapshotStore,
+): AppliedDomEffect["changes"] {
+  snapshotStore.captureIfNeeded(element);
+  const finalRect = operation.metadata?.finalRect;
+  if (!finalRect) {
+    return [];
+  }
+
+  if (operation.payload.detached) {
+    applyPersistedDetachPlacement(element, operation);
+
+    // `detachedLeft/detachedTop` are page coordinates (viewport + scroll at save
+    // time), so they reproduce the saved position regardless of the scroll
+    // offset when replay runs. Only fall back to the viewport `finalRect` plus
+    // the current scroll for legacy ops that predate page-coordinate placement.
+    const hasPersistedPlacement =
+      operation.payload.detachedLeft !== undefined &&
+      operation.payload.detachedTop !== undefined;
+    if (!hasPersistedPlacement) {
+      const view = element.ownerDocument.defaultView;
+      element.style.position = "absolute";
+      element.style.left = `${String(finalRect.x + (view?.scrollX ?? 0))}px`;
+      element.style.top = `${String(finalRect.y + (view?.scrollY ?? 0))}px`;
+    }
+
+    const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
+    state.dx = 0;
+    state.dy = 0;
+    state.position = "absolute";
+    // Carry the saved size in the transform state so `commitTransformState`
+    // applies it. Setting width/height directly would be wiped by the trailing
+    // `applyStoredTransformState`, which removes them when state.width is null.
+    if (finalRect.width > 0) {
+      state.width = finalRect.width;
+    }
+    if (finalRect.height > 0) {
+      state.height = finalRect.height;
+    }
+    return commitTransformState(element, state, previousSerialized);
+  }
+
+  const current = extractBoundingBox(element);
+  const dx = finalRect.x - current.x;
+  const dy = finalRect.y - current.y;
+  const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
+  state.dx = dx;
+  state.dy = dy;
+  return commitTransformState(element, state, previousSerialized);
 }
 
 export function applyResizeOperation(
   element: HTMLElement,
   operation: ResizeOperation,
   snapshotStore: ElementSnapshotStore,
-): AppliedDomEffect {
+): AppliedDomEffect["changes"] {
   snapshotStore.captureIfNeeded(element);
   const previousWidth = element.style.width;
   const previousHeight = element.style.height;
@@ -78,10 +140,24 @@ export function applyResizeOperation(
   if (operation.payload.mode === "font-aware") {
     element.style.fontSize = `${String(operation.payload.height)}px`;
 
-    return {
-      operationId: operation.id,
-      changes: [{ kind: "size", previousWidth, previousHeight, previousBoxSizing }],
-    };
+    return [{ kind: "size", previousWidth, previousHeight, previousBoxSizing }];
+  }
+
+  if (operation.metadata?.finalRect) {
+    const finalRect = operation.metadata.finalRect;
+    element.style.boxSizing = "border-box";
+    const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
+    state.width = finalRect.width;
+    state.height = finalRect.height;
+
+    const current = extractBoundingBox(element);
+    state.dx = finalRect.x - current.x;
+    state.dy = finalRect.y - current.y;
+
+    return [
+      ...commitTransformState(element, state, previousSerialized),
+      { kind: "size", previousWidth, previousHeight, previousBoxSizing },
+    ];
   }
 
   // Computed/selection rects are border-box. Pin box-sizing so the inline
@@ -93,27 +169,21 @@ export function applyResizeOperation(
   state.width = operation.payload.width;
   state.height = operation.payload.height;
 
-  return {
-    operationId: operation.id,
-    changes: [
-      ...commitTransformState(element, state, previousSerialized),
-      { kind: "size", previousWidth, previousHeight, previousBoxSizing },
-    ],
-  };
+  return [
+    ...commitTransformState(element, state, previousSerialized),
+    { kind: "size", previousWidth, previousHeight, previousBoxSizing },
+  ];
 }
 
 export function applyRotateOperation(
   element: HTMLElement,
   operation: RotateOperation,
   snapshotStore: ElementSnapshotStore,
-): AppliedDomEffect {
+): AppliedDomEffect["changes"] {
   const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
   state.rotate = operation.payload.degrees;
 
-  return {
-    operationId: operation.id,
-    changes: commitTransformState(element, state, previousSerialized),
-  };
+  return commitTransformState(element, state, previousSerialized);
 }
 
 export function revertTransformStateChange(

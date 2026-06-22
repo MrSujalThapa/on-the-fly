@@ -49,6 +49,22 @@
         </div>
       </section>
 
+      <section class="panel" aria-labelledby="data-heading">
+        <h2 id="data-heading">Local data</h2>
+        <p class="field-hint">
+          Export and import your On the Fly edits as a JSON backup. Data stays on this device only.
+        </p>
+        <div class="actions data-actions">
+          <button id="export-data" type="button">Export backup</button>
+          <label class="file-button">
+            Import backup
+            <input id="import-data" type="file" accept="application/json,.json" hidden />
+          </label>
+        </div>
+        <p class="save-status" id="data-status" aria-live="polite"></p>
+        <p class="field-hint" id="storage-usage">Storage usage: —</p>
+      </section>
+
       <section class="panel" aria-labelledby="diagnostics-heading">
         <h2 id="diagnostics-heading">Diagnostics</h2>
         <dl class="diagnostics">

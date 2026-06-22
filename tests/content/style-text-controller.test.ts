@@ -109,6 +109,72 @@ describe("StyleTextController", () => {
     expect(body.style.color).toBe("rgb(255, 0, 0)");
   });
 
+  it("applies text color to a container's own text and nested spans/links", () => {
+    const { document, root } = createTestDocument(
+      `<main><p id="note">Canada hasn't sold out a single World Cup match yet. <a id="link">See the latest.</a></p></main>`,
+    );
+    const note = root.querySelector("#note") as HTMLElement;
+    const link = root.querySelector("#link") as HTMLElement;
+
+    const controller = createStyleTextController({
+      document,
+      adapter: new DomRuntimeAdapter(root),
+      getPageKey: () => "https://example.com/",
+      resolveTargets: () => [{
+        nodeId: "node-note",
+        signature: createTestSignature({ cssPath: "main p#note" }),
+        rect: { x: 0, y: 0, width: 320, height: 20 },
+        element: note,
+      }],
+      resolveTextTarget: () => null,
+    });
+
+    const applied = controller.applyStyle("color", "rgb(255, 0, 0)");
+    expect(applied.length).toBe(2);
+    expect(note.style.color).toBe("rgb(255, 0, 0)");
+    expect(link.style.color).toBe("rgb(255, 0, 0)");
+  });
+
+  it("restores previous inline descendant colors on undo and re-applies on redo", () => {
+    const { document, root } = createTestDocument(
+      `<main><div id="card"><span id="title" style="color: rgb(0, 0, 255)">Title</span><span id="body" style="color: rgb(0, 128, 0)">Body</span></div></main>`,
+    );
+    const card = root.querySelector("#card") as HTMLElement;
+    const title = root.querySelector("#title") as HTMLElement;
+    const body = root.querySelector("#body") as HTMLElement;
+    const adapter = new DomRuntimeAdapter(root);
+
+    const controller = createStyleTextController({
+      document,
+      adapter,
+      getPageKey: () => "https://example.com/",
+      resolveTargets: () => [{
+        nodeId: "node-card",
+        signature: createTestSignature({ cssPath: "main div#card" }),
+        rect: { x: 0, y: 0, width: 100, height: 40 },
+        element: card,
+      }],
+      resolveTextTarget: () => null,
+    });
+
+    const applied = controller.applyStyle("color", "rgb(255, 0, 0)");
+    expect(applied.length).toBe(2);
+    expect(title.style.color).toBe("rgb(255, 0, 0)");
+    expect(body.style.color).toBe("rgb(255, 0, 0)");
+
+    for (const operation of [...applied].reverse()) {
+      expect(adapter.revertOperation(operation).ok).toBe(true);
+    }
+    expect(title.style.color).toBe("rgb(0, 0, 255)");
+    expect(body.style.color).toBe("rgb(0, 128, 0)");
+
+    for (const operation of applied) {
+      expect(adapter.applyOperation(operation, null).ok).toBe(true);
+    }
+    expect(title.style.color).toBe("rgb(255, 0, 0)");
+    expect(body.style.color).toBe("rgb(255, 0, 0)");
+  });
+
   it("applies background to the selected container surface, not descendant text", () => {
     const { document, root } = createTestDocument(`
       <main><div id="card"><span id="title">Title</span><span id="body">Body</span></div></main>

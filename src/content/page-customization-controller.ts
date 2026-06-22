@@ -6,7 +6,6 @@ import {
   loadPageOperations,
   replacePageOperations,
 } from "./storage-client.js";
-import { appendOperations as mergeOperations } from "./session-history.js";
 
 export interface PageCustomizationReplayResult {
   pageKey: PageKey;
@@ -26,6 +25,15 @@ export class PageCustomizationController {
   private replayed = false;
   private pageOperations: EditorOperation[] = [];
   private replayPromise: Promise<PageCustomizationReplayResult> | null = null;
+  /**
+   * Bumped whenever live state is reset (clear). Replay captures the current
+   * value before its async storage read and becomes a no-op if the token
+   * changed while it was awaiting, so a clear that lands mid-replay can never be
+   * overwritten by stale operations.
+   */
+  private replayGeneration = 0;
+  /** True while a clear is in progress; replay must not apply operations. */
+  private clearing = false;
 
   constructor(private readonly root: Document) {
     this.adapter = createDomRuntimeAdapter(root);
@@ -52,17 +60,6 @@ export class PageCustomizationController {
     this.pageOperations = [...operations];
   }
 
-  recordAppliedOperations(operations: EditorOperation[]): void {
-    if (operations.length === 0) {
-      return;
-    }
-    this.pageOperations = mergeOperations(this.pageOperations, operations);
-  }
-
-  removeOperationsById(ids: ReadonlySet<string>): void {
-    this.pageOperations = this.pageOperations.filter((operation) => !ids.has(operation.id));
-  }
-
   ensureReplayed(
     onDebug?: (message: string, data?: unknown) => void,
   ): Promise<PageCustomizationReplayResult> {
@@ -73,6 +70,10 @@ export class PageCustomizationController {
   private async replay(
     onDebug?: (message: string, data?: unknown) => void,
   ): Promise<PageCustomizationReplayResult> {
+    if (this.clearing) {
+      return { pageKey: this.pageKey, count: 0, failed: 0, resolved: 0, unresolved: 0 };
+    }
+
     if (this.replayed) {
       return {
         pageKey: this.pageKey,
@@ -83,16 +84,32 @@ export class PageCustomizationController {
       };
     }
 
+    const generation = this.replayGeneration;
     const operations = await loadPageOperations(this.pageKey);
+
+    // A clear (or other live-state reset) landed while we were awaiting the
+    // storage read. The loaded operations are now stale, so applying them would
+    // re-introduce mutations that clear already removed. Bail without touching
+    // the DOM or persisted/session operation state.
+    if (generation !== this.replayGeneration) {
+      onDebug?.("page-replay-cancelled", {
+        pageKey: this.pageKey,
+        reason: "generation-changed",
+      });
+      return { pageKey: this.pageKey, count: 0, failed: 0, resolved: 0, unresolved: 0 };
+    }
+
     this.pageOperations = [...operations];
     this.replayed = true;
 
     if (operations.length === 0) {
-      onDebug?.("page-replay", { pageKey: this.pageKey, count: 0 });
+      onDebug?.("page-replay", { pageKey: this.pageKey, count: 0, durationMs: 0 });
       return { pageKey: this.pageKey, count: 0, failed: 0, resolved: 0, unresolved: 0 };
     }
 
+    const replayStartedAt = performance.now();
     const batch = this.adapter.replayOperationsWithDiagnostics(operations);
+    const durationMs = performance.now() - replayStartedAt;
     const failed = batch.results.filter((result) => !result.ok).length;
     const resolved = batch.diagnostics.filter((entry) => entry.resolved).length;
     const unresolved = batch.diagnostics.length - resolved;
@@ -107,16 +124,57 @@ export class PageCustomizationController {
       failed,
       resolved,
       unresolved,
+      durationMs,
     });
 
     return { pageKey: this.pageKey, count: operations.length, failed, resolved, unresolved };
   }
 
-  async clearPage(): Promise<void> {
-    await clearPageOperations(this.pageKey);
-    this.adapter.clearAppliedEffects();
-    this.pageOperations = [];
+  /**
+   * Pragmatic hard reset: delete persisted operations, drop all in-memory
+   * state, then force a clean page reload so any residual live DOM mutations
+   * are wiped by the browser. The reload only happens once persisted deletion
+   * has succeeded. Returns true when the page reload was triggered.
+   */
+  async clearPage(
+    onRevertFailure?: (operationId: string, error: string) => void,
+  ): Promise<boolean> {
+    // Mark the clear in progress and invalidate any in-flight replay
+    // synchronously, before the first await, so a replay resuming during this
+    // method's own async work sees the new token (and the clearing flag) and
+    // cancels instead of re-applying old operations.
+    this.clearing = true;
+    this.replayGeneration += 1;
+    this.replayPromise = null;
     this.replayed = true;
+    this.pageOperations = [];
+
+    const deleted = await clearPageOperations(this.pageKey);
+
+    // Always drop in-memory effect/operation state so live state is clean even
+    // in degraded contexts and stale replay can never reuse old effects.
+    this.adapter.clearAppliedEffects(onRevertFailure);
+    this.clearing = false;
+
+    if (!deleted) {
+      // Persisted operations are still on disk; reloading now would just replay
+      // them again. Surface the failure and leave the page as-is.
+      console.error(
+        "[on-the-fly] clear page failed: persisted operations were not deleted; skipping reload",
+      );
+      return false;
+    }
+
+    this.reloadPage();
+    return true;
+  }
+
+  private reloadPage(): void {
+    try {
+      this.root.defaultView?.location.reload();
+    } catch {
+      // Reload may be unavailable in non-browser/degraded contexts; ignore.
+    }
   }
 
   async syncOperationsToStorage(): Promise<void> {

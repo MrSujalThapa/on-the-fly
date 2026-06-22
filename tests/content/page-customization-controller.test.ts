@@ -39,7 +39,7 @@ describe("PageCustomizationController", () => {
     });
 
     controller.getAdapter().applyOperation(operation);
-    controller.recordAppliedOperations([operation]);
+    controller.setPageOperations([operation]);
     expect(copy.style.color).toBe("rgb(0, 128, 0)");
 
     await controller.clearPage();
@@ -72,7 +72,7 @@ describe("PageCustomizationController", () => {
     };
 
     controller.getAdapter().applyOperation(operation);
-    controller.recordAppliedOperations([operation]);
+    controller.setPageOperations([operation]);
     expect(photo.style.clipPath).toBe("inset(8px 12px 4px 6px)");
 
     await controller.clearPage();

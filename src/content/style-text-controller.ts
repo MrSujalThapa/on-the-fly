@@ -11,6 +11,7 @@ import {
   isTextDescendantStyleProperty,
   resolveStyleElementTargets,
 } from "../editor/style/style-target-resolver.js";
+import { extractEditableText } from "../editor/style/text-target-resolver.js";
 import {
   buildStyleOperation,
   buildTextOperation,
@@ -233,7 +234,7 @@ export class StyleTextController {
 
   readTextForTarget(target: TransformTarget): string {
     const element = this.resolveElement(target);
-    return element?.textContent ?? "";
+    return element ? extractEditableText(element) : "";
   }
 
   private applyOpacity(raw: string, transformTargets: TransformTarget[]): EditorOperation[] {

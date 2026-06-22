@@ -203,6 +203,42 @@ function validatePayload(operation: EditorOperation, errors: string[], codes: Va
         codes.push("invalid_payload");
       }
       break;
+    case "duplicate":
+      if (!isNonEmptyString(operation.payload.cloneId)) {
+        errors.push("duplicate.cloneId is required");
+        codes.push("invalid_payload");
+      }
+      if (!isNonEmptyString(operation.payload.html)) {
+        errors.push("duplicate.html is required");
+        codes.push("invalid_payload");
+      }
+      if (!isNonEmptyString(operation.payload.parentCssPath)) {
+        errors.push("duplicate.parentCssPath is required");
+        codes.push("invalid_payload");
+      }
+      if (
+        !isFiniteNumber(operation.payload.offsetDx) ||
+        !isFiniteNumber(operation.payload.offsetDy)
+      ) {
+        errors.push("duplicate.offsetDx and duplicate.offsetDy must be finite numbers");
+        codes.push("invalid_payload");
+      }
+      if (
+        !isFiniteNumber(operation.payload.anchorLeft) ||
+        !isFiniteNumber(operation.payload.anchorTop) ||
+        !isFiniteNumber(operation.payload.anchorWidth) ||
+        !isFiniteNumber(operation.payload.anchorHeight) ||
+        operation.payload.anchorWidth <= 0 ||
+        operation.payload.anchorHeight <= 0
+      ) {
+        errors.push("duplicate anchor geometry must be positive finite numbers");
+        codes.push("invalid_payload");
+      }
+      if (!isRecord(operation.payload.styleSnapshot)) {
+        errors.push("duplicate.styleSnapshot must be an object");
+        codes.push("invalid_payload");
+      }
+      break;
   }
 }
 

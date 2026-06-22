@@ -395,6 +395,12 @@ export class FloatingToolbar {
     }
 
     for (const button of Array.from(this.toolbarEl.querySelectorAll<HTMLButtonElement>(".otf-tool-btn"))) {
+      const guardPointer = (event: Event): void => {
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      button.addEventListener("mousedown", guardPointer);
+      button.addEventListener("pointerdown", guardPointer);
       button.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -418,6 +424,10 @@ export class FloatingToolbar {
     }
 
     const closeButton = this.stylePanelEl.querySelector<HTMLButtonElement>("[data-style-close]");
+    closeButton?.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
     closeButton?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -468,6 +478,10 @@ export class FloatingToolbar {
     });
 
     const applyButton = this.stylePanelEl.querySelector<HTMLButtonElement>("[data-style-apply]");
+    applyButton?.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
     applyButton?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -476,6 +490,10 @@ export class FloatingToolbar {
     });
 
     const resetButton = this.stylePanelEl.querySelector<HTMLButtonElement>("[data-style-reset]");
+    resetButton?.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
     resetButton?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();

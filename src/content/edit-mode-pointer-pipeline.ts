@@ -29,10 +29,13 @@ export interface EditModePointerPipelineOptions {
   onPointerUp: (event: PointerEvent) => void;
   onPointerCancel: (event: PointerEvent) => void;
   onDebug?: (message: string, data?: unknown) => void;
+  onPassThroughPointer?: (event: PointerEvent) => void;
 }
 
 export interface EditModePointerPipeline {
   detach: () => void;
+  setPassThrough: (enabled: boolean) => void;
+  isPassThrough: () => boolean;
 }
 
 function applyInteractionStyles(document: Document): () => void {
@@ -56,13 +59,40 @@ function applyInteractionStyles(document: Document): () => void {
 export function attachEditModePointerPipeline(
   options: EditModePointerPipelineOptions,
 ): EditModePointerPipeline {
+  let passThrough = false;
+  let interactionStylesApplied = true;
   const restoreStyles = applyInteractionStyles(options.document);
+  const applyInteractionStylesNow = (): void => {
+    if (interactionStylesApplied) {
+      return;
+    }
+    const html = options.document.documentElement;
+    const body = options.document.body;
+    html.style.userSelect = "none";
+    body.style.userSelect = "none";
+    html.style.touchAction = "none";
+    interactionStylesApplied = true;
+  };
+
+  const releaseInteractionStyles = (): void => {
+    if (!interactionStylesApplied) {
+      return;
+    }
+    restoreStyles();
+    interactionStylesApplied = false;
+  };
+
   // Capture phase so the editor owns the gesture before the page can react,
   // while the overlay itself stays click-through (pointer-events: none) so
   // document.elementsFromPoint keeps resolving the real page underneath.
   const listenerOptions: AddEventListenerOptions = { capture: true, passive: false };
 
   const pointerDownHandler = (event: PointerEvent): void => {
+    if (passThrough) {
+      options.onPassThroughPointer?.(event);
+      return;
+    }
+
     if (!shouldHandleEditModePointerEvent(event, isExtensionRoot)) {
       return;
     }
@@ -77,6 +107,11 @@ export function attachEditModePointerPipeline(
   };
 
   const pointerMoveHandler = (event: PointerEvent): void => {
+    if (passThrough) {
+      options.onPassThroughPointer?.(event);
+      return;
+    }
+
     options.onPointerMove(event);
     if (shouldHandleEditModePointerEvent(event, isExtensionRoot)) {
       suppressPageInteractionEvent(event);
@@ -84,6 +119,11 @@ export function attachEditModePointerPipeline(
   };
 
   const pointerUpHandler = (event: PointerEvent): void => {
+    if (passThrough) {
+      options.onPassThroughPointer?.(event);
+      return;
+    }
+
     if (!shouldHandleEditModePointerEvent(event, isExtensionRoot)) {
       return;
     }
@@ -97,6 +137,10 @@ export function attachEditModePointerPipeline(
   };
 
   const pointerCancelHandler = (event: PointerEvent): void => {
+    if (passThrough) {
+      return;
+    }
+
     options.onPointerCancel(event);
     if (shouldHandleEditModePointerEvent(event, isExtensionRoot)) {
       suppressPageInteractionEvent(event);
@@ -104,6 +148,10 @@ export function attachEditModePointerPipeline(
   };
 
   const mouseDownHandler = (event: MouseEvent): void => {
+    if (passThrough) {
+      return;
+    }
+
     if (!shouldHandleEditModeClickEvent(event, isExtensionRoot)) {
       return;
     }
@@ -112,6 +160,10 @@ export function attachEditModePointerPipeline(
   };
 
   const mouseUpHandler = (event: MouseEvent): void => {
+    if (passThrough) {
+      return;
+    }
+
     if (!shouldHandleEditModeClickEvent(event, isExtensionRoot)) {
       return;
     }
@@ -120,6 +172,10 @@ export function attachEditModePointerPipeline(
   };
 
   const clickHandler = (event: MouseEvent): void => {
+    if (passThrough) {
+      return;
+    }
+
     if (!shouldHandleEditModeClickEvent(event, isExtensionRoot)) {
       return;
     }
@@ -128,6 +184,10 @@ export function attachEditModePointerPipeline(
   };
 
   const auxClickHandler = (event: MouseEvent): void => {
+    if (passThrough) {
+      return;
+    }
+
     if (!shouldHandleEditModeClickEvent(event, isExtensionRoot)) {
       return;
     }
@@ -136,6 +196,10 @@ export function attachEditModePointerPipeline(
   };
 
   const doubleClickHandler = (event: MouseEvent): void => {
+    if (passThrough) {
+      return;
+    }
+
     if (!shouldHandleEditModeClickEvent(event, isExtensionRoot)) {
       return;
     }
@@ -144,6 +208,10 @@ export function attachEditModePointerPipeline(
   };
 
   const selectStartHandler = (event: Event): void => {
+    if (passThrough) {
+      return;
+    }
+
     if (isExtensionRootInEventPath(event)) {
       return;
     }
@@ -152,6 +220,10 @@ export function attachEditModePointerPipeline(
   };
 
   const dragStartHandler = (event: Event): void => {
+    if (passThrough) {
+      return;
+    }
+
     if (isExtensionRootInEventPath(event)) {
       return;
     }
@@ -160,6 +232,10 @@ export function attachEditModePointerPipeline(
   };
 
   const keyActivationHandler = (event: KeyboardEvent): void => {
+    if (passThrough) {
+      return;
+    }
+
     if (!shouldHandleEditModeKeyboardActivationEvent(event, isExtensionRoot)) {
       return;
     }
@@ -195,6 +271,17 @@ export function attachEditModePointerPipeline(
   options.window.addEventListener("keyup", keyActivationListener, listenerOptions);
 
   return {
+    setPassThrough(enabled: boolean) {
+      passThrough = enabled;
+      if (enabled) {
+        releaseInteractionStyles();
+        return;
+      }
+      applyInteractionStylesNow();
+    },
+    isPassThrough() {
+      return passThrough;
+    },
     detach: () => {
       options.window.removeEventListener("pointerdown", pointerDownListener, true);
       options.window.removeEventListener("pointermove", pointerMoveListener, true);

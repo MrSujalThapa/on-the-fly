@@ -3,32 +3,40 @@ import type { EditorOperation } from "../operations.js";
 import { validateOperationForDom } from "../validation/validate-dom-operation.js";
 import { ElementSnapshotStore } from "./element-snapshot.js";
 import {
+  captureElementDomSnapshot,
+  captureMissingElementDomSnapshot,
+  elementSnapshotKey,
+  restoreElementDomSnapshot,
+  type ElementDomSnapshot,
+} from "./dom-placement-snapshot.js";
+import {
+  buildBatchSnapshotFromEffects,
+  restoreBatchSnapshot,
+  type OperationBatchSnapshot,
+} from "./operation-batch-snapshot.js";
+import {
+  applyDuplicateOperation,
+} from "./handlers/duplicate-handler.js";
+import {
   applyCropOperation,
-  revertClipChange,
 } from "./handlers/crop-handler.js";
 import {
   applyHideOperation,
-  revertDisplayChange,
 } from "./handlers/hide-handler.js";
 import {
   applyMoveOperation,
   applyResizeOperation,
   applyRotateOperation,
-  revertSizeChange,
-  revertTransformStateChange,
 } from "./handlers/transform-handler.js";
+import { tryDetachMovedElement } from "./managed-detach.js";
 import {
   applyStyleOperation,
-  revertStyleChange,
 } from "./handlers/style-handler.js";
 import {
   applyTextOperation,
-  revertTextChange,
 } from "./handlers/text-handler.js";
 import {
   applyZIndexOperation,
-  revertPositionChange,
-  revertZIndexChange,
 } from "./handlers/z-index-handler.js";
 import { resolveTargetElementDetailed } from "./resolve-target.js";
 import {
@@ -44,6 +52,7 @@ import {
 
 interface StoredDomEffect extends AppliedDomEffect {
   element: HTMLElement;
+  elementKey: string;
 }
 
 export interface ReplayOperationDiagnostic {
@@ -68,6 +77,8 @@ export class DomRuntimeAdapter {
   private readonly root: ParentNode;
   private readonly snapshotStore = new ElementSnapshotStore();
   private readonly effects = new Map<OperationId, StoredDomEffect>();
+  private readonly originSnapshots = new Map<string, ElementDomSnapshot>();
+  private readonly elementRefs = new Map<string, HTMLElement>();
 
   constructor(root: ParentNode) {
     this.root = root;
@@ -133,6 +144,18 @@ export class DomRuntimeAdapter {
         diagnostic.matchStrategy = "live-session";
         diagnostic.resolvedTag = element.tagName.toLowerCase();
         diagnostic.resolvedClasses = Array.from(element.classList);
+      } else if (operation.type === "duplicate") {
+        const document = resolveDocument(this.root);
+        const existing = document.querySelector(
+          `[data-otf-clone-id="${operation.payload.cloneId}"]`,
+        );
+        element = existing instanceof HTMLElement ? existing : null;
+        if (element) {
+          diagnostic.resolved = true;
+          diagnostic.matchStrategy = "live-session";
+          diagnostic.resolvedTag = element.tagName.toLowerCase();
+          diagnostic.resolvedClasses = Array.from(element.classList);
+        }
       } else {
         const resolution = resolveTargetElementDetailed(this.root, operation.target);
         element = resolution.element;
@@ -150,7 +173,7 @@ export class DomRuntimeAdapter {
         diagnostic.signatureSummary = resolution.diagnostics.signatureSummary;
       }
 
-      if (!element) {
+      if (!element && operation.type !== "duplicate") {
         const result = createDomApplyFailure("target_not_found", "target_not_found");
         diagnostic.code = result.code;
         diagnostic.error = result.error;
@@ -160,8 +183,44 @@ export class DomRuntimeAdapter {
         return { result, diagnostic };
       }
 
-      const effect = this.applyToElement(element, validation.operation);
-      this.effects.set(operation.id, { ...effect, element });
+      if (operation.type === "duplicate") {
+        const beforeSnapshot = captureMissingElementDomSnapshot();
+        const applied = applyDuplicateOperation(
+          resolveDocument(this.root),
+          operation,
+          this.snapshotStore,
+          element,
+        );
+        element = applied.element;
+        const afterSnapshot = captureElementDomSnapshot(element, this.root);
+        const elementKey = elementSnapshotKey(element, this.root);
+        diagnostic.resolved = true;
+        diagnostic.resolvedTag = element.tagName.toLowerCase();
+        diagnostic.resolvedClasses = Array.from(element.classList);
+        this.storeEffect(operation.id, {
+          operationId: operation.id,
+          changes: applied.changes,
+          beforeSnapshot,
+          afterSnapshot,
+          element,
+          elementKey,
+        });
+        return { result: createDomApplySuccess(), diagnostic };
+      }
+
+      const beforeSnapshot = captureElementDomSnapshot(element as HTMLElement, this.root);
+      const changes = this.applyToElement(element as HTMLElement, validation.operation);
+      const afterSnapshot = captureElementDomSnapshot(element as HTMLElement, this.root);
+      const elementKey = elementSnapshotKey(element as HTMLElement, this.root);
+
+      this.storeEffect(operation.id, {
+        operationId: operation.id,
+        changes,
+        beforeSnapshot,
+        afterSnapshot,
+        element: element as HTMLElement,
+        elementKey,
+      });
       return { result: createDomApplySuccess(), diagnostic };
     } catch (error) {
       const result = createDomApplyFailure(
@@ -182,11 +241,35 @@ export class DomRuntimeAdapter {
   replayOperationsWithDiagnostics(operations: EditorOperation[]): ReplayBatchResult {
     const results: DomApplyResult[] = [];
     const diagnostics: ReplayOperationDiagnostic[] = [];
+    const movedElements: HTMLElement[] = [];
 
     for (const operation of operations) {
       const applied = this.applyOperationDetailed(operation);
       results.push(applied.result);
       diagnostics.push(applied.diagnostic);
+
+      if (operation.type !== "move" || !applied.diagnostic.resolved) {
+        continue;
+      }
+
+      const stored = this.effects.get(operation.id);
+      if (!stored) {
+        continue;
+      }
+
+      movedElements.push(stored.element);
+      const placement = tryDetachMovedElement(stored.element, movedElements);
+      if (placement) {
+        operation.payload = {
+          ...operation.payload,
+          detached: true,
+          detachedLeft: placement.left,
+          detachedTop: placement.top,
+          ...(placement.zIndex && placement.zIndex !== "auto"
+            ? { detachedZIndex: placement.zIndex }
+            : {}),
+        };
+      }
     }
 
     return { results, diagnostics };
@@ -207,8 +290,9 @@ export class DomRuntimeAdapter {
         );
       }
 
-      this.revertEffect(stored);
+      restoreElementDomSnapshot(this.root, stored.beforeSnapshot, stored.element);
       this.effects.delete(operation.id);
+      this.elementRefs.delete(stored.elementKey);
       return createDomApplySuccess();
     } catch (error) {
       return createDomApplyFailure(
@@ -218,14 +302,82 @@ export class DomRuntimeAdapter {
     }
   }
 
-  clearAppliedEffects(): void {
-    for (const effect of [...this.effects.values()].reverse()) {
-      this.revertEffect(effect);
-    }
-    this.effects.clear();
+  buildBatchSnapshot(operations: readonly EditorOperation[]): OperationBatchSnapshot {
+    return buildBatchSnapshotFromEffects(this.root, operations, this.effects);
   }
 
-  private applyToElement(element: HTMLElement, operation: EditorOperation): AppliedDomEffect {
+  restoreBatchSnapshot(snapshot: OperationBatchSnapshot, mode: "before" | "after"): void {
+    restoreBatchSnapshot(this.root, snapshot, mode, (elementKey) => this.elementRefs.get(elementKey) ?? null);
+    if (mode === "before") {
+      for (const entry of snapshot.elements) {
+        for (const operationId of entry.operationIds) {
+          this.effects.delete(operationId);
+        }
+        if (!entry.before.existed) {
+          this.elementRefs.delete(entry.elementKey);
+        }
+      }
+      return;
+    }
+
+    for (const entry of snapshot.elements) {
+      const element = this.elementRefs.get(entry.elementKey);
+      if (element?.isConnected) {
+        for (const operationId of entry.operationIds) {
+          const stored = this.effects.get(operationId);
+          if (stored) {
+            stored.afterSnapshot = entry.after;
+            continue;
+          }
+          this.storeEffect(operationId, {
+            operationId,
+            changes: [],
+            beforeSnapshot: entry.before,
+            afterSnapshot: entry.after,
+            element,
+            elementKey: entry.elementKey,
+          });
+        }
+      }
+    }
+  }
+
+  removeEffectsByOperationIds(ids: ReadonlySet<string>): void {
+    for (const id of ids) {
+      const stored = this.effects.get(id);
+      if (stored) {
+        this.effects.delete(id);
+      }
+    }
+  }
+
+  clearAppliedEffects(
+    onRevertFailure?: (operationId: string, error: string) => void,
+  ): void {
+    for (const [elementKey, snapshot] of [...this.originSnapshots.entries()]) {
+      try {
+        const element = this.elementRefs.get(elementKey) ?? null;
+        restoreElementDomSnapshot(this.root, snapshot, element);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "dom_revert_failed";
+        onRevertFailure?.(elementKey, message);
+      }
+    }
+
+    this.effects.clear();
+    this.originSnapshots.clear();
+    this.elementRefs.clear();
+  }
+
+  private storeEffect(operationId: OperationId, effect: StoredDomEffect): void {
+    if (!this.originSnapshots.has(effect.elementKey)) {
+      this.originSnapshots.set(effect.elementKey, effect.beforeSnapshot);
+    }
+    this.effects.set(operationId, effect);
+    this.elementRefs.set(effect.elementKey, effect.element);
+  }
+
+  private applyToElement(element: HTMLElement, operation: EditorOperation): AppliedDomEffect["changes"] {
     switch (operation.type) {
       case "style":
         return applyStyleOperation(element, operation, this.snapshotStore);
@@ -247,41 +399,20 @@ export class DomRuntimeAdapter {
         throw new Error(`unsupported_dom_operation:${operation.type}`);
     }
   }
-
-  private revertEffect(effect: StoredDomEffect): void {
-    for (const change of [...effect.changes].reverse()) {
-      switch (change.kind) {
-        case "style":
-          revertStyleChange(effect.element, change);
-          break;
-        case "text":
-          revertTextChange(effect.element, change);
-          break;
-        case "display":
-          revertDisplayChange(effect.element, change);
-          break;
-        case "zIndex":
-          revertZIndexChange(effect.element, change);
-          break;
-        case "transform-state":
-          revertTransformStateChange(effect.element, change);
-          break;
-        case "size":
-          revertSizeChange(effect.element, change);
-          break;
-        case "position":
-          revertPositionChange(effect.element, change);
-          break;
-        case "clip":
-          revertClipChange(effect.element, change);
-          break;
-        case "visibility":
-          break;
-      }
-    }
-  }
 }
 
 export function createDomRuntimeAdapter(root: ParentNode): DomRuntimeAdapter {
   return new DomRuntimeAdapter(root);
+}
+
+function resolveDocument(root: ParentNode): Document {
+  if (root instanceof Document) {
+    return root;
+  }
+
+  if (root.ownerDocument) {
+    return root.ownerDocument;
+  }
+
+  throw new Error("document_unavailable");
 }

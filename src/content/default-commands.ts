@@ -187,6 +187,19 @@ export function createDefaultCommands(host: SessionCommandHost): EditorCommand[]
         void host.clearPage();
       },
     },
+    {
+      id: "saveWindow.start",
+      label: "Save window",
+      icon: "save-window",
+      appliesTo: [...ALWAYS],
+      order: 85,
+      group: "more",
+      shortcut: { key: "s", shift: false },
+      isEnabled: () => host.canStartSaveWindow(),
+      execute: () => {
+        host.startSaveWindow();
+      },
+    },
   ];
 }
 

@@ -6,7 +6,7 @@ export function applyHideOperation(
   element: HTMLElement,
   operation: HideOperation,
   snapshotStore: ElementSnapshotStore,
-): AppliedDomEffect {
+): AppliedDomEffect["changes"] {
   const snapshot = snapshotStore.captureIfNeeded(element);
   const previousDisplay = element.style.display || snapshot.display;
 
@@ -16,10 +16,7 @@ export function applyHideOperation(
     element.style.display = operation.payload.previousDisplay ?? snapshot.display;
   }
 
-  return {
-    operationId: operation.id,
-    changes: [{ kind: "display", previousValue: previousDisplay }],
-  };
+  return [{ kind: "display", previousValue: previousDisplay }];
 }
 
 export function revertDisplayChange(

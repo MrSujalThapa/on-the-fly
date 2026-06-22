@@ -57,22 +57,6 @@ function applyEditMode(enabled: boolean): void {
   shell.unmount();
 }
 
-async function syncEditModeFromBackground(): Promise<void> {
-  try {
-    const response = parseEditModeResponse(
-      await chrome.runtime.sendMessage({
-        type: OTF_MESSAGE.GET_EDIT_MODE,
-      }),
-    );
-
-    if (response.ok) {
-      applyEditMode(response.enabled);
-    }
-  } catch {
-    // Background may be unavailable during extension reload.
-  }
-}
-
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if (isEditModeChangedMessage(message)) {
     applyEditMode(message.enabled);
@@ -96,6 +80,8 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   return undefined;
 });
 
-void syncEditModeFromBackground();
+// Refresh/navigation always starts with edit mode off. Saved customizations
+// replay above; only explicit popup toggles may activate the edit session.
+applyEditMode(false);
 
 export {};

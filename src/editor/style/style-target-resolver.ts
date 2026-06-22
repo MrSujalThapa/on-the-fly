@@ -124,7 +124,7 @@ function resolveTextDescendantTargets(
       continue;
     }
 
-    const descendants = collectSafeTextDescendants(root);
+    const descendants = collectTextBearingElements(root);
     for (const element of descendants) {
       if (targets.length >= MAX_TEXT_DESCENDANT_STYLE_TARGETS) {
         capped = true;
@@ -296,17 +296,40 @@ function isSafeDirectTextElement(element: HTMLElement): boolean {
   return hasMeaningfulText(element);
 }
 
-function collectSafeTextDescendants(root: HTMLElement): HTMLElement[] {
+/**
+ * Collects every element in the subtree that directly bears visible text,
+ * including the root itself and intermediate containers (e.g. a paragraph that
+ * owns a text node alongside a nested link). Childless leaves alone are not
+ * enough: a container's own direct text would otherwise never receive the text
+ * color, leaving part of the visible copy unstyled.
+ */
+function collectTextBearingElements(root: HTMLElement): HTMLElement[] {
   const results: HTMLElement[] = [];
+  if (hasDirectText(root) && !isBlockedTextEditElement(root)) {
+    results.push(root);
+  }
   const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
   let node = walker.nextNode();
   while (node) {
-    if (node instanceof HTMLElement && isSafeDirectTextElement(node)) {
+    if (
+      node instanceof HTMLElement &&
+      !isBlockedTextEditElement(node) &&
+      hasDirectText(node)
+    ) {
       results.push(node);
     }
     node = walker.nextNode();
   }
   return results;
+}
+
+function hasDirectText(element: HTMLElement): boolean {
+  for (const child of Array.from(element.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim().length > 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function isVisibleTextElement(element: HTMLElement): boolean {

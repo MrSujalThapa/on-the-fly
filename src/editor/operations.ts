@@ -5,6 +5,22 @@ import type { GroupId, OperationId, PageKey, VisualNodeId } from "./ids.js";
 export type OperationSource = "manual" | "agent" | "import";
 export type OperationStatus = "draft" | "preview" | "approved";
 
+export interface OperationAffectedRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface OperationMetadata {
+  targetSummary?: string;
+  /** Final visual rect used for save-window classification and deterministic replay. */
+  affectedRect?: OperationAffectedRect;
+  originalRect?: OperationAffectedRect;
+  finalRect?: OperationAffectedRect;
+  sourceCommand?: string;
+}
+
 export type StyleProperty =
   | "color"
   | "backgroundColor"
@@ -29,6 +45,7 @@ export interface OperationBase<TType extends string, TPayload> {
   createdAt: number;
   source: OperationSource;
   status: OperationStatus;
+  metadata?: OperationMetadata;
 }
 
 export type StyleOperation = OperationBase<
@@ -56,6 +73,11 @@ export type MoveOperation = OperationBase<
     dy: number;
     previousDx?: number;
     previousDy?: number;
+    /** Set when the element was promoted to the managed body layer after moving outside its parent. */
+    detached?: boolean;
+    detachedLeft?: number;
+    detachedTop?: number;
+    detachedZIndex?: string;
   }
 >;
 
@@ -132,6 +154,23 @@ export type InsertImageOperation = OperationBase<
   }
 >;
 
+export type DuplicateOperation = OperationBase<
+  "duplicate",
+  {
+    cloneId: string;
+    html: string;
+    parentCssPath: string;
+    offsetDx: number;
+    offsetDy: number;
+    sourceCssPath?: string;
+    anchorLeft: number;
+    anchorTop: number;
+    anchorWidth: number;
+    anchorHeight: number;
+    styleSnapshot: Record<string, string>;
+  }
+>;
+
 export type EditorOperation =
   | StyleOperation
   | TextOperation
@@ -143,7 +182,8 @@ export type EditorOperation =
   | ZIndexOperation
   | GroupOperation
   | UngroupOperation
-  | InsertImageOperation;
+  | InsertImageOperation
+  | DuplicateOperation;
 
 export const OPERATION_TYPES = [
   "style",
@@ -157,6 +197,7 @@ export const OPERATION_TYPES = [
   "group",
   "ungroup",
   "insertImage",
+  "duplicate",
 ] as const;
 
 export type EditorOperationType = (typeof OPERATION_TYPES)[number];

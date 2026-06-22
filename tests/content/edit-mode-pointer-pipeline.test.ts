@@ -184,4 +184,56 @@ describe("edit mode pointer pipeline", () => {
 
     pipeline.detach();
   });
+
+  it("allows page interaction while pass-through interact mode is enabled", () => {
+    const happyWindow = new Window({ innerWidth: 1024, innerHeight: 768 });
+    const document = happyWindow.document as unknown as Document;
+    document.body.innerHTML = `<main><button id="action">Save</button></main>`;
+
+    const button = document.querySelector("#action") as HTMLButtonElement;
+    const pageClickHandler = vi.fn();
+    const otfHandler = vi.fn();
+
+    button.addEventListener("click", pageClickHandler);
+
+    const pipeline = attachEditModePointerPipeline({
+      window: happyWindow as unknown as EditModeEventWindow,
+      document,
+      onPointerDown: () => {
+        otfHandler("down");
+      },
+      onPointerMove: () => undefined,
+      onPointerUp: () => {
+        otfHandler("up");
+      },
+      onPointerCancel: () => undefined,
+    });
+
+    pipeline.setPassThrough(true);
+    expect(pipeline.isPassThrough()).toBe(true);
+
+    const pointerDown = new happyWindow.PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      clientX: 10,
+      clientY: 10,
+    });
+    button.dispatchEvent(pointerDown as unknown as Event);
+
+    expect(otfHandler).not.toHaveBeenCalled();
+    expect(pointerDown.defaultPrevented).toBe(false);
+
+    const clickEvent = new happyWindow.MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+    });
+    button.dispatchEvent(clickEvent as unknown as Event);
+
+    expect(clickEvent.defaultPrevented).toBe(false);
+    expect(pageClickHandler).toHaveBeenCalled();
+
+    pipeline.detach();
+  });
 });

@@ -394,10 +394,15 @@ describe("EditSession toolbar/style UX", () => {
     (shadow.querySelector("[data-style-apply]") as HTMLButtonElement).click();
     expect(copy.style.fontSize).toBe("24px");
     expect(session.canUndo()).toBe(true);
-    expect(saveSpy).toHaveBeenCalledTimes(1);
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(session.hasUnsavedChanges()).toBe(true);
 
     expect(session.undo()).toBe(true);
-    expect(copy.style.fontSize).toBe("16px");
+    // The paragraph had no inline font-size before the edit, so undo clears the
+    // inline value (the stylesheet still renders 16px). Restoring an inline
+    // "16px" here would mean baking computed styles back in, which breaks
+    // before/after determinism.
+    expect(copy.style.fontSize).toBe("");
 
     session.stop();
     shell.unmount();
@@ -441,14 +446,16 @@ describe("EditSession toolbar/style UX", () => {
     expect(copy.style.fontSize).toBe("24px");
 
     (shadow.querySelector("[data-style-reset]") as HTMLButtonElement).click();
-    expect(copy.style.fontSize).toBe("16px");
+    // Reverting clears the inline font-size (no inline value existed before the
+    // preview); the element falls back to its stylesheet 16px.
+    expect(copy.style.fontSize).toBe("");
     expect(session.canUndo()).toBe(false);
 
     fontSize.value = "18";
     fontSize.dispatchEvent(new win.Event("input", { bubbles: true }));
     expect(copy.style.fontSize).toBe("18px");
     (shadow.querySelector("[data-style-close]") as HTMLButtonElement).click();
-    expect(copy.style.fontSize).toBe("16px");
+    expect(copy.style.fontSize).toBe("");
     expect(saveSpy).not.toHaveBeenCalled();
 
     session.stop();

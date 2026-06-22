@@ -95,6 +95,30 @@ input[type="text"] {
   gap: 8px;
 }
 
+.data-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+#export-data,
+.file-button {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font: 600 13px/1 system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--surface) 92%, var(--text) 8%);
+  color: var(--text);
+}
+
+.file-button {
+  display: inline-flex;
+  align-items: center;
+}
+
 #save-settings {
   appearance: none;
   border: 0;

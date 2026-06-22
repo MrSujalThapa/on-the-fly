@@ -1,8 +1,19 @@
 import type { EditorOperation } from "../../editor/operations.js";
 import type { PageKey } from "../../editor/ids.js";
+import {
+  friendlyExportError,
+  friendlyImportError,
+  parseImportJson,
+  serializeExportPayload,
+  summarizeStorageUsage,
+  validateExportPayload,
+} from "../../shared/export-import.js";
 import type {
+  ExportDataResponse,
+  ImportDataResponse,
   PageStateResponse,
   StorageMutationResponse,
+  StorageUsageResponse,
 } from "../../shared/storage-messages.js";
 import { OperationStore } from "./operation-store.js";
 
@@ -96,6 +107,98 @@ export async function handleClearPage(pageKey: PageKey): Promise<StorageMutation
     return { ok: true, operationCount: 0, saved: removed };
   } catch (error) {
     return { ok: false, error: formatStorageError(error) };
+  }
+}
+
+export async function handleExportData(): Promise<ExportDataResponse> {
+  try {
+    const payload = await getStore().exportAll();
+    if (
+      payload.sites.length === 0 &&
+      payload.pages.length === 0 &&
+      payload.operations.length === 0 &&
+      payload.assets.length === 0
+    ) {
+      return {
+        ok: false,
+        error: "export_empty",
+        userMessage: friendlyExportError("export_empty"),
+      };
+    }
+
+    const serialized = serializeExportPayload(payload);
+    if (!serialized.ok) {
+      return serialized;
+    }
+
+    return {
+      ok: true,
+      json: serialized.json,
+      byteLength: serialized.byteLength,
+      ...(serialized.warning ? { warning: serialized.warning } : {}),
+    };
+  } catch (error) {
+    const message = errorMessage(error);
+    return {
+      ok: false,
+      error: message,
+      userMessage: friendlyExportError(message),
+    };
+  }
+}
+
+export async function handleImportData(raw: unknown): Promise<ImportDataResponse> {
+  try {
+    const parsed =
+      typeof raw === "string"
+        ? parseImportJson(raw)
+        : validateExportPayload(raw);
+
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        error: parsed.error,
+        userMessage: friendlyImportError(parsed.error),
+      };
+    }
+
+    const imported = await getStore().importAll(parsed.payload);
+    const usage = summarizeStorageUsage({
+      operationCount: imported.operations,
+      pageCount: imported.pages,
+      assetCount: imported.assets,
+      estimatedBytes: new TextEncoder().encode(JSON.stringify(parsed.payload)).length,
+    });
+
+    return {
+      ok: true,
+      imported,
+      ...(usage.warning ? { warning: usage.warning } : {}),
+    };
+  } catch (error) {
+    const message = errorMessage(error);
+    return {
+      ok: false,
+      error: message,
+      userMessage: friendlyImportError(message),
+    };
+  }
+}
+
+export async function handleGetStorageUsage(): Promise<StorageUsageResponse> {
+  try {
+    const usage = await getStore().estimateStorageBytes();
+    const summary = summarizeStorageUsage(usage);
+    return {
+      ok: true,
+      operationCount: summary.operationCount,
+      pageCount: summary.pageCount,
+      assetCount: summary.assetCount,
+      estimatedBytes: summary.estimatedBytes,
+      ...(summary.warning ? { warning: summary.warning } : {}),
+    };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
   }
 }
 

@@ -90,6 +90,29 @@ const TEXT_BLOCK_CLASS_HINT =
 const MAX_PROMOTED_TEXT_LENGTH = 700;
 const MAX_PROMOTED_DESCENDANTS = 40;
 
+/**
+ * Extracts editable text from an element by walking its text nodes in document
+ * order, collapsing all whitespace/newline runs, and dropping duplicated text
+ * segments (e.g. visually-hidden screen-reader copies). This keeps the editor
+ * from surfacing whitespace-heavy or doubled strings such as
+ * "Same copy.Same copy.".
+ */
+export function extractEditableText(element: HTMLElement): string {
+  const segments: string[] = [];
+  const seen = new Set<string>();
+  const walker = element.ownerDocument.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    const normalized = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      segments.push(normalized);
+    }
+    node = walker.nextNode();
+  }
+  return segments.join(" ").replace(/\s+/g, " ").trim();
+}
+
 export function resolveTextEditTargetAtPoint(
   document: Document,
   clientX: number,

@@ -1,9 +1,37 @@
 import { describe, expect, it } from "vitest";
 import { createTestDocument } from "../dom/test-document.js";
 import {
+  extractEditableText,
   resolveTextEditTargetAtPoint,
   resolveTextEditTargetForSelection,
 } from "../../../src/editor/style/text-target-resolver.js";
+
+describe("extractEditableText", () => {
+  it("collapses whitespace and newline runs and trims the result", () => {
+    const { root } = createTestDocument(
+      `<main><p id="copy">     Canada hasn't sold
+        a single World Cup match yet.
+
+        See the latest.     </p></main>`,
+    );
+    const copy = root.querySelector("#copy") as HTMLElement;
+
+    expect(extractEditableText(copy)).toBe(
+      "Canada hasn't sold a single World Cup match yet. See the latest.",
+    );
+  });
+
+  it("does not repeat duplicated nested text segments", () => {
+    const { root } = createTestDocument(
+      `<main><a id="link"><span id="visible">Canada hasn't sold out a single World Cup match yet. See the latest.</span><span id="sr" class="sr-only">Canada hasn't sold out a single World Cup match yet. See the latest.</span></a></main>`,
+    );
+    const link = root.querySelector("#link") as HTMLElement;
+
+    expect(extractEditableText(link)).toBe(
+      "Canada hasn't sold out a single World Cup match yet. See the latest.",
+    );
+  });
+});
 
 describe("text-target-resolver", () => {
   it("resolves nested notification text at click point", () => {

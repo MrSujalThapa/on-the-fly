@@ -16,6 +16,10 @@ import { buildPersistableElementSignature } from "../measurement/signature-build
 import type { CropInsets } from "./crop-geometry.js";
 import { createOperationId } from "./operation-id.js";
 import {
+  buildMetadataFromElement,
+  buildMetadataFromTransformTarget,
+} from "../save-window/operation-metadata.js";
+import {
   transformTargetToEditorTarget,
   type TransformTarget,
 } from "./transform-target.js";
@@ -24,6 +28,7 @@ export interface BuildOperationOptions {
   pageKey: PageKey;
   now?: number;
   createId?: () => OperationId;
+  sourceCommand?: string;
 }
 
 function resolveMeta(options: BuildOperationOptions): { id: OperationId; createdAt: number } {
@@ -48,7 +53,8 @@ export function buildMoveOperation(
     payload: { dx, dy },
     createdAt,
     source: "manual",
-    status: "approved",
+    status: "draft",
+    metadata: buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
 
@@ -85,7 +91,8 @@ export function buildResizeOperation(
     },
     createdAt,
     source: "manual",
-    status: "approved",
+    status: "draft",
+    metadata: buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
 
@@ -103,7 +110,8 @@ export function buildRotateOperation(
     payload: { degrees },
     createdAt,
     source: "manual",
-    status: "approved",
+    status: "draft",
+    metadata: buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
 
@@ -130,7 +138,10 @@ export function buildHideOperation(
     payload,
     createdAt,
     source: "manual",
-    status: "approved",
+    status: "draft",
+    metadata: liveElement
+      ? buildMetadataFromElement(liveElement, persistedTarget.signature, options.sourceCommand)
+      : buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
 
@@ -153,7 +164,8 @@ export function buildCropOperation(
     },
     createdAt,
     source: "manual",
-    status: "approved",
+    status: "draft",
+    metadata: buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
 
@@ -174,7 +186,8 @@ export function buildZIndexOperation(
     payload,
     createdAt,
     source: "manual",
-    status: "approved",
+    status: "draft",
+    metadata: buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
 
@@ -202,7 +215,10 @@ export function buildStyleOperation(
     payload,
     createdAt,
     source: "manual",
-    status: "approved",
+    status: "draft",
+    metadata: liveElement
+      ? buildMetadataFromElement(liveElement, persistedTarget.signature, options.sourceCommand)
+      : buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
 
@@ -240,6 +256,9 @@ export function buildTextOperation(
     payload,
     createdAt,
     source: "manual",
-    status: "approved",
+    status: "draft",
+    metadata: liveElement
+      ? buildMetadataFromElement(liveElement, persistedTarget.signature, options.sourceCommand)
+      : buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
