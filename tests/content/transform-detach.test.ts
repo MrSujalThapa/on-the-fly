@@ -54,7 +54,7 @@ function nodeInput(target: TransformSelectionInput["targets"][number]): Transfor
 }
 
 describe("detached child transform hierarchy", () => {
-  it("detaches a button moved outside its card and persists detach on replay", () => {
+  it("keeps moved buttons transform-only and preserves replay without detach", () => {
     const { document, root } = createTestDocument(
       `<main><section class="card"><button class="premium">Reactivate Premium</button></section></main>`,
     );
@@ -75,9 +75,10 @@ describe("detached child transform hierarchy", () => {
     const buttonTarget = {
       nodeId: "premium",
       signature: {
-        cssPath: "main button.premium",
+        cssPath: "main section.card > button.premium",
         tagName: "button",
         classList: ["premium"],
+        textFingerprint: "Reactivate Premium",
         boundingBoxHint: { xRatio: 0, yRatio: 0, widthRatio: 0, heightRatio: 0 },
       },
       rect: { x: 50, y: 60, width: 180, height: 36 },
@@ -89,35 +90,16 @@ describe("detached child transform hierarchy", () => {
     const moveOps = controller.endMove(350, 60);
     expect(moveOps[0]?.type).toBe("move");
     if (moveOps[0]?.type === "move") {
-      expect(moveOps[0].payload.detached).toBe(true);
+      expect(moveOps[0].payload.detached).not.toBe(true);
     }
-    expect(button.getAttribute(OTF_DETACH_ATTR)).toBe("true");
-    expect(button.parentElement).toBe(document.body);
-
-    const cardTarget = {
-      nodeId: "card",
-      signature: {
-        cssPath: "main section.card",
-        tagName: "section",
-        classList: ["card"],
-        boundingBoxHint: { xRatio: 0, yRatio: 0, widthRatio: 0, heightRatio: 0 },
-      },
-      rect: { x: 40, y: 40, width: 300, height: 160 },
-      element: card,
-    };
-    const buttonLeft = button.style.left;
-
-    controller.setSelection(nodeInput(cardTarget));
-    controller.beginMove(60, 60);
-    controller.endMove(100, 60);
-
-    expect(button.style.left).toBe(buttonLeft);
+    expect(button.getAttribute("data-otf-detached")).not.toBe("true");
+    expect(button.parentElement).toBe(card);
 
     const replayAdapter = new DomRuntimeAdapter(root);
     replayAdapter.replayOperations(moveOps);
     const replayed = document.querySelector(".premium") as HTMLElement;
-    expect(replayed.getAttribute(OTF_DETACH_ATTR)).toBe("true");
-    expect(replayed.parentElement).toBe(document.body);
+    expect(replayed.getAttribute("data-otf-detached")).not.toBe("true");
+    expect(replayed.parentElement).toBe(card);
   });
 
   it("still moves grouped parent and child together when both are selected", () => {

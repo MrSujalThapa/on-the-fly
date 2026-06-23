@@ -1,8 +1,7 @@
-import type { EditorOperation } from "../editor/operations.js";
+import type { EditorOperation, ZIndexOperation } from "../editor/operations.js";
 import {
-  keepLatestZIndexOperations,
-  stripZIndexOperationsForTargetKeys,
-  zIndexTargetKeys,
+  filterSupersededZIndexOperations,
+  keepLatestZIndexOperationsByTarget,
 } from "../editor/persistence/coalesce-page-operations.js";
 import { appendOperations, removeOperationsById } from "./session-history.js";
 
@@ -37,6 +36,16 @@ export function unsavedChangeCount(state: SessionOperationState): number {
   return state.draftOperations.length;
 }
 
+function normalizeDraftOperations(incoming: EditorOperation[]): EditorOperation[] {
+  const drafts = incoming.map((operation) =>
+    operation.status === "draft"
+      ? operation
+      : { ...operation, status: "draft" as const },
+  );
+
+  return keepLatestZIndexOperationsByTarget(drafts);
+}
+
 export function appendDraftOperations(
   state: SessionOperationState,
   operations: EditorOperation[],
@@ -45,15 +54,18 @@ export function appendDraftOperations(
     return state;
   }
 
-  const drafts = operations.map((operation) =>
-    operation.status === "draft"
-      ? operation
-      : { ...operation, status: "draft" as const },
+  const normalizedIncoming = normalizeDraftOperations(operations);
+  const incomingZIndex = normalizedIncoming.filter(
+    (operation): operation is ZIndexOperation => operation.type === "zIndex",
+  );
+  const savedWithoutSupersededZIndex = filterSupersededZIndexOperations(
+    state.draftOperations,
+    incomingZIndex,
   );
 
   return {
     ...state,
-    draftOperations: appendOperations(state.draftOperations, drafts),
+    draftOperations: appendOperations(savedWithoutSupersededZIndex, normalizedIncoming),
   };
 }
 
@@ -142,14 +154,16 @@ function promoteDraftsToSavedOperations(
   const approved = draftOperations.map((operation) => ({
     ...operation,
     status: "approved" as const,
-  }));
-  const latestApproved = keepLatestZIndexOperations(approved);
-  const incomingZIndexKeys = zIndexTargetKeys(latestApproved);
-  const savedWithoutSupersededZIndex = stripZIndexOperationsForTargetKeys(
-    savedOperations,
-    incomingZIndexKeys,
+  })) as EditorOperation[];
+  const incomingZIndex = approved.filter(
+    (operation): operation is ZIndexOperation => operation.type === "zIndex",
   );
-  return appendOperations(savedWithoutSupersededZIndex, latestApproved);
+  const savedWithoutSupersededZIndex = filterSupersededZIndexOperations(
+    savedOperations,
+    incomingZIndex,
+  );
+  const merged = appendOperations(savedWithoutSupersededZIndex, approved);
+  return keepLatestZIndexOperationsByTarget(merged);
 }
 
 export function promoteAllDraftToSaved(state: SessionOperationState): SessionOperationState {

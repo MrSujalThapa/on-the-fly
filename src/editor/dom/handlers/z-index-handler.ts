@@ -11,9 +11,6 @@ export function applyZIndexOperation(
   const previousValue = element.style.zIndex || snapshot.zIndex;
   const changes: AppliedDomEffect["changes"] = [];
 
-  // z-index only affects stacking on a positioned element. If the element is
-  // statically positioned, promote it to `relative` (no layout shift) so the
-  // layer change is actually honoured by the browser.
   const computedPosition = readComputedPosition(element);
   if (computedPosition === "static") {
     const previousPosition = element.style.position;
@@ -29,7 +26,7 @@ export function applyZIndexOperation(
 
 function readComputedPosition(element: HTMLElement): string {
   const inline = element.style.position;
-  if (inline) {
+  if (inline && inline !== "static") {
     return inline;
   }
 

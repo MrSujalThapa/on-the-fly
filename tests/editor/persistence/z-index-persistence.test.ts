@@ -129,6 +129,23 @@ describe("zIndex persistence and replay", () => {
     expect(result.operations.map((operation) => operation.id)).toEqual(["z2"]);
   });
 
+  it("coalesces zIndex after reparent even when cssPath changes", () => {
+    const existing = [
+      zIndexOp("z-back", BACK_LAYER, 1, "main section.card > div.box-a"),
+    ];
+    const incoming = [
+      zIndexOp("z-front", FRONT_LAYER, BACK_LAYER, "body > div.box-a"),
+    ];
+
+    const result = coalescePageOperations(existing, incoming);
+
+    expect(result.operations).toHaveLength(1);
+    expect(result.operations[0]?.id).toBe("z-front");
+    if (result.operations[0]?.type === "zIndex") {
+      expect(result.operations[0].payload.layer).toBe(FRONT_LAYER);
+    }
+  });
+
   it("promotes the latest draft zIndex as approved and supersedes prior saved zIndex", () => {
     let state = createSessionOperationState([zIndexOp("saved-back", BACK_LAYER, 1)]);
     state = appendDraftOperations(state, [
@@ -220,6 +237,28 @@ describe("zIndex persistence and replay", () => {
 
     const helper = root.querySelector(`[${OTF_HELPER_ATTR}="helper-panel-1"]`) as HTMLElement;
     expect(helper.style.zIndex).toBe("20");
+  });
+
+  it("replays zIndex for grouped selection members in stable order", () => {
+    const { root } = createTestDocument(
+      `<main><div class="box-a">A</div><div class="box-b">B</div></main>`,
+    );
+    const boxA = root.querySelector(".box-a") as HTMLElement;
+    const boxB = root.querySelector(".box-b") as HTMLElement;
+    layoutElement(boxA, { x: 20, y: 20, width: 100, height: 40 });
+    layoutElement(boxB, { x: 140, y: 20, width: 100, height: 40 });
+
+    const adapter = new DomRuntimeAdapter(root);
+    const ops = [
+      zIndexOp("z-a", FRONT_LAYER, 1, "main div.box-a"),
+      zIndexOp("z-b", BACK_LAYER, 1, "main div.box-b"),
+    ];
+    const batch = adapter.replayOperationsWithDiagnostics(ops);
+
+    expect(batch.applied).toBe(2);
+    expect(batch.unresolved).toBe(0);
+    expect(boxA.style.zIndex).toBe(String(FRONT_LAYER));
+    expect(boxB.style.zIndex).toBe(String(BACK_LAYER));
   });
 
   it("keepLatestZIndexOperations preserves non-zIndex ops and latest layer per target", () => {

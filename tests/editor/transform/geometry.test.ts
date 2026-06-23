@@ -67,6 +67,7 @@ describe("rotate geometry", () => {
 describe("layer order", () => {
   it("steps forward and backward", () => {
     expect(computeNextLayer(3, "forward")).toBe(4);
+    expect(computeNextLayer(3, "forward", 10)).toBe(11);
     expect(computeNextLayer(3, "backward")).toBe(2);
   });
 

@@ -89,6 +89,8 @@ import {
 } from "../editor/style/text-target-resolver.js";
 import { SaveWindowController } from "./save-window-controller.js";
 import { createEmptyBatchSnapshot } from "../editor/dom/operation-batch-snapshot.js";
+import { logZIndexBatchDiagnostics } from "../editor/diagnostics/editor-diagnostics.js";
+import type { ZIndexOperation } from "../editor/operations.js";
 import { isLocalAgentAvailable } from "../shared/build-flags.js";
 import { AgentPreviewController } from "./agent/agent-preview-controller.js";
 import { AgentPanel } from "./agent/agent-panel.js";
@@ -244,6 +246,10 @@ export class EditSession implements SessionCommandHost {
       },
       onInteractionEnd: () => {
         this.cacheController?.scheduler.resume();
+      },
+      onGeometryChanged: () => {
+        this.cacheController?.cache.invalidate("edit");
+        this.cacheController?.scheduler.request("edit");
       },
       onFrame: (durationMs) => {
         this.perf.record("transform-frame", durationMs);
@@ -478,6 +484,10 @@ export class EditSession implements SessionCommandHost {
 
     await this.pageCustomization.syncOperationsToStorage();
     this.updateSaveButton();
+    const savedZIndex = nextState.savedOperations.filter(
+      (operation): operation is ZIndexOperation => operation.type === "zIndex",
+    );
+    logZIndexBatchDiagnostics(this.onDebug, "saved", savedZIndex);
     this.onDebug("explicit-save", {
       pageKey: this.computePageKey(),
       savedCount: nextState.savedOperations.length,

@@ -31,7 +31,6 @@ import {
   applyResizeOperation,
   applyRotateOperation,
 } from "./handlers/transform-handler.js";
-import { tryDetachMovedElement } from "./managed-detach.js";
 import {
   applyStyleOperation,
 } from "./handlers/style-handler.js";
@@ -39,8 +38,10 @@ import {
   applyTextOperation,
 } from "./handlers/text-handler.js";
 import {
-  applyZIndexOperation,
-} from "./handlers/z-index-handler.js";
+  applyLayerToHost,
+  inferLayerCommandFromOperation,
+  resolveLayerPlan,
+} from "./layer-overlap-resolver.js";
 import { resolveTargetElementDetailed } from "./resolve-target.js";
 import {
   summarizeElementSignature,
@@ -74,6 +75,9 @@ export interface ReplayOperationDiagnostic {
 export interface ReplayBatchResult {
   results: DomApplyResult[];
   diagnostics: ReplayOperationDiagnostic[];
+  applied: number;
+  skipped: number;
+  unresolved: number;
 }
 
 export class DomRuntimeAdapter {
@@ -250,6 +254,39 @@ export class DomRuntimeAdapter {
         return { result: createDomApplySuccess(), diagnostic };
       }
 
+      if (validation.operation.type === "zIndex") {
+        const zIndexOp = validation.operation;
+        const selected = element as HTMLElement;
+        const command = inferLayerCommandFromOperation(
+          zIndexOp.metadata?.sourceCommand ?? null,
+          zIndexOp.payload.layer,
+          zIndexOp.payload.previousLayer,
+        );
+        const plan = resolveLayerPlan(selected, command, this.snapshotStore, {
+          explicitLayer: zIndexOp.payload.layer,
+        });
+        const effectElement = plan.host;
+        const beforeSnapshot = captureElementDomSnapshot(effectElement, this.root);
+        const changes = applyLayerToHost(
+          effectElement,
+          zIndexOp.payload.layer,
+          this.snapshotStore,
+        );
+        const afterSnapshot = captureElementDomSnapshot(effectElement, this.root);
+        const elementKey = elementSnapshotKey(effectElement, this.root);
+        diagnostic.resolvedTag = effectElement.tagName.toLowerCase();
+        diagnostic.resolvedClasses = Array.from(effectElement.classList);
+        this.storeEffect(zIndexOp.id, {
+          operationId: zIndexOp.id,
+          changes,
+          beforeSnapshot,
+          afterSnapshot,
+          element: effectElement,
+          elementKey,
+        });
+        return { result: createDomApplySuccess(), diagnostic };
+      }
+
       const beforeSnapshot = captureElementDomSnapshot(element as HTMLElement, this.root);
       const changes = this.applyToElement(element as HTMLElement, validation.operation);
       const afterSnapshot = captureElementDomSnapshot(element as HTMLElement, this.root);
@@ -283,38 +320,31 @@ export class DomRuntimeAdapter {
   replayOperationsWithDiagnostics(operations: EditorOperation[]): ReplayBatchResult {
     const results: DomApplyResult[] = [];
     const diagnostics: ReplayOperationDiagnostic[] = [];
-    const movedElements: HTMLElement[] = [];
+    let applied = 0;
+    let skipped = 0;
+    let unresolved = 0;
 
     for (const operation of operations) {
-      const applied = this.applyOperationDetailed(operation);
-      results.push(applied.result);
-      diagnostics.push(applied.diagnostic);
+      const appliedResult = this.applyOperationDetailed(operation);
+      results.push(appliedResult.result);
+      diagnostics.push(appliedResult.diagnostic);
 
-      if (operation.type !== "move" || !applied.diagnostic.resolved) {
+      if (appliedResult.result.ok) {
+        applied += 1;
         continue;
       }
 
-      const stored = this.effects.get(operation.id);
-      if (!stored) {
+      if (appliedResult.result.code === "operation_already_applied") {
+        skipped += 1;
         continue;
       }
 
-      movedElements.push(stored.element);
-      const placement = tryDetachMovedElement(stored.element, movedElements);
-      if (placement) {
-        operation.payload = {
-          ...operation.payload,
-          detached: true,
-          detachedLeft: placement.left,
-          detachedTop: placement.top,
-          ...(placement.zIndex && placement.zIndex !== "auto"
-            ? { detachedZIndex: placement.zIndex }
-            : {}),
-        };
+      if (!appliedResult.diagnostic.resolved) {
+        unresolved += 1;
       }
     }
 
-    return { results, diagnostics };
+    return { results, diagnostics, applied, skipped, unresolved };
   }
 
   revertOperation(operation: EditorOperation): DomApplyResult {
@@ -430,7 +460,7 @@ export class DomRuntimeAdapter {
       case "crop":
         return applyCropOperation(element, operation, this.snapshotStore);
       case "zIndex":
-        return applyZIndexOperation(element, operation, this.snapshotStore);
+        throw new Error("zIndex_apply_must_use_overlap_resolver");
       case "move":
         return applyMoveOperation(element, operation, this.snapshotStore);
       case "resize":

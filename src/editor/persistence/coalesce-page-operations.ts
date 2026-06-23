@@ -1,19 +1,18 @@
 import type { EditorOperation } from "../operations.js";
+import { operationTargetKey } from "./operation-target-key.js";
+import {
+  filterSupersededZIndexOperations,
+  keepLatestZIndexOperationsByTarget,
+} from "./z-index-target-matching.js";
 
-/** Stable key for matching operations that affect the same DOM target. */
-export function operationTargetKey(operation: EditorOperation): string | null {
-  const cssPath = operation.target.signature?.cssPath;
-  if (cssPath) {
-    return `sig:${cssPath}`;
-  }
-
-  const nodeId = operation.target.nodeId;
-  if (nodeId) {
-    return `node:${nodeId}`;
-  }
-
-  return null;
-}
+export { operationTargetKey, stableSignatureTargetKey, stableTargetKeyFromEditorTarget } from "./operation-target-key.js";
+export {
+  contentIdentityTargetKey,
+  filterSupersededZIndexOperations,
+  keepLatestZIndexOperationsByTarget,
+  zIndexOperationsShareTarget,
+} from "./z-index-target-matching.js";
+export { sortOperationsForReplay } from "./replay-operation-order.js";
 
 /** Returns the effective hidden state from saved ops, or `null` when visible/default. */
 export function effectiveHideState(
@@ -58,32 +57,7 @@ export function stripZIndexOperationsForTargetKeys(
 }
 
 export function keepLatestZIndexOperations(operations: EditorOperation[]): EditorOperation[] {
-  const lastIndexByTarget = new Map<string, number>();
-
-  operations.forEach((operation, index) => {
-    if (operation.type !== "zIndex") {
-      return;
-    }
-    const key = operationTargetKey(operation);
-    if (key) {
-      lastIndexByTarget.set(key, index);
-    }
-  });
-
-  if (lastIndexByTarget.size === 0) {
-    return operations;
-  }
-
-  return operations.filter((operation, index) => {
-    if (operation.type !== "zIndex") {
-      return true;
-    }
-    const key = operationTargetKey(operation);
-    if (!key) {
-      return true;
-    }
-    return lastIndexByTarget.get(key) === index;
-  });
+  return keepLatestZIndexOperationsByTarget(operations);
 }
 
 export function zIndexTargetKeys(operations: readonly EditorOperation[]): Set<string> {
@@ -116,12 +90,7 @@ export function coalescePageOperations(
 
   for (const operation of incoming) {
     if (operation.type === "zIndex") {
-      const key = operationTargetKey(operation);
-      if (key) {
-        result = result.filter(
-          (candidate) => !(candidate.type === "zIndex" && operationTargetKey(candidate) === key),
-        );
-      }
+      result = filterSupersededZIndexOperations(result, [operation]);
       result.push(operation);
       applied += 1;
       continue;
@@ -158,12 +127,11 @@ export function coalescePageOperations(
       result.push(operation);
       applied += 1;
     } else {
-      // Showing removes a prior hide without storing a redundant show op.
       applied += 1;
     }
   }
 
-  return { operations: result, applied, skipped };
+  return { operations: keepLatestZIndexOperationsByTarget(result), applied, skipped };
 }
 
 /** @deprecated Use coalescePageOperations().operations */

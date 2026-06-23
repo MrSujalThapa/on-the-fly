@@ -12,8 +12,10 @@ import {
   OTF_CROP_ATTR,
   OTF_HELPER_ATTR,
   OTF_HELPER_ROLE_ATTR,
+  OTF_INTERACTION_FIXED_ATTR,
   OTF_MANAGED_ATTR,
   OTF_TRANSFORM_ATTR,
+  OTF_TRANSFORM_ONLY_ATTR,
 } from "./types.js";
 import {
   applyStoredTransformState,
@@ -286,6 +288,11 @@ function applyTransformAndCropAttributes(
   } else {
     writeStoredTransformState(element, null);
     element.style.removeProperty("transform");
+    element.style.removeProperty("position");
+    element.style.removeProperty("left");
+    element.style.removeProperty("top");
+    element.removeAttribute(OTF_INTERACTION_FIXED_ATTR);
+    element.removeAttribute(OTF_TRANSFORM_ONLY_ATTR);
   }
 
   if (snapshot.cropAttr) {

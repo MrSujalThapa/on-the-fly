@@ -44,10 +44,14 @@ export function resolveCurrentManagedLayer(
   return MANAGED_Z_INDEX_BASELINE;
 }
 
-export function computeNextLayer(currentLayer: number, command: LayerCommand): number {
+export function computeNextLayer(
+  currentLayer: number,
+  command: LayerCommand,
+  siblingMaxLayer = 0,
+): number {
   switch (command) {
     case "forward":
-      return Math.min(FRONT_LAYER, currentLayer + LAYER_STEP);
+      return Math.min(FRONT_LAYER, Math.max(currentLayer + LAYER_STEP, siblingMaxLayer + 1));
     case "backward":
       return Math.max(BACK_LAYER, currentLayer - LAYER_STEP);
     case "front":
