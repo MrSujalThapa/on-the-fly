@@ -8,7 +8,13 @@ import {
 } from "./element-snapshot.js";
 import type { ElementStyleSnapshot } from "./types.js";
 import { OTF_DETACH_ATTR } from "./managed-detach.js";
-import { OTF_CROP_ATTR, OTF_MANAGED_ATTR, OTF_TRANSFORM_ATTR } from "./types.js";
+import {
+  OTF_CROP_ATTR,
+  OTF_HELPER_ATTR,
+  OTF_HELPER_ROLE_ATTR,
+  OTF_MANAGED_ATTR,
+  OTF_TRANSFORM_ATTR,
+} from "./types.js";
 import {
   applyStoredTransformState,
   writeStoredTransformState,
@@ -23,6 +29,8 @@ export interface DomPlacementSnapshot {
   detached: boolean;
   managed: boolean;
   cloneId: string | null;
+  helperId: string | null;
+  helperRole: string | null;
 }
 
 export interface ElementDomSnapshot {
@@ -39,6 +47,11 @@ export function elementSnapshotKey(element: HTMLElement, root: ParentNode): stri
   const cloneId = element.getAttribute(OTF_CLONE_ATTR);
   if (cloneId) {
     return `clone:${cloneId}`;
+  }
+
+  const helperId = element.getAttribute(OTF_HELPER_ATTR);
+  if (helperId) {
+    return `helper:${helperId}`;
   }
 
   return `path:${buildCssPath(element, root)}`;
@@ -62,6 +75,8 @@ export function captureElementDomSnapshot(
       detached: element.getAttribute(OTF_DETACH_ATTR) === "true",
       managed: element.hasAttribute(OTF_MANAGED_ATTR),
       cloneId: element.getAttribute(OTF_CLONE_ATTR),
+      helperId: element.getAttribute(OTF_HELPER_ATTR),
+      helperRole: element.getAttribute(OTF_HELPER_ROLE_ATTR),
     },
     rect: extractBoundingBox(element),
     styleSnapshot: captureElementSnapshot(element),
@@ -80,6 +95,8 @@ export function captureMissingElementDomSnapshot(): ElementDomSnapshot {
       detached: false,
       managed: false,
       cloneId: null,
+      helperId: null,
+      helperRole: null,
     },
     rect: { x: 0, y: 0, width: 0, height: 0 },
     styleSnapshot: {
@@ -104,7 +121,7 @@ function resolveElementByCssPath(root: ParentNode, cssPath: string | null): HTML
     return null;
   }
 
-  const document = root instanceof Document ? root : root.ownerDocument;
+  const document = resolveRootDocument(root);
   if (!document) {
     return null;
   }
@@ -122,12 +139,26 @@ function resolveCloneElement(root: ParentNode, cloneId: string | null): HTMLElem
     return null;
   }
 
-  const document = root instanceof Document ? root : root.ownerDocument;
+  const document = resolveRootDocument(root);
   if (!document) {
     return null;
   }
 
   const match = document.querySelector(`[${OTF_CLONE_ATTR}="${cloneId}"]`);
+  return match instanceof HTMLElement ? match : null;
+}
+
+function resolveHelperElement(root: ParentNode, helperId: string | null): HTMLElement | null {
+  if (!helperId) {
+    return null;
+  }
+
+  const document = resolveRootDocument(root);
+  if (!document) {
+    return null;
+  }
+
+  const match = document.querySelector(`[${OTF_HELPER_ATTR}="${helperId}"]`);
   return match instanceof HTMLElement ? match : null;
 }
 
@@ -143,6 +174,11 @@ export function resolveSnapshotElement(
   const clone = resolveCloneElement(root, snapshot.placement.cloneId);
   if (clone) {
     return clone;
+  }
+
+  const helper = resolveHelperElement(root, snapshot.placement.helperId);
+  if (helper) {
+    return helper;
   }
 
   const parentPath = snapshot.placement.parentCssPath;
@@ -177,7 +213,8 @@ function insertElementAtPlacement(
 ): void {
   const parent =
     resolveElementByCssPath(root, placement.parentCssPath) ??
-    (root instanceof Document ? root.body : null);
+    resolveRootDocument(root)?.body ??
+    null;
   if (!parent) {
     return;
   }
@@ -189,6 +226,14 @@ function insertElementAtPlacement(
   }
 
   parent.appendChild(element);
+}
+
+function resolveRootDocument(root: ParentNode): Document | null {
+  if ("body" in root && root.body) {
+    return root as Document;
+  }
+
+  return root.ownerDocument;
 }
 
 function applyPlacementAttributes(element: HTMLElement, placement: DomPlacementSnapshot): void {
@@ -208,6 +253,18 @@ function applyPlacementAttributes(element: HTMLElement, placement: DomPlacementS
     element.setAttribute(OTF_CLONE_ATTR, placement.cloneId);
   } else {
     element.removeAttribute(OTF_CLONE_ATTR);
+  }
+
+  if (placement.helperId) {
+    element.setAttribute(OTF_HELPER_ATTR, placement.helperId);
+  } else {
+    element.removeAttribute(OTF_HELPER_ATTR);
+  }
+
+  if (placement.helperRole) {
+    element.setAttribute(OTF_HELPER_ROLE_ATTR, placement.helperRole);
+  } else {
+    element.removeAttribute(OTF_HELPER_ROLE_ATTR);
   }
 }
 

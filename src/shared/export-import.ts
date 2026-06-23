@@ -207,6 +207,10 @@ export function validateImportOperations(operations: EditorOperation[]): {
       return { ok: false, error: "dangerous_operation" };
     }
 
+    if (operation.status !== "approved") {
+      return { ok: false, error: "dangerous_operation" };
+    }
+
     const signature = operation.target.signature;
     if (
       signature &&

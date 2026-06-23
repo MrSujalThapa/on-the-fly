@@ -195,4 +195,242 @@ describe("selection controller grouping", () => {
     const refreshed = controller.refreshActiveGroup();
     expect(refreshed?.unionRect).toEqual({ x: 20, y: 20, width: 520, height: 130 });
   });
+
+  it("restores a persisted group operation when members still resolve", () => {
+    const c1 = createNode({
+      id: "c1",
+      signature: {
+        cssPath: "main section#c1",
+        tagName: "section",
+        idAttr: "c1",
+        classList: [],
+        boundingBoxHint: createEmptyBoundingBoxHint(),
+      },
+      rect: { x: 40, y: 40, width: 200, height: 120 },
+    });
+    const c2 = createNode({
+      id: "c2",
+      signature: {
+        cssPath: "main section#c2",
+        tagName: "section",
+        idAttr: "c2",
+        classList: [],
+        boundingBoxHint: createEmptyBoundingBoxHint(),
+      },
+      rect: { x: 300, y: 40, width: 200, height: 120 },
+    });
+    const graph = buildGraph([c1, c2]);
+    const { document, root } = createTestDocument(
+      `<main><section id="c1">A</section><section id="c2">B</section></main>`,
+    );
+    layoutElement(root.querySelector("#c1") as HTMLElement, c1.rect);
+    layoutElement(root.querySelector("#c2") as HTMLElement, c2.rect);
+
+    const groupState = {
+      groupId: "group-1",
+      memberNodeIds: ["c1", "c2"],
+      memberSignatures: [c1.signature, c2.signature],
+    };
+
+    const controller = createSelectionController({
+      getGraph: () => graph,
+      getDocument: () => document,
+    });
+    const restored = controller.restorePersistedGroup(groupState);
+    expect(restored?.selection.activeGroupId).toBe("group-1");
+    expect(restored?.selection.selectedNodeIds.sort()).toEqual(["c1", "c2"]);
+  });
+
+  it("keeps the permanent group after clearing and reselecting a member", () => {
+    const c1 = createNode({
+      id: "c1",
+      rect: { x: 40, y: 40, width: 200, height: 120 },
+    });
+    const c2 = createNode({
+      id: "c2",
+      rect: { x: 300, y: 40, width: 200, height: 120 },
+    });
+    const filler = [
+      createNode({ id: "c3", rect: { x: 40, y: 300, width: 200, height: 120 } }),
+      createNode({ id: "c4", rect: { x: 300, y: 300, width: 200, height: 120 } }),
+    ];
+    const graph = buildGraph([c1, c2, ...filler]);
+    const { document, root } = createTestDocument(
+      `<main><section id="c1">A</section><section id="c2">B</section></main>`,
+    );
+    const c1El = root.querySelector("#c1") as HTMLElement;
+    const c2El = root.querySelector("#c2") as HTMLElement;
+    layoutElement(c1El, c1.rect);
+    layoutElement(c2El, c2.rect);
+
+    document.elementsFromPoint = vi.fn((x: number) =>
+      x < 260
+        ? [c1El, root, document.body, document.documentElement]
+        : [c2El, root, document.body, document.documentElement],
+    );
+
+    const controller = createSelectionController({
+      getGraph: () => graph,
+      getDocument: () => document,
+    });
+
+    controller.handlePointerClick(120, 100, false);
+    controller.handlePointerClick(380, 100, true);
+    controller.groupSelection();
+
+    controller.clearSelection();
+    expect(controller.getActiveGroup()).not.toBeNull();
+    expect(controller.getSelection().selectedNodeIds).toEqual([]);
+
+    const reselected = controller.handlePointerClick(120, 100, false);
+    expect(reselected.group).toBeDefined();
+    expect(reselected.selection.selectedNodeIds.sort()).toEqual(["c1", "c2"]);
+    expect(controller.getActiveGroup()?.memberIds.sort()).toEqual(["c1", "c2"]);
+  });
+
+  it("selects the full group when clicking a nested child", () => {
+    const card = createNode({
+      id: "card",
+      kind: "container",
+      rect: { x: 20, y: 20, width: 160, height: 80 },
+      signature: {
+        cssPath: "main section#card",
+        tagName: "section",
+        idAttr: "card",
+        classList: [],
+        boundingBoxHint: createEmptyBoundingBoxHint(),
+      },
+    });
+    const label = createNode({
+      id: "label",
+      kind: "text",
+      parentId: "card",
+      rect: { x: 30, y: 30, width: 80, height: 20 },
+      signature: {
+        cssPath: "main section#card span#label",
+        tagName: "span",
+        idAttr: "label",
+        classList: [],
+        boundingBoxHint: createEmptyBoundingBoxHint(),
+      },
+    });
+    const other = createNode({
+      id: "other",
+      rect: { x: 20, y: 120, width: 120, height: 24 },
+    });
+    const filler = [
+      createNode({ id: "c", rect: { x: 20, y: 160, width: 120, height: 24 } }),
+      createNode({ id: "d", rect: { x: 20, y: 190, width: 120, height: 24 } }),
+    ];
+    const graph = buildGraph([card, label, other, ...filler]);
+    const { document, root } = createTestDocument(
+      `<main><section id="card"><span id="label">Title</span></section><p id="other">Other</p></main>`,
+    );
+    const cardEl = root.querySelector("#card") as HTMLElement;
+    const labelEl = root.querySelector("#label") as HTMLElement;
+    const otherEl = root.querySelector("#other") as HTMLElement;
+    layoutElement(cardEl, card.rect);
+    layoutElement(labelEl, label.rect);
+    layoutElement(otherEl, other.rect);
+
+    document.elementsFromPoint = vi.fn((x: number, y: number) => {
+      if (y < 55 && x < 100) {
+        return [labelEl, cardEl, root, document.body, document.documentElement];
+      }
+      if (y < 55) {
+        return [cardEl, root, document.body, document.documentElement];
+      }
+      if (y < 140) {
+        return [otherEl, root, document.body, document.documentElement];
+      }
+      return [root, document.body, document.documentElement];
+    });
+
+    const controller = createSelectionController({
+      getGraph: () => graph,
+      getDocument: () => document,
+    });
+
+    controller.handlePointerClick(140, 35, false);
+    controller.handlePointerClick(40, 130, true);
+    controller.groupSelection();
+
+    const childClick = controller.handlePointerClick(40, 35, false);
+    expect(childClick.group).toBeDefined();
+    expect(childClick.selection.selectedNodeIds.sort()).toEqual(["card", "other"]);
+    expect(childClick.selection.selectedNodeIds).not.toContain("label");
+  });
+
+  it("does not select inner children individually until ungroup", () => {
+    const card = createNode({
+      id: "card",
+      kind: "container",
+      rect: { x: 20, y: 20, width: 160, height: 80 },
+      signature: {
+        cssPath: "main section#card",
+        tagName: "section",
+        idAttr: "card",
+        classList: [],
+        boundingBoxHint: createEmptyBoundingBoxHint(),
+      },
+    });
+    const label = createNode({
+      id: "label",
+      kind: "text",
+      parentId: "card",
+      rect: { x: 30, y: 30, width: 80, height: 20 },
+      signature: {
+        cssPath: "main section#card span#label",
+        tagName: "span",
+        idAttr: "label",
+        classList: [],
+        boundingBoxHint: createEmptyBoundingBoxHint(),
+      },
+    });
+    const other = createNode({
+      id: "other",
+      rect: { x: 20, y: 120, width: 120, height: 24 },
+    });
+    const filler = [
+      createNode({ id: "c", rect: { x: 20, y: 160, width: 120, height: 24 } }),
+      createNode({ id: "d", rect: { x: 20, y: 190, width: 120, height: 24 } }),
+    ];
+    const graph = buildGraph([card, label, other, ...filler]);
+    const { document, root } = createTestDocument(
+      `<main><section id="card"><span id="label">Title</span></section><p id="other">Other</p></main>`,
+    );
+    const cardEl = root.querySelector("#card") as HTMLElement;
+    const labelEl = root.querySelector("#label") as HTMLElement;
+    const otherEl = root.querySelector("#other") as HTMLElement;
+    layoutElement(cardEl, card.rect);
+    layoutElement(labelEl, label.rect);
+    layoutElement(otherEl, other.rect);
+
+    document.elementsFromPoint = vi.fn((x: number, y: number) => {
+      if (y < 55 && x < 100) {
+        return [labelEl, cardEl, root, document.body, document.documentElement];
+      }
+      if (y < 140) {
+        return [otherEl, root, document.body, document.documentElement];
+      }
+      return [root, document.body, document.documentElement];
+    });
+
+    const controller = createSelectionController({
+      getGraph: () => graph,
+      getDocument: () => document,
+    });
+
+    controller.handlePointerClick(140, 35, false);
+    controller.handlePointerClick(40, 130, true);
+    controller.groupSelection();
+
+    const groupedChildClick = controller.handlePointerClick(40, 35, false);
+    expect(groupedChildClick.selection.selectedNodeIds).not.toEqual(["label"]);
+
+    controller.ungroupSelection();
+    const soloChildClick = controller.handlePointerClick(40, 35, false);
+    expect(soloChildClick.selection.selectedNodeIds).toEqual(["label"]);
+    expect(controller.getActiveGroup()).toBeNull();
+  });
 });

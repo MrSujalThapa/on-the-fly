@@ -3,6 +3,8 @@ import type { OperationId } from "../ids.js";
 export const OTF_MANAGED_ATTR = "data-otf-managed";
 export const OTF_TRANSFORM_ATTR = "data-otf-transform";
 export const OTF_CROP_ATTR = "data-otf-crop";
+export const OTF_HELPER_ATTR = "data-otf-helper-id";
+export const OTF_HELPER_ROLE_ATTR = "data-otf-helper-role";
 
 export interface ElementStyleSnapshot {
   inlineStyle: string;

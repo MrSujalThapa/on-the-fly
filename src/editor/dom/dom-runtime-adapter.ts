@@ -24,6 +24,9 @@ import {
   applyHideOperation,
 } from "./handlers/hide-handler.js";
 import {
+  applyInsertHelperObjectOperation,
+} from "./handlers/helper-object-handler.js";
+import {
   applyMoveOperation,
   applyResizeOperation,
   applyRotateOperation,
@@ -156,6 +159,18 @@ export class DomRuntimeAdapter {
           diagnostic.resolvedTag = element.tagName.toLowerCase();
           diagnostic.resolvedClasses = Array.from(element.classList);
         }
+      } else if (operation.type === "insertHelperObject") {
+        const document = resolveDocument(this.root);
+        const existing = document.querySelector(
+          `[data-otf-helper-id="${operation.payload.helperId}"]`,
+        );
+        element = existing instanceof HTMLElement ? existing : null;
+        if (element) {
+          diagnostic.resolved = true;
+          diagnostic.matchStrategy = "live-session";
+          diagnostic.resolvedTag = element.tagName.toLowerCase();
+          diagnostic.resolvedClasses = Array.from(element.classList);
+        }
       } else {
         const resolution = resolveTargetElementDetailed(this.root, operation.target);
         element = resolution.element;
@@ -173,7 +188,7 @@ export class DomRuntimeAdapter {
         diagnostic.signatureSummary = resolution.diagnostics.signatureSummary;
       }
 
-      if (!element && operation.type !== "duplicate") {
+      if (!element && operation.type !== "duplicate" && operation.type !== "insertHelperObject") {
         const result = createDomApplyFailure("target_not_found", "target_not_found");
         diagnostic.code = result.code;
         diagnostic.error = result.error;
@@ -186,6 +201,33 @@ export class DomRuntimeAdapter {
       if (operation.type === "duplicate") {
         const beforeSnapshot = captureMissingElementDomSnapshot();
         const applied = applyDuplicateOperation(
+          resolveDocument(this.root),
+          operation,
+          this.snapshotStore,
+          element,
+        );
+        element = applied.element;
+        const afterSnapshot = captureElementDomSnapshot(element, this.root);
+        const elementKey = elementSnapshotKey(element, this.root);
+        diagnostic.resolved = true;
+        diagnostic.resolvedTag = element.tagName.toLowerCase();
+        diagnostic.resolvedClasses = Array.from(element.classList);
+        this.storeEffect(operation.id, {
+          operationId: operation.id,
+          changes: applied.changes,
+          beforeSnapshot,
+          afterSnapshot,
+          element,
+          elementKey,
+        });
+        return { result: createDomApplySuccess(), diagnostic };
+      }
+
+      if (operation.type === "insertHelperObject") {
+        const beforeSnapshot = element
+          ? captureElementDomSnapshot(element, this.root)
+          : captureMissingElementDomSnapshot();
+        const applied = applyInsertHelperObjectOperation(
           resolveDocument(this.root),
           operation,
           this.snapshotStore,
@@ -406,8 +448,8 @@ export function createDomRuntimeAdapter(root: ParentNode): DomRuntimeAdapter {
 }
 
 function resolveDocument(root: ParentNode): Document {
-  if (root instanceof Document) {
-    return root;
+  if ("body" in root && root.body) {
+    return root as Document;
   }
 
   if (root.ownerDocument) {

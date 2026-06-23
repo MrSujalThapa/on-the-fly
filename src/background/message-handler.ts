@@ -8,6 +8,9 @@ import {
   isSetSettingsMessage,
   OTF_MESSAGE,
 } from "../shared/messages.js";
+import { isAgentEditRequestMessage } from "../shared/agent-messages.js";
+import { buildFlags } from "../shared/build-flags.js";
+import { proxyAgentEditRequest } from "./agent-proxy.js";
 import {
   isClearPageMessage,
   isExportDataMessage,
@@ -175,6 +178,21 @@ export function registerBackgroundMessageHandler(): void {
 
       if (isGetStorageUsageMessage(message)) {
         sendResponse(await handleGetStorageUsage());
+        return;
+      }
+
+      if (isAgentEditRequestMessage(message)) {
+        sendResponse(
+          await proxyAgentEditRequest(message.request, {
+            flags: {
+              publicAgentEnabled: buildFlags.publicAgentEnabled,
+              localDevAgentEnabled: buildFlags.localDevAgentEnabled,
+            },
+            ...(buildFlags.localAgentServerUrl
+              ? { configuredServerUrl: buildFlags.localAgentServerUrl }
+              : {}),
+          }),
+        );
         return;
       }
 

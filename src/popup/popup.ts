@@ -1,4 +1,4 @@
-import { isAgentEnabled } from "../shared/build-flags.js";
+import { isLocalAgentAvailable } from "../shared/build-flags.js";
 import {
   type EditModeStatus,
   OTF_MESSAGE,
@@ -30,7 +30,7 @@ function setBuildModeLabel(): void {
     return;
   }
 
-  buildModeEl.textContent = formatAgentStatus(isAgentEnabled());
+  buildModeEl.textContent = formatAgentStatus(isLocalAgentAvailable());
 }
 
 function formatStatus(status: EditModeStatus): string {

@@ -5,6 +5,7 @@ import type { AppliedDomEffect } from "../types.js";
 const STYLE_PROPERTY_MAP: Record<StyleProperty, string> = {
   color: "color",
   backgroundColor: "background-color",
+  backgroundImage: "background-image",
   borderColor: "border-color",
   borderWidth: "border-width",
   borderRadius: "border-radius",

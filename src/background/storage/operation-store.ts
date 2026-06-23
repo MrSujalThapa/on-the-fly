@@ -111,7 +111,7 @@ export class OperationStore {
     pageKey: PageKey,
     operations: EditorOperation[],
   ): Promise<{ totalCount: number; trimmed: number }> {
-    const valid = operations.filter((operation) => validateOperation(operation).ok);
+    const valid = operations.filter(isPersistableOperation);
     return this.replacePageOperationsInternal(pageKey, valid);
   }
 
@@ -124,7 +124,7 @@ export class OperationStore {
     pageKey: PageKey,
     operations: EditorOperation[],
   ): Promise<SaveOperationsResult> {
-    const valid = operations.filter((operation) => validateOperation(operation).ok);
+    const valid = operations.filter(isPersistableOperation);
     const skipped = operations.length - valid.length;
 
     if (valid.length === 0) {
@@ -216,7 +216,6 @@ export class OperationStore {
       const stored: StoredOperation = {
         ...operation,
         pageKey,
-        status: "approved",
         customizationId,
         sequence: index + 1,
       };
@@ -241,7 +240,8 @@ export class OperationStore {
     return stored
       .slice()
       .sort((left, right) => left.sequence - right.sequence)
-      .map(toEditorOperation);
+      .map(toEditorOperation)
+      .filter(isPersistableOperation);
   }
 
   /** Reads all local stores for export. */
@@ -389,6 +389,10 @@ export class OperationStore {
     });
     this.dbPromise = null;
   }
+}
+
+function isPersistableOperation(operation: EditorOperation): boolean {
+  return operation.status === "approved" && validateOperation(operation).ok;
 }
 
 function upgradeSchema(db: IDBDatabase): void {

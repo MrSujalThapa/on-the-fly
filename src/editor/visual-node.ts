@@ -23,7 +23,9 @@ export interface VisualNodeComputedStyles {
   zIndex?: string;
   color?: string;
   backgroundColor?: string;
+  backgroundImage?: string;
   borderRadius?: string;
+  boxShadow?: string;
   fontSize?: string;
   fontWeight?: string;
   textAlign?: string;

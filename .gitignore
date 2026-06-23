@@ -13,5 +13,6 @@ node_modules/
 
 # Extension build outputs
 dist/
+agent-server/dist/
 build/
 *.zip

@@ -88,6 +88,46 @@ describe("OperationStore", () => {
     expect((await store.loadOperations(PAGE_KEY)).map((op) => op.id)).toEqual(["good"]);
   });
 
+  it("does not persist draft operations through the save path", async () => {
+    const store = createStore();
+    const draft = { ...moveOp("draft", 1, 1), status: "draft" as const };
+    const saved = await store.saveOperations(PAGE_KEY, [draft]);
+
+    expect(saved.saved).toBe(0);
+    expect(saved.skipped).toBe(1);
+    expect(await store.loadOperations(PAGE_KEY)).toEqual([]);
+  });
+
+  it("does not persist preview operations through the save path", async () => {
+    const store = createStore();
+    const preview = { ...moveOp("preview", 1, 1), status: "preview" as const };
+    const saved = await store.saveOperations(PAGE_KEY, [preview]);
+
+    expect(saved.saved).toBe(0);
+    expect(saved.skipped).toBe(1);
+    expect(await store.loadOperations(PAGE_KEY)).toEqual([]);
+  });
+
+  it("still persists approved operations through the save path", async () => {
+    const store = createStore();
+    const saved = await store.saveOperations(PAGE_KEY, [moveOp("approved", 1, 1)]);
+
+    expect(saved.saved).toBe(1);
+    expect(saved.skipped).toBe(0);
+    expect((await store.loadOperations(PAGE_KEY)).map((op) => op.id)).toEqual(["approved"]);
+  });
+
+  it("filters non-approved operations from replace-page persistence", async () => {
+    const store = createStore();
+    await store.replacePageOperations(PAGE_KEY, [
+      { ...moveOp("draft", 1, 1), status: "draft" as const },
+      { ...moveOp("preview", 1, 1), status: "preview" as const },
+      moveOp("approved", 1, 1),
+    ]);
+
+    expect((await store.loadOperations(PAGE_KEY)).map((op) => op.id)).toEqual(["approved"]);
+  });
+
   it("coalesces repeated hide operations for the same target", async () => {
     const store = createStore();
     await store.saveOperations(PAGE_KEY, [hideOp("hide-1")]);

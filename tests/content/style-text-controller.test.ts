@@ -203,6 +203,35 @@ describe("StyleTextController", () => {
     expect(body.style.backgroundColor).toBe("");
   });
 
+  it("applies helper-friendly shadow and gradient style operations", () => {
+    const { document, root } = createTestDocument(`<main><div id="panel">Panel</div></main>`);
+    const panel = root.querySelector("#panel") as HTMLElement;
+
+    const controller = createStyleTextController({
+      document,
+      adapter: new DomRuntimeAdapter(root),
+      getPageKey: () => "https://example.com/",
+      resolveTargets: () => [{
+        nodeId: "node-panel",
+        signature: createTestSignature({ cssPath: "main div#panel" }),
+        rect: { x: 0, y: 0, width: 100, height: 40 },
+        element: panel,
+      }],
+      resolveTextTarget: () => null,
+    });
+
+    const shadow = controller.applyStyle("boxShadow", "0px 8px 24px rgba(0, 0, 0, 0.2)");
+    const gradient = controller.applyStyle(
+      "backgroundImage",
+      "linear-gradient(135deg, #ffffff 0%, #f1f5f9 100%)",
+    );
+
+    expect(shadow).toHaveLength(1);
+    expect(gradient).toHaveLength(1);
+    expect(panel.style.boxShadow).toBe("0px 8px 24px rgba(0, 0, 0, 0.2)");
+    expect(panel.style.backgroundImage).toContain("linear-gradient");
+  });
+
   it("applies background to each group member surface", () => {
     const { document, root } = createTestDocument(`
       <main><div id="card-a">A</div><div id="card-b">B</div></main>

@@ -1,5 +1,6 @@
 import type { EditorTarget } from "./editor-target.js";
 import type { ElementSignature } from "./element-signature.js";
+import type { HelperObjectRole } from "./helper-object-contract.js";
 import type { GroupId, OperationId, PageKey, VisualNodeId } from "./ids.js";
 
 export type OperationSource = "manual" | "agent" | "import";
@@ -24,6 +25,7 @@ export interface OperationMetadata {
 export type StyleProperty =
   | "color"
   | "backgroundColor"
+  | "backgroundImage"
   | "borderColor"
   | "borderWidth"
   | "borderRadius"
@@ -35,6 +37,43 @@ export type StyleProperty =
   | "filter";
 
 export type ResizeMode = "box" | "font-aware" | "image";
+
+export type { HelperObjectRole };
+
+export interface HelperObjectRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type HelperObjectFill =
+  | {
+      type: "solid";
+      color: string;
+    }
+  | {
+      type: "linearGradient";
+      angleDeg: number;
+      stops: Array<{
+        color: string;
+        position: number;
+      }>;
+    };
+
+export interface HelperObjectBorder {
+  width: number;
+  color: string;
+  style: "solid" | "dashed" | "dotted";
+}
+
+export interface HelperObjectBoxShadow {
+  offsetX: number;
+  offsetY: number;
+  blurRadius: number;
+  spreadRadius?: number;
+  color: string;
+}
 
 export interface OperationBase<TType extends string, TPayload> {
   id: OperationId;
@@ -154,6 +193,22 @@ export type InsertImageOperation = OperationBase<
   }
 >;
 
+export type InsertHelperObjectOperation = OperationBase<
+  "insertHelperObject",
+  {
+    helperId: string;
+    role: HelperObjectRole;
+    rect: HelperObjectRect;
+    fill?: HelperObjectFill;
+    borderRadius?: string;
+    opacity?: number;
+    boxShadow?: HelperObjectBoxShadow;
+    zIndex?: number;
+    border?: HelperObjectBorder;
+    label?: string;
+  }
+>;
+
 export type DuplicateOperation = OperationBase<
   "duplicate",
   {
@@ -183,6 +238,7 @@ export type EditorOperation =
   | GroupOperation
   | UngroupOperation
   | InsertImageOperation
+  | InsertHelperObjectOperation
   | DuplicateOperation;
 
 export const OPERATION_TYPES = [
@@ -197,6 +253,7 @@ export const OPERATION_TYPES = [
   "group",
   "ungroup",
   "insertImage",
+  "insertHelperObject",
   "duplicate",
 ] as const;
 

@@ -4,8 +4,9 @@ import { createEditSession } from "../../src/content/edit-session.js";
 import { EditorShell } from "../../src/content/editor-shell.js";
 import * as storageClient from "../../src/content/storage-client.js";
 import { createTestDocument } from "../editor/dom/test-document.js";
-import { createStyleOperation } from "../editor/fixtures.js";
+import { createInsertHelperObjectOperation, createStyleOperation } from "../editor/fixtures.js";
 import type { CropOperation } from "../../src/editor/operations.js";
+import { OTF_HELPER_ATTR } from "../../src/editor/dom/types.js";
 
 describe("PageCustomizationController", () => {
   it("marks replay idempotent for a page load", async () => {
@@ -79,6 +80,21 @@ describe("PageCustomizationController", () => {
 
     expect(photo.style.clipPath).toBe("");
     expect(photo.getAttribute("data-otf-crop")).toBeNull();
+    expect(controller.getPageOperations()).toEqual([]);
+  });
+
+  it("clears replayed helper objects while edit mode is off", async () => {
+    const { document } = createTestDocument(`<main><p id="copy">Hello</p></main>`);
+    const controller = new PageCustomizationController(document);
+    const operation = createInsertHelperObjectOperation();
+
+    controller.getAdapter().applyOperation(operation);
+    controller.setPageOperations([operation]);
+    expect(document.querySelector(`[${OTF_HELPER_ATTR}="helper-panel-1"]`)).toBeInstanceOf(HTMLElement);
+
+    await controller.clearPage();
+
+    expect(document.querySelector(`[${OTF_HELPER_ATTR}="helper-panel-1"]`)).toBeNull();
     expect(controller.getPageOperations()).toEqual([]);
   });
 

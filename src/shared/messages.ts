@@ -1,5 +1,12 @@
 import type { ExtensionSettingsUpdate } from "./settings.js";
 
+export type {
+  AgentEditRequest,
+  AgentEditResponse,
+  AgentOperationValidationResult,
+  AgentPreviewState,
+} from "./agent-contracts.js";
+
 export {
   OTF_STORAGE_MESSAGE,
   type OtfClearPageMessage,

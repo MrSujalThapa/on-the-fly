@@ -212,7 +212,10 @@ describe("FloatingToolbar", () => {
 
     const panel = shadow.querySelector(".otf-style-panel") as HTMLElement;
     expect(panel.hidden).toBe(false);
-    expect(shadow.querySelectorAll(".otf-style-panel-grid .otf-style-field")).toHaveLength(6);
+    expect(shadow.querySelector('[data-gradient-start]')).toBeInstanceOf(HTMLInputElement);
+    expect(shadow.querySelector('[data-shadow-preset]')).toBeInstanceOf(HTMLSelectElement);
+    expect(shadow.querySelector('[data-style-field="backgroundImage"]')).toBeNull();
+    expect(shadow.querySelector('[data-style-field="boxShadow"]')).toBeNull();
     const opacity = shadow.querySelector('[data-style-field="opacity"]') as HTMLInputElement;
     expect(opacity.getAttribute("min")).toBe("0");
     expect(opacity.getAttribute("max")).toBe("1");
