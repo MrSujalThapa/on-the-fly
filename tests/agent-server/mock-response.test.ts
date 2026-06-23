@@ -33,8 +33,8 @@ describe("mock agent edit response", () => {
     const validation = validateAgentOperations(response.draftOperations);
 
     expect(validation.ok).toBe(true);
-    expect(response.draftOperations).toHaveLength(1);
-    expect(response.draftOperations[0]?.type).toBe("insertHelperObject");
+    expect(response.draftOperations.length).toBeGreaterThanOrEqual(1);
+    expect(response.draftOperations.some((op) => op.type === "insertHelperObject")).toBe(true);
     expect(response.draftOperations[0]?.status).toBe("preview");
     expect(response.draftOperations[0]?.source).toBe("agent");
     expect(response.summary.length).toBeGreaterThan(0);

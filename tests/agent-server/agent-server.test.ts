@@ -39,6 +39,7 @@ describe("local agent server skeleton", () => {
     expect(config.agentEnabled).toBe(false);
     expect(config.modelProvider).toBe("openai");
     expect(config.modelName).toBe("gpt-5-mini");
+    expect(config.openAiTimeoutMs).toBe(25_000);
   });
 
   it("does not instantiate an adapter when AGENT_ENABLED=false", () => {
@@ -146,8 +147,8 @@ describe("local agent server skeleton", () => {
     expect(valid.body.mode).toBe("mock");
     const response = valid.body.response as Record<string, unknown>;
     expect(Array.isArray(response.draftOperations)).toBe(true);
-    expect((response.draftOperations as unknown[]).length).toBe(1);
-    expect((response.draftOperations as Array<{ type: string }>)[0]?.type).toBe("insertHelperObject");
+    expect((response.draftOperations as unknown[]).length).toBeGreaterThanOrEqual(1);
+    expect((response.draftOperations as Array<{ type: string }>).some((op) => op.type === "insertHelperObject")).toBe(true);
   });
 
   it("returns validation error for unsafe provider output", async () => {

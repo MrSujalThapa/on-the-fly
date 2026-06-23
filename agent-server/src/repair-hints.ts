@@ -1,37 +1,29 @@
-import type { AgentEditRequest } from "../../src/shared/agent-contracts.js";
-import { formatAllowedHelperRoles } from "../../src/editor/helper-object-contract.js";
-import { resolveAllowedTargetIds } from "./openai-prompt.js";
+import { DESIGN_ACTION_KINDS } from "../../src/shared/agent-design-plan.js";
 
-export function enrichRepairErrors(errors: string[], request: AgentEditRequest): string[] {
-  const allowed = resolveAllowedTargetIds(request);
+export function enrichRepairErrors(errors: string[]): string[] {
   const enriched: string[] = [];
 
   for (const error of errors) {
     enriched.push(error);
 
-    if (error.includes("insertHelperObject.role is invalid")) {
-      enriched.push(`Use insertHelperObject.role exactly one of: ${formatAllowedHelperRoles()}.`);
-      const gotMatch = /got "([^"]+)"/u.exec(error);
-      if (gotMatch?.[1]) {
-        enriched.push(`Replace invalid role "${gotMatch[1]}" with a value from the allowed list.`);
-      }
+    if (error.includes("draftOperations are not accepted")) {
+      enriched.push(
+        "Return designPlan.actions with semantic design actions only — never raw editor operations.",
+      );
+      enriched.push(`Allowed action kinds: ${DESIGN_ACTION_KINDS.join(", ")}.`);
       continue;
     }
 
-    if (
-      error.includes("operation.target is missing or invalid") ||
-      error.includes("must target a scoped visual node id") ||
-      error.includes("cannot resolve helper object target")
-    ) {
+    if (error.includes("designPlan.actions") || error.includes("designPlan must")) {
       enriched.push(
-        `Valid selected target ids: ${allowed.selectedNodeIds.join(", ") || "(none)"}.`,
+        "Each action needs kind from the allowed list. params may include placement, intensity, mood, fill, shadow, radius, spacing.",
       );
-      if (allowed.activeGroupId) {
-        enriched.push(`When a group is selected, set target.groupId to "${allowed.activeGroupId}".`);
-      }
-      enriched.push(
-        "For insertHelperObject, target.nodeId must equal payload.helperId and include signature cssPath #otf-helper-<helperId>.",
-      );
+      enriched.push("Do not include target ids, rects, cssPath, helperId, or operation types.");
+      continue;
+    }
+
+    if (error.includes("design plan cannot compile") || error.includes("design plan produced no operations")) {
+      enriched.push("Include at least one supported design action that matches the user instruction.");
     }
   }
 
@@ -40,17 +32,16 @@ export function enrichRepairErrors(errors: string[], request: AgentEditRequest):
 
 export function isCloseEnoughToRepair(message: string): boolean {
   const repairablePatterns = [
-    "insertHelperObject.role is invalid",
-    "operation.target is missing or invalid",
-    "cannot resolve helper object target",
-    "must target a scoped visual node id",
-    "insertHelperObject.helperId is invalid",
-    "insertHelperObject.fill",
-    "insertHelperObject.rect",
-    "helper rect has zero or negative dimensions",
-    "draftOperations must be an array",
+    "draftOperations are not accepted",
+    "designPlan is required",
+    "designPlan.actions",
+    "designPlan must",
+    "design plan cannot compile",
+    "design plan produced no operations",
     "model output was not valid JSON",
     "model output must be an object",
+    "is not an allowed semantic param",
+    ".kind must be one of",
   ];
 
   return repairablePatterns.some((pattern) => message.includes(pattern));

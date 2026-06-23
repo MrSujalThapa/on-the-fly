@@ -332,6 +332,9 @@ export class EditSession implements SessionCommandHost {
           onRefine: (instruction) => {
             void this.agentPreviewController?.refinePreview(instruction);
           },
+          onCancel: () => {
+            this.agentPreviewController?.cancelPendingRequest();
+          },
           onClose: () => {
             this.agentPreviewController?.rejectPreview();
             this.clearAgentSelectionOverride();

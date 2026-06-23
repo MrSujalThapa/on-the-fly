@@ -83,7 +83,8 @@ function applyHelperObjectPayload(
   element.style.width = `${String(payload.rect.width)}px`;
   element.style.height = `${String(payload.rect.height)}px`;
   element.style.boxSizing = "border-box";
-  element.style.pointerEvents = "auto";
+  element.style.pointerEvents =
+    payload.role === "backgroundPanel" && operation.status === "preview" ? "none" : "auto";
 
   applyFill(element, payload.fill);
   setOrRemoveStyle(element, "border-radius", payload.borderRadius);

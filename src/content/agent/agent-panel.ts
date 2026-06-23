@@ -5,6 +5,7 @@ export interface AgentPanelCallbacks {
   onApprove: () => void;
   onReject: () => void;
   onRefine: (instruction: string) => void;
+  onCancel: () => void;
   onClose: () => void;
 }
 
@@ -145,10 +146,16 @@ export class AgentPanel {
       rejectButton.disabled = !hasPreview || state.status === "loading";
     }
     if (refineButton) {
-      refineButton.disabled = state.status === "loading" || !this.isAvailable();
+      refineButton.disabled = !this.isAvailable();
     }
     if (generateButton) {
-      generateButton.disabled = state.status === "loading" || !this.isAvailable();
+      generateButton.disabled = !this.isAvailable();
+    }
+
+    const cancelButton = this.panelEl.querySelector<HTMLButtonElement>("[data-agent-cancel]");
+    if (cancelButton) {
+      cancelButton.disabled = state.status !== "loading";
+      cancelButton.hidden = state.status !== "loading";
     }
   }
 
@@ -216,6 +223,12 @@ export class AgentPanel {
       event.stopPropagation();
       this.close();
       this.callbacks.onReject();
+    });
+
+    this.panelEl.querySelector("[data-agent-cancel]")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.callbacks.onCancel();
     });
 
     for (const input of Array.from(this.panelEl.querySelectorAll("input, textarea, select, button"))) {
@@ -600,6 +613,7 @@ function createAgentPanelMarkup(): string {
     </div>
     <div class="otf-agent-panel-actions">
       <button type="button" class="otf-agent-glass-btn" data-agent-generate>Generate preview</button>
+      <button type="button" class="otf-agent-glass-btn" data-agent-cancel hidden>Cancel</button>
       <button type="button" class="otf-agent-glass-btn" data-agent-refine>Refine</button>
       <button type="button" class="otf-agent-glass-btn" data-agent-approve>Approve</button>
       <button type="button" class="otf-agent-glass-btn" data-agent-reject>Reject</button>
@@ -632,7 +646,10 @@ function escapeHtml(value: string): string {
 
 function resolveAgentStatusMessage(state: AgentPreviewState): string {
   if (state.status === "loading") {
-    return "Generating preview...";
+    if (state.loadingSlowHint) {
+      return "Still generating… You can keep editing other elements. Cancel to stop.";
+    }
+    return "Generating preview… You can keep editing other elements. Cancel to stop.";
   }
 
   if (state.status === "preview") {

@@ -61,9 +61,11 @@ describe("context budget", () => {
       CONTEXT_BUDGET_LIMITS.maxInstructionLength,
     );
     expect(budgeted.request.screenshotCropDataUrl).toBeUndefined();
-    expect(budgeted.budget.selectedNodes.truncated).toBe(8);
+    expect(budgeted.budget.selectedNodes.truncated).toBe(12);
+    expect(budgeted.budget.nearbyNodes.truncated).toBe(14);
     expect(budgeted.budget.instructionTruncated).toBe(true);
     expect(budgeted.budget.screenshotIncluded).toBe(false);
+    expect(budgeted.request.selectedNodes[0]?.signature.classList).toEqual([]);
   });
 
   it("limits style fields sent for each node", () => {

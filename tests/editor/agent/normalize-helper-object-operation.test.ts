@@ -60,22 +60,14 @@ describe("normalizeInsertHelperObjectForAgentRequest", () => {
   it("builds a valid gradient helper target for a single selected element", () => {
     const parsed = parseModelAgentEditResponse(
       {
-        draftOperations: [
-          {
-            type: "insertHelperObject",
-            payload: {
-              role: "backgroundPanel",
-              fill: {
-                type: "linearGradient",
-                angleDeg: 135,
-                stops: [
-                  { color: "#ffffff", position: 0 },
-                  { color: "#eef2ff", position: 100 },
-                ],
-              },
+        designPlan: {
+          actions: [
+            {
+              kind: "add_surface",
+              params: { placement: "behind", fill: "gradient", mood: "cool" },
             },
-          },
-        ],
+          ],
+        },
         summary: ["Added gradient panel."],
         warnings: [],
         confidence: "high",
@@ -154,29 +146,24 @@ describe("normalizeInsertHelperObjectForAgentRequest", () => {
   });
 });
 
-describe("parseModelAgentEditResponse helper normalization", () => {
-  it("accepts model helper output missing target and normalizes it safely", () => {
+describe("parseModelAgentEditResponse design plan compilation", () => {
+  it("compiles semantic design actions into normalized helper targets", () => {
     const parsed = parseModelAgentEditResponse(
       {
-        draftOperations: [
-          {
-            type: "insertHelperObject",
-            payload: {
-              role: "backgroundPanel",
-              fill: {
-                type: "linearGradient",
-                angleDeg: 135,
-                stops: [
-                  { color: "#ffffff", position: 0 },
-                  { color: "#dbeafe", position: 100 },
-                ],
+        designPlan: {
+          actions: [
+            {
+              kind: "add_surface",
+              params: {
+                placement: "behind",
+                fill: "gradient",
+                mood: "cool",
+                radius: "rounded",
+                shadow: "soft",
               },
-              borderRadius: "18px",
-              opacity: 0.95,
-              zIndex: 1,
             },
-          },
-        ],
+          ],
+        },
         summary: ["Added gradient panel."],
         warnings: [],
         confidence: "high",
@@ -190,10 +177,10 @@ describe("parseModelAgentEditResponse helper normalization", () => {
     }
   });
 
-  it("rejects missing target when selected scope cannot be resolved", () => {
+  it("rejects design plans when selected scope cannot be resolved", () => {
     const parsed = parseModelAgentEditResponse(
       {
-        draftOperations: [{ type: "insertHelperObject", payload: { role: "backgroundPanel" } }],
+        designPlan: { actions: [{ kind: "add_surface" }] },
         summary: [],
         warnings: [],
         confidence: "low",
@@ -203,7 +190,24 @@ describe("parseModelAgentEditResponse helper normalization", () => {
 
     expect(parsed.ok).toBe(false);
     if (!parsed.ok) {
-      expect(parsed.errors.join(" ")).toContain("cannot resolve helper object target");
+      expect(parsed.errors.join(" ")).toContain("selected nodes");
+    }
+  });
+
+  it("rejects raw draftOperations from the model", () => {
+    const parsed = parseModelAgentEditResponse(
+      {
+        draftOperations: [{ type: "insertHelperObject", payload: { role: "backgroundPanel" } }],
+        summary: [],
+        warnings: [],
+        confidence: "low",
+      },
+      SINGLE_REQUEST,
+    );
+
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      expect(parsed.errors.join(" ")).toContain("draftOperations are not accepted");
     }
   });
 });

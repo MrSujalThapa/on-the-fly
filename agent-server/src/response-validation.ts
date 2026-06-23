@@ -1,17 +1,16 @@
 import type { AgentEditRequest, AgentEditResponse } from "../../src/shared/agent-contracts.js";
+import { compileDesignPlan } from "../../src/editor/agent/compile-design-plan.js";
 import { prepareAgentDraftOperations } from "../../src/editor/agent/normalize-helper-object-operation.js";
 import { validateAgentOperations } from "../../src/editor/validation/validate-agent-operation.js";
 import {
   buildAgentScopeContext,
   type AgentScopeRect,
 } from "../../src/editor/validation/validate-agent-scope.js";
-import type { EditorOperation } from "../../src/editor/operations.js";
+import { validateDesignPlanShape } from "./design-plan-validation.js";
 
-const MAX_AGENT_OPERATIONS = 12;
 const MAX_SUMMARY_LINES = 12;
 const MAX_WARNING_LINES = 12;
 
-const FORBIDDEN_OPERATION_TYPES = new Set(["duplicate"]);
 const FORBIDDEN_CONTENT_PATTERNS = [
   /<script\b/i,
   /<\/script>/i,
@@ -25,8 +24,14 @@ const FORBIDDEN_CONTENT_PATTERNS = [
   /<embed\b/i,
 ];
 
+import type { AgentLatencyStages } from "../../src/shared/agent-latency.js";
+
 export type ModelResponseParseResult =
-  | { ok: true; response: AgentEditResponse }
+  | {
+      ok: true;
+      response: AgentEditResponse;
+      latency: Pick<AgentLatencyStages, "compileMs" | "validationMs">;
+    }
   | { ok: false; errors: string[]; code: "malformed_json" | "invalid_model_output" | "unsafe_model_output" };
 
 export function parseModelAgentEditResponse(
@@ -63,31 +68,40 @@ export function parseModelAgentEditResponse(
     };
   }
 
-  if (!Array.isArray(raw.draftOperations)) {
+  const rawOpsRejection = rejectRawEditorOperations(raw);
+  if (rawOpsRejection) {
+    return rawOpsRejection;
+  }
+
+  if (!isRecord(raw.designPlan)) {
     return {
       ok: false,
-      errors: ["draftOperations must be an array"],
+      errors: ["designPlan is required — raw draftOperations are not accepted"],
       code: "invalid_model_output",
     };
   }
 
-  if (raw.draftOperations.length > MAX_AGENT_OPERATIONS) {
+  const planValidation = validateDesignPlanShape(raw.designPlan);
+  if (!planValidation.ok) {
     return {
       ok: false,
-      errors: [`model output exceeded max operations (${String(MAX_AGENT_OPERATIONS)})`],
-      code: "unsafe_model_output",
+      errors: planValidation.errors,
+      code: "invalid_model_output",
     };
   }
 
-  for (const [index, operation] of raw.draftOperations.entries()) {
-    const typeError = rejectForbiddenOperationType(operation, index);
-    if (typeError) {
-      return typeError;
-    }
+  const compileStartedAt = Date.now();
+  const compiled = compileDesignPlan(planValidation.plan, request);
+  const compileMs = Date.now() - compileStartedAt;
+  if (!compiled.ok) {
+    return {
+      ok: false,
+      errors: compiled.errors,
+      code: "invalid_model_output",
+    };
   }
 
-  const normalized = normalizeAgentEditResponse(raw, request);
-  const prepared = prepareAgentDraftOperations(normalized.draftOperations, request);
+  const prepared = prepareAgentDraftOperations(compiled.operations, request);
   if (!prepared.ok) {
     return {
       ok: false,
@@ -96,8 +110,10 @@ export function parseModelAgentEditResponse(
     };
   }
 
+  const validationStartedAt = Date.now();
   const scope = buildScopeFromRequest(request);
   const validation = validateAgentOperations(prepared.operations, scope);
+  const validationMs = Date.now() - validationStartedAt;
   if (!validation.ok) {
     return {
       ok: false,
@@ -111,61 +127,35 @@ export function parseModelAgentEditResponse(
   return {
     ok: true,
     response: {
-      ...normalized,
       draftOperations: validation.operations,
+      summary: normalizeStringArray(raw.summary, MAX_SUMMARY_LINES),
+      warnings: normalizeStringArray(raw.warnings, MAX_WARNING_LINES),
+      confidence: normalizeConfidence(raw.confidence),
     },
+    latency: { compileMs, validationMs },
   };
 }
 
-function rejectForbiddenOperationType(
-  operation: unknown,
-  index: number,
-): ModelResponseParseResult | null {
-  if (!isRecord(operation) || typeof operation.type !== "string") {
-    return null;
-  }
-
-  if (FORBIDDEN_OPERATION_TYPES.has(operation.type)) {
+function rejectRawEditorOperations(raw: Record<string, unknown>): ModelResponseParseResult | null {
+  if ("draftOperations" in raw) {
     return {
       ok: false,
-      errors: [`operations[${String(index)}].type "${operation.type}" is not allowed from agent output`],
-      code: "unsafe_model_output",
+      errors: [
+        "draftOperations are not accepted from the model — return designPlan.actions instead",
+      ],
+      code: "invalid_model_output",
     };
   }
 
-  if (operation.type === "duplicate" || hasRawHtmlPayload(operation)) {
+  if (Array.isArray(raw.operations)) {
     return {
       ok: false,
-      errors: [`operations[${String(index)}] carries raw HTML and is not allowed`],
-      code: "unsafe_model_output",
+      errors: ["raw operations array is not accepted — return designPlan.actions instead"],
+      code: "invalid_model_output",
     };
   }
 
   return null;
-}
-
-function hasRawHtmlPayload(operation: Record<string, unknown>): boolean {
-  const payload = operation.payload;
-  if (!isRecord(payload)) {
-    return false;
-  }
-
-  if (typeof payload.html === "string" && payload.html.trim().length > 0) {
-    return true;
-  }
-
-  if (operation.type === "text" && typeof payload.value === "string") {
-    return /<\w+/u.test(payload.value);
-  }
-
-  if (operation.type === "style" && typeof payload.value === "string") {
-    const value = payload.value.trim();
-    if (value.includes("<") || value.includes("url(") && /javascript:/i.test(value)) {
-      return true;
-    }
-  }
-
-  return false;
 }
 
 function findForbiddenContent(serialized: string): string[] {
@@ -176,47 +166,6 @@ function findForbiddenContent(serialized: string): string[] {
     }
   }
   return errors;
-}
-
-function normalizeAgentEditResponse(
-  raw: Record<string, unknown>,
-  request: AgentEditRequest,
-): AgentEditResponse {
-  const draftOperations = Array.isArray(raw.draftOperations)
-    ? raw.draftOperations.map((entry, index) =>
-        normalizeOperation(entry, request, index),
-      )
-    : [];
-
-  return {
-    draftOperations,
-    summary: normalizeStringArray(raw.summary, MAX_SUMMARY_LINES),
-    warnings: normalizeStringArray(raw.warnings, MAX_WARNING_LINES),
-    confidence: normalizeConfidence(raw.confidence),
-  };
-}
-
-function normalizeOperation(
-  value: unknown,
-  request: AgentEditRequest,
-  index: number,
-): EditorOperation {
-  const operation = isRecord(value) ? { ...value } : {};
-  const now = Date.now();
-
-  operation.pageKey = request.pageKey;
-  operation.source = "agent";
-  operation.status = operation.status === "draft" ? "draft" : "preview";
-  operation.id =
-    typeof operation.id === "string" && operation.id.trim().length > 0
-      ? operation.id
-      : `agent-op-${String(now)}-${String(index)}`;
-  operation.createdAt =
-    typeof operation.createdAt === "number" && Number.isFinite(operation.createdAt)
-      ? operation.createdAt
-      : now;
-
-  return operation as unknown as EditorOperation;
 }
 
 function buildScopeFromRequest(request: AgentEditRequest) {

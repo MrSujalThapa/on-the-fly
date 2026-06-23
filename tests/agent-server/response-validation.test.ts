@@ -36,21 +36,15 @@ describe("parseModelAgentEditResponse", () => {
     }
   });
 
-  it("rejects duplicate operations", () => {
+  it("rejects raw draftOperations from the model", () => {
+    const operation = createInsertHelperObjectOperation({
+      source: "agent",
+      status: "preview",
+    });
+
     const result = parseModelAgentEditResponse(
       {
-        draftOperations: [
-          {
-            id: "dup-1",
-            type: "duplicate",
-            pageKey: BASE_REQUEST.pageKey,
-            target: { nodeId: "node-1" },
-            payload: { html: "<div>x</div>" },
-            createdAt: Date.now(),
-            source: "agent",
-            status: "preview",
-          },
-        ],
+        draftOperations: [operation],
         summary: ["Should fail"],
         warnings: [],
         confidence: "low",
@@ -60,29 +54,96 @@ describe("parseModelAgentEditResponse", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.errors.join(" ")).toContain("duplicate");
+      expect(result.errors.join(" ")).toContain("draftOperations are not accepted");
+      expect(result.code).toBe("invalid_model_output");
+    }
+  });
+
+  it("rejects duplicate operation payloads even if nested", () => {
+    const result = parseModelAgentEditResponse(
+      {
+        designPlan: {
+          actions: [{ kind: "add_surface" }],
+        },
+        summary: ["<script>alert(1)</script>"],
+        warnings: [],
+        confidence: "low",
+      },
+      BASE_REQUEST,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
       expect(result.code).toBe("unsafe_model_output");
     }
   });
 
-  it("rejects raw HTML in text payloads", () => {
+  it("accepts a valid design plan and compiles to helper-object operations", () => {
+    const result = parseModelAgentEditResponse(
+      {
+        designPlan: {
+          actions: [
+            {
+              kind: "add_surface",
+              params: {
+                placement: "behind",
+                fill: "gradient",
+                mood: "cool",
+                shadow: "soft",
+                radius: "rounded",
+              },
+            },
+          ],
+        },
+        summary: ["Added one background panel behind the selection."],
+        warnings: [],
+        confidence: "high",
+      },
+      BASE_REQUEST,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.response.draftOperations.length).toBeGreaterThanOrEqual(1);
+      expect(result.response.draftOperations.some((op) => op.type === "insertHelperObject")).toBe(true);
+      expect(result.response.draftOperations[0]?.source).toBe("agent");
+      expect(result.response.draftOperations[0]?.status).toBe("preview");
+    }
+  });
+
+  it("rejects invalid design plans that fail compile", () => {
+    const result = parseModelAgentEditResponse(
+      {
+        designPlan: {
+          actions: [{ kind: "add_surface" }],
+        },
+        summary: [],
+        warnings: [],
+        confidence: "medium",
+      },
+      {
+        ...BASE_REQUEST,
+        selectedNodes: [],
+        selection: { selectedNodeIds: [], source: "click" },
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.join(" ")).toContain("selected nodes");
+    }
+  });
+
+  it("rejects style operations targeting nodes outside selection via raw ops", () => {
     const result = parseModelAgentEditResponse(
       {
         draftOperations: [
           {
-            id: "text-1",
-            type: "text",
+            id: "style-outside",
+            type: "style",
             pageKey: BASE_REQUEST.pageKey,
-            target: {
-              nodeId: "node-1",
-              signature: {
-                cssPath: "main article.card",
-                tagName: "article",
-                classList: [],
-                boundingBoxHint: { xRatio: 0, yRatio: 0, widthRatio: 0, heightRatio: 0 },
-              },
-            },
-            payload: { value: "<script>alert(1)</script>", preserveFormat: true },
+            target: { nodeId: "outside-node" },
+            payload: { property: "opacity", value: "0.9" },
             createdAt: Date.now(),
             source: "agent",
             status: "preview",
@@ -97,90 +158,7 @@ describe("parseModelAgentEditResponse", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.code).toBe("unsafe_model_output");
-    }
-  });
-
-  it("rejects script tags anywhere in model output", () => {
-    const result = parseModelAgentEditResponse(
-      {
-        draftOperations: [],
-        summary: ["<script>alert(1)</script>"],
-        warnings: [],
-        confidence: "low",
-      },
-      BASE_REQUEST,
-    );
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.code).toBe("unsafe_model_output");
-    }
-  });
-
-  it("accepts a valid structured helper-object response", () => {
-    const operation = createInsertHelperObjectOperation({
-      source: "agent",
-      status: "preview",
-    });
-
-    const result = parseModelAgentEditResponse(
-      {
-        draftOperations: [operation],
-        summary: ["Added one background panel behind the selection."],
-        warnings: [],
-        confidence: "high",
-      },
-      BASE_REQUEST,
-    );
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.response.draftOperations).toHaveLength(1);
-      expect(result.response.draftOperations[0]?.type).toBe("insertHelperObject");
-      expect(result.response.draftOperations[0]?.source).toBe("agent");
-      expect(result.response.draftOperations[0]?.status).toBe("preview");
-    }
-  });
-
-  it("rejects operations targeting nodes outside selection context", () => {
-    const operation = createInsertHelperObjectOperation({
-      source: "agent",
-      status: "preview",
-    });
-
-    const styleOperation = {
-      id: "style-outside",
-      type: "style",
-      pageKey: BASE_REQUEST.pageKey,
-      target: {
-        nodeId: "outside-node",
-        signature: {
-          cssPath: "footer p",
-          tagName: "p",
-          classList: [],
-          boundingBoxHint: { xRatio: 0, yRatio: 0, widthRatio: 0, heightRatio: 0 },
-        },
-      },
-      payload: { property: "opacity", value: "0.9" },
-      createdAt: Date.now(),
-      source: "agent",
-      status: "preview",
-    };
-
-    const result = parseModelAgentEditResponse(
-      {
-        draftOperations: [operation, styleOperation],
-        summary: ["Mixed ops"],
-        warnings: [],
-        confidence: "medium",
-      },
-      BASE_REQUEST,
-    );
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.errors.join(" ")).toContain("outside-node");
+      expect(result.errors.join(" ")).toContain("draftOperations are not accepted");
     }
   });
 });

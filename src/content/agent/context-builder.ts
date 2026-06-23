@@ -12,9 +12,9 @@ import {
 } from "../../editor/validation/validate-agent-scope.js";
 import { toAgentVisualNode } from "./visual-node-serializer.js";
 
-const NEARBY_PADDING_PX = 80;
-const MAX_NEARBY_NODES = 12;
-const MAX_RELEVANT_OPERATIONS = 24;
+const NEARBY_PADDING_PX = 64;
+const MAX_NEARBY_NODES = 5;
+const MAX_RELEVANT_OPERATIONS = 8;
 
 export interface AgentContextInput {
   pageKey: PageKey;

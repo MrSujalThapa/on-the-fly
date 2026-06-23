@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentEditRequest } from "../../src/shared/agent-contracts.js";
 import { OpenAiAdapter, OpenAiGenerationError } from "../../agent-server/src/providers/openai.js";
-import { createInsertHelperObjectOperation } from "../editor/fixtures.js";
 
 const BASE_REQUEST: AgentEditRequest = {
   pageKey: "https://example.com/",
@@ -26,6 +25,26 @@ const BASE_REQUEST: AgentEditRequest = {
   existingOperations: [],
 };
 
+const VALID_DESIGN_PLAN_RESPONSE = {
+  designPlan: {
+    actions: [
+      {
+        kind: "add_surface",
+        params: {
+          placement: "behind",
+          fill: "gradient",
+          mood: "premium",
+          shadow: "soft",
+          radius: "rounded",
+        },
+      },
+    ],
+  },
+  summary: ["Added a soft background panel."],
+  warnings: [],
+  confidence: "high",
+};
+
 describe("OpenAiAdapter", () => {
   it("is not constructed when the API key is missing", () => {
     expect(
@@ -36,7 +55,7 @@ describe("OpenAiAdapter", () => {
     ).toThrow("missing_openai_api_key_for_local_agent");
   });
 
-  it("rejects unsafe model output after the provider call", async () => {
+  it("rejects raw draftOperations from model output", async () => {
     const fetchImpl = vi.fn(() =>
       Promise.resolve(
         Response.json({
@@ -127,24 +146,14 @@ describe("OpenAiAdapter", () => {
     });
   });
 
-  it("returns validated operations from structured OpenAI content", async () => {
-    const helperOperation = createInsertHelperObjectOperation({
-      source: "agent",
-      status: "preview",
-    });
-
+  it("returns compiled operations from a valid design plan response", async () => {
     const fetchImpl = vi.fn(() =>
       Promise.resolve(
         Response.json({
           choices: [
             {
               message: {
-                content: JSON.stringify({
-                  draftOperations: [helperOperation],
-                  summary: ["Added a soft background panel."],
-                  warnings: [],
-                  confidence: "high",
-                }),
+                content: JSON.stringify(VALID_DESIGN_PLAN_RESPONSE),
               },
             },
           ],
@@ -160,8 +169,35 @@ describe("OpenAiAdapter", () => {
 
     const response = await adapter.generateStructuredOperations(BASE_REQUEST);
 
-    expect(response.draftOperations).toHaveLength(1);
-    expect(response.draftOperations[0]?.type).toBe("insertHelperObject");
+    expect(response.draftOperations.length).toBeGreaterThanOrEqual(1);
+    expect(response.draftOperations.some((op) => op.type === "insertHelperObject")).toBe(true);
     expect(response.summary[0]).toContain("background panel");
+  });
+
+  it("uses design plan schema in the OpenAI request", async () => {
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve(
+        Response.json({
+          choices: [{ message: { content: JSON.stringify(VALID_DESIGN_PLAN_RESPONSE) } }],
+        }),
+      ),
+    );
+
+    const adapter = new OpenAiAdapter({
+      apiKey: "test-key",
+      modelName: "gpt-5-mini",
+      fetchImpl,
+    });
+
+    await adapter.generateStructuredOperations(BASE_REQUEST);
+
+    const call = fetchImpl.mock.calls[0] as [RequestInfo | URL, RequestInit | undefined] | undefined;
+    const init = call?.[1];
+    const rawBody = init?.body;
+    const body = JSON.parse(typeof rawBody === "string" ? rawBody : "{}") as {
+      response_format?: { json_schema?: { schema?: { properties?: Record<string, unknown> } } };
+    };
+    expect(body.response_format?.json_schema?.schema?.properties?.designPlan).toBeDefined();
+    expect(body.response_format?.json_schema?.schema?.properties?.draftOperations).toBeUndefined();
   });
 });
