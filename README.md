@@ -66,41 +66,65 @@ See **Options → Privacy** in the extension for the full disclosure.
 - **Export backup** — Downloads a JSON file with your local sites, pages, operations, and assets (subject to local size limits).
 - **Import backup** — Validates schema and operation types before writing; review warnings in Options after import.
 
-## Production release build
+## Local developer agent optional
+
+The public/local manual editor works without AI, accounts, backend services, or API keys.
+
+The optional agent workflow is for local development only. It is not required to use the extension.
+
+### Run local agent mode
+
+1. Copy the agent environment file:
 
 ```bash
-npm run release:public
+cp agent-server/.env.example agent-server/.env
 ```
 
-This runs the public build, verification checks, and packages `release/on-the-fly-v<version>.zip` for Chrome Web Store upload.
+2. Add your own API key to `agent-server/.env`.
 
-Before release, follow [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md).
+3. Start the local agent development mode:
 
-## Local developer agent (optional)
+```bash
+npm run dev:agent
+```
 
-The public Chrome Web Store build has AI **disabled**. For local development only:
+4. Load the generated extension build from `dist/` in `chrome://extensions`.
 
-1. Copy `.env.example` to `.env` in the repo root and configure your local agent server URL if needed.
-2. Run `npm run build` (not `build:public`) to enable localhost host permissions.
-3. Start the optional local agent server from `agent-server/` with your own API key in `agent-server/.env` (never commit keys).
-4. On a page, Shift+double-click a selection to open the agent panel (local dev build only).
+5. On a page, enable edit mode, select an element or group, then use the local agent shortcut to open the agent panel.
 
-Agent previews are temporary. **Approve** adds operations to the current session only; **Save all** or **`S` + drag** persists them. **Reject** or **Escape** reverts the preview.
+Agent previews are temporary. Approving an agent result adds the generated operations to the current unsaved session only.
 
-The agent server is for local development and is not included in the published extension package.
+To persist changes:
+
+* Use the Save button to save all dirty changes.
+* Use `S` + drag to save only changes inside a selected region.
+* Pressing `S` alone does not save.
 
 ## Development scripts
 
-| Command | Purpose |
-|---|---|
-| `npm run build:public` | Store-safe build (agent off, no localhost permissions) |
-| `npm run build` | Local dev build with agent hooks |
-| `npm run verify:public` | Fail if public `dist/` includes dev-only permissions or agent flags |
-| `npm run package:public` | Zip `dist/` for store upload |
-| `npm run typecheck` | TypeScript check |
-| `npm run lint` | ESLint |
-| `npm test` | Vitest suite |
+| Command                  | Purpose                                                                                    |
+| ------------------------ | ------------------------------------------------------------------------------------------ |
+| `npm run build:public`   | Build the local-first public/manual editor with agent disabled                             |
+| `npm run dev:agent`      | Build/run local development mode with optional agent support                               |
+| `npm run verify:public`  | Verify the public build does not include dev-only agent permissions or enabled agent flags |
+| `npm run package:public` | Package the public build artifact for maintainers                                          |
+| `npm run typecheck`      | Run TypeScript checks                                                                      |
+| `npm run lint`           | Run ESLint                                                                                 |
+| `npm test`               | Run the test suite                                                                         |
 
-## License
+## Contributing
 
-See repository license file if present. Planning docs under `docs/` are local-only and not required to use the extension.
+On the Fly is open source. Contributions are welcome through issues and pull requests.
+
+Before opening a pull request:
+
+```bash
+npm install
+npm run typecheck
+npm run lint
+npm test
+```
+
+For changes that affect extension behavior, include a short summary of what changed, what was tested, and any remaining risks.
+
+Please do not commit API keys, `.env` files, local planning docs, build artifacts, or generated release zip files.
