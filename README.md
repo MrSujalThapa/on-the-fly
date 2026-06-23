@@ -2,6 +2,15 @@
 
 On the Fly is a local-first Chrome extension for visually editing live websites. Select real page elements, move, resize, restyle, edit text, layer objects, and keep changes in your browser—no hosted backend or account required.
 
+**On the Fly Core** is open source under the [Apache License 2.0](./LICENSE). You can use, fork, inspect, and contribute to the core extension and editor. A separate commercial or enterprise product may be offered later (hosted sync, teams, admin controls, SSO, audit logs, managed AI, enterprise deployment, support). That code is not in this repository.
+
+## Community
+
+- [Contributing](./CONTRIBUTING.md) — setup, workflow, and PR expectations
+- [Code of Conduct](./CODE_OF_CONDUCT.md)
+- [Security](./SECURITY.md) — report vulnerabilities privately
+- [License](./LICENSE) — Apache-2.0
+
 ## What it does
 
 - Turn any normal webpage into a lightweight visual editor sandbox
@@ -65,9 +74,7 @@ See **Options → Privacy** in the extension for the full disclosure.
 npm run release:public
 ```
 
-This runs the public build, verification checks, and packages `release/on-the-fly-v<version>.zip` for Chrome Web Store upload.
-
-Before release, follow [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md).
+This runs the public build, verification checks, and packages `release/on-the-fly-v<version>.zip`. Maintainers can follow [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) before tagging a release.
 
 ## Local developer agent (optional)
 
@@ -96,4 +103,6 @@ The agent server is for local development and is not included in the published e
 
 ## License
 
-See repository license file if present. Planning docs under `docs/` are local-only and not required to use the extension.
+On the Fly Core is licensed under the [Apache License, Version 2.0](./LICENSE) (SPDX: `Apache-2.0`).
+
+Copyright © Sujal Thapa
