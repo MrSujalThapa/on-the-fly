@@ -30,6 +30,7 @@ function copyStaticAssets() {
   cpSync(join(srcDir, "manifest.json"), join(distDir, "manifest.json"));
   cpSync(join(srcDir, "popup", "popup.html"), join(distDir, "popup", "popup.html"));
   cpSync(join(srcDir, "popup", "popup.css"), join(distDir, "popup", "popup.css"));
+  cpSync(join(srcDir, "popup", "logo.png"), join(distDir, "popup", "logo.png"));
   cpSync(join(srcDir, "options", "options.html"), join(distDir, "options", "options.html"));
   cpSync(join(srcDir, "options", "options.css"), join(distDir, "options", "options.css"));
 }
@@ -38,12 +39,9 @@ function writeIcons() {
   const iconsDir = join(distDir, "icons");
   ensureDir(iconsDir);
 
-  const png16Base64 =
-    "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAHElEQVR42mNkYGD4z0ABYBw1igGMAYxRjAEMAAAfAAGpFQAAAABJRU5ErkJggg==";
-  const png = Buffer.from(png16Base64, "base64");
-
+  const logoPath = join(srcDir, "popup", "logo.png");
   for (const size of [16, 48, 128]) {
-    writeFileSync(join(iconsDir, `icon-${size}.png`), png);
+    cpSync(logoPath, join(iconsDir, `icon-${size}.png`));
   }
 }
 

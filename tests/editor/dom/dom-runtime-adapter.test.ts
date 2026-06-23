@@ -180,6 +180,34 @@ describe("DomRuntimeAdapter", () => {
     expect(root.querySelector(`[${OTF_HELPER_ATTR}="helper-panel-1"]`)).toBeInstanceOf(HTMLElement);
   });
 
+  it("background panels use pointer-events none only during preview", () => {
+    const { root } = createTestDocument(`<main><p class="intro">Hello</p></main>`);
+    const adapter = new DomRuntimeAdapter(root);
+    const preview = createInsertHelperObjectOperation({
+      status: "preview",
+      payload: {
+        ...createInsertHelperObjectOperation().payload,
+        role: "backgroundPanel",
+      },
+    });
+    const approved = createInsertHelperObjectOperation({
+      status: "approved",
+      payload: {
+        ...createInsertHelperObjectOperation().payload,
+        role: "backgroundPanel",
+      },
+    });
+
+    expect(adapter.applyOperation(preview).ok).toBe(true);
+    const previewHelper = root.querySelector(`[${OTF_HELPER_ATTR}]`) as HTMLElement;
+    expect(previewHelper.style.pointerEvents).toBe("none");
+
+    expect(adapter.revertOperation(preview).ok).toBe(true);
+    expect(adapter.applyOperation(approved).ok).toBe(true);
+    const approvedHelper = root.querySelector(`[${OTF_HELPER_ATTR}]`) as HTMLElement;
+    expect(approvedHelper.style.pointerEvents).toBe("auto");
+  });
+
   it("allows helper objects to be manually targeted by transform, layer, hide, and style ops", () => {
     const { root } = createTestDocument(`<main><p class="intro">Hello</p></main>`);
     const adapter = new DomRuntimeAdapter(root);

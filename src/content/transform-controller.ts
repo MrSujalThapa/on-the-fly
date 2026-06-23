@@ -532,7 +532,7 @@ export class TransformController {
         reason: describeStackingRisk(element),
       });
       operations.push(
-        buildZIndexOperation(target, nextLayer, currentLayer, { pageKey }),
+        buildZIndexOperation(target, nextLayer, currentLayer, { pageKey }, element),
       );
     }
 

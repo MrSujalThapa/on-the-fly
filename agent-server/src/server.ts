@@ -207,6 +207,10 @@ async function handleAgentEdit(
       repairAttempted: generated.repairAttempted,
       validationStatus: "ok",
       contextBudget: generated.budget,
+      latencyStages: {
+        ...generated.latencyStages,
+        serverTotalMs: latencyMs,
+      },
     });
     writeJson(response, 200, {
       ok: true,
@@ -215,6 +219,10 @@ async function handleAgentEdit(
       requestId,
       repairAttempted: generated.repairAttempted,
       latencyMs,
+      latencyStages: {
+        ...generated.latencyStages,
+        serverTotalMs: latencyMs,
+      },
       contextBudget: generated.budget,
     });
   } catch (error) {

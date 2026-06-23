@@ -2,11 +2,15 @@ import type { AgentEditRequest, AgentEditResponse } from "../../../src/shared/ag
 import { parseModelAgentEditResponse } from "../response-validation.js";
 import { buildOpenAiSystemPrompt, buildOpenAiUserPrompt } from "../openai-prompt.js";
 import { AGENT_EDIT_RESPONSE_JSON_SCHEMA } from "../openai-schema.js";
+import { enrichRepairErrors } from "../repair-hints.js";
 import {
   isUnsupportedProviderParameterError,
   resolveOpenAiTemperature,
 } from "../model-parameters.js";
-import type { ModelProviderAdapter, StructuredGenerationOptions } from "./types.js";
+import type {
+  ModelProviderAdapter,
+  StructuredGenerationOptions,
+} from "./types.js";
 
 export interface OpenAiAdapterOptions {
   apiKey?: string;
@@ -57,14 +61,16 @@ export class OpenAiAdapter implements ModelProviderAdapter {
     ];
 
     if (options.repairErrors && options.repairErrors.length > 0) {
+      const repairHints = enrichRepairErrors(options.repairErrors);
       messages.push({
         role: "user" as const,
         content: [
           "Your previous JSON output failed local validation.",
-          "Fix every issue below and return corrected structured operations only.",
-          "Do not return partial operations or explanations outside JSON.",
+          "Fix every issue below and return a corrected AgentDesignPlan only.",
+          "Never return draftOperations, raw editor operations, DOM selectors, or coordinates.",
+          "Do not return explanations outside JSON.",
           "",
-          ...options.repairErrors.map((error) => `- ${error}`),
+          ...repairHints.map((error) => `- ${error}`),
         ].join("\n"),
       });
     }
@@ -87,6 +93,7 @@ export class OpenAiAdapter implements ModelProviderAdapter {
       requestBody.temperature = temperature;
     }
 
+    const openAiStartedAt = Date.now();
     const response = await this.fetchImpl("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -97,6 +104,8 @@ export class OpenAiAdapter implements ModelProviderAdapter {
       body: JSON.stringify(requestBody),
       ...(options.timeoutSignal ? { signal: options.timeoutSignal } : {}),
     });
+
+    const openAiCallMs = Date.now() - openAiStartedAt;
 
     const body = (await response.json()) as OpenAiChatCompletionResponse;
     if (!response.ok) {
@@ -115,6 +124,16 @@ export class OpenAiAdapter implements ModelProviderAdapter {
     const parsed = parseModelAgentEditResponse(content, request);
     if (!parsed.ok) {
       throw new OpenAiGenerationError(parsed.errors.join("; "), parsed.code);
+    }
+
+    if (options.latencyOut) {
+      options.latencyOut.openAiCallMs = openAiCallMs;
+      if (parsed.latency.compileMs !== undefined) {
+        options.latencyOut.compileMs = parsed.latency.compileMs;
+      }
+      if (parsed.latency.validationMs !== undefined) {
+        options.latencyOut.validationMs = parsed.latency.validationMs;
+      }
     }
 
     return parsed.response;

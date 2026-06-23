@@ -18,6 +18,7 @@ describe("AgentPanel status messages", () => {
         onApprove: () => undefined,
         onReject: () => undefined,
         onRefine: () => undefined,
+        onCancel: () => undefined,
         onClose: () => undefined,
       },
       isAvailable: () => true,
@@ -97,7 +98,7 @@ describe("AgentPanel status messages", () => {
 
     expect(shadow.querySelector(".otf-agent-panel-intro")?.textContent).toBe("Give a design prompt!");
     expect(shadow.querySelector(".otf-agent-textarea-wrap")).not.toBeNull();
-    expect(shadow.querySelector(".otf-agent-panel-actions")?.children).toHaveLength(4);
+    expect(shadow.querySelector(".otf-agent-panel-actions")?.children).toHaveLength(5);
     expect(shadow.querySelector(".otf-agent-feedback")).not.toBeNull();
     expect((shadow.querySelector("[data-agent-status]") as HTMLElement).hidden).toBe(true);
     expect(shadow.querySelector(".otf-agent-panel-actions")?.nextElementSibling).toBeNull();
@@ -166,6 +167,7 @@ describe("AgentPanel status messages", () => {
         onApprove: () => undefined,
         onReject: () => undefined,
         onRefine: () => undefined,
+        onCancel: () => undefined,
         onClose: () => {
           closed = true;
         },
@@ -192,6 +194,7 @@ describe("AgentPanel status messages", () => {
           rejected = true;
         },
         onRefine: () => undefined,
+        onCancel: () => undefined,
         onClose: () => undefined,
       },
       isAvailable: () => true,
@@ -221,6 +224,7 @@ describe("AgentPanel status messages", () => {
         onApprove: () => undefined,
         onReject: () => undefined,
         onRefine: () => undefined,
+        onCancel: () => undefined,
         onClose: () => undefined,
       },
       isAvailable: () => false,

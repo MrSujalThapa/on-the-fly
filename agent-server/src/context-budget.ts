@@ -2,13 +2,13 @@ import type { AgentEditRequest, AgentVisualNode } from "../../src/shared/agent-c
 import type { EditorOperation } from "../../src/editor/operations.js";
 
 export const CONTEXT_BUDGET_LIMITS = {
-  maxSelectedNodes: 12,
-  maxNearbyNodes: 16,
-  maxExistingOperations: 20,
-  maxInstructionLength: 500,
-  maxCssPathLength: 256,
-  maxClassListEntries: 8,
-  maxStyleFields: 10,
+  maxSelectedNodes: 8,
+  maxNearbyNodes: 6,
+  maxExistingOperations: 8,
+  maxInstructionLength: 400,
+  maxCssPathLength: 64,
+  maxClassListEntries: 0,
+  maxStyleFields: 5,
 } as const;
 
 export interface ContextBudgetMetadata {
@@ -26,18 +26,11 @@ export interface BudgetedAgentEditRequest {
 }
 
 const STYLE_FIELD_PRIORITY = [
-  "display",
-  "position",
-  "zIndex",
   "color",
   "backgroundColor",
   "borderRadius",
-  "fontSize",
-  "fontWeight",
-  "textAlign",
   "opacity",
-  "transform",
-  "overflow",
+  "zIndex",
 ] as const satisfies ReadonlyArray<keyof AgentVisualNode["computed"]>;
 
 export function applyContextBudget(source: AgentEditRequest): BudgetedAgentEditRequest {
@@ -92,19 +85,33 @@ export function applyContextBudget(source: AgentEditRequest): BudgetedAgentEditR
 }
 
 function compactVisualNode(node: AgentVisualNode): AgentVisualNode {
-  const cssPath = truncateText(node.signature.cssPath, CONTEXT_BUDGET_LIMITS.maxCssPathLength);
-  const classList = node.signature.classList.slice(0, CONTEXT_BUDGET_LIMITS.maxClassListEntries);
   const computed = pickStyleFields(node.computed);
+  const minimalSignature = {
+    cssPath: minimalCssPath(node),
+    tagName: node.signature.tagName,
+    classList: [] as string[],
+    boundingBoxHint: node.signature.boundingBoxHint,
+    ...(node.signature.idAttr ? { idAttr: node.signature.idAttr } : {}),
+  };
 
   return {
-    ...node,
-    signature: {
-      ...node.signature,
-      cssPath,
-      classList,
-    },
+    id: node.id,
+    kind: node.kind,
+    signature: minimalSignature,
+    rect: node.rect,
     computed,
+    childIds: [],
+    ...(node.parentId ? { parentId: node.parentId } : {}),
+    ...(node.isLikelyContainer !== undefined ? { isLikelyContainer: node.isLikelyContainer } : {}),
+    ...(node.isPageLevel !== undefined ? { isPageLevel: node.isPageLevel } : {}),
   };
+}
+
+function minimalCssPath(node: AgentVisualNode): string {
+  if (node.signature.idAttr) {
+    return `#${node.signature.idAttr}`;
+  }
+  return node.signature.tagName;
 }
 
 function compactExistingOperation(operation: EditorOperation): EditorOperation {

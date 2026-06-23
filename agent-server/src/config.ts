@@ -25,7 +25,7 @@ const DEFAULT_CONFIG = {
   useMockAgent: true,
   modelProvider: "openai" as const,
   modelName: "gpt-5-mini",
-  openAiTimeoutMs: 45_000,
+  openAiTimeoutMs: 25_000,
   host: "127.0.0.1",
   port: 4317,
 };

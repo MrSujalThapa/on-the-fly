@@ -22,6 +22,8 @@ export type OtfAgentEditRequestMessage = {
   request: AgentEditRequest;
 };
 
+import type { AgentLatencyStages } from "./agent-latency.js";
+
 export type AgentEditProxySuccess = {
   ok: true;
   response: AgentEditResponse;
@@ -29,6 +31,7 @@ export type AgentEditProxySuccess = {
   mode?: "mock" | "openai";
   repairAttempted?: boolean;
   latencyMs?: number;
+  latencyStages?: AgentLatencyStages;
   contextBudget?: Record<string, unknown>;
 };
 

@@ -1,4 +1,5 @@
 import type { AgentEditRequest, AgentEditResponse } from "../shared/agent-contracts.js";
+import type { AgentLatencyStages } from "../shared/agent-latency.js";
 import type { AgentEditProxyResult, AgentFailureCode } from "../shared/agent-messages.js";
 import {
   canExtensionCallLocalAgent,
@@ -182,6 +183,7 @@ function parseAgentEditResponse(
 
   const envelope = isRecord(body) ? body : {};
   const mode = readString(envelope.mode);
+  const latencyStages = readLatencyStages(envelope.latencyStages);
 
   return {
     ok: true,
@@ -197,8 +199,34 @@ function parseAgentEditResponse(
     ...(typeof envelope.latencyMs === "number" && Number.isFinite(envelope.latencyMs)
       ? { latencyMs: envelope.latencyMs }
       : {}),
+    ...(latencyStages ? { latencyStages } : {}),
     ...(isRecord(envelope.contextBudget) ? { contextBudget: envelope.contextBudget } : {}),
   };
+}
+
+function readLatencyStages(value: unknown): AgentLatencyStages | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const stages: AgentLatencyStages = {};
+  for (const key of [
+    "contextBuildMs",
+    "serverRequestMs",
+    "openAiCallMs",
+    "compileMs",
+    "validationMs",
+    "previewApplyMs",
+    "serverTotalMs",
+    "totalMs",
+  ] as const) {
+    const entry = value[key];
+    if (typeof entry === "number" && Number.isFinite(entry)) {
+      stages[key] = entry;
+    }
+  }
+
+  return Object.keys(stages).length > 0 ? stages : undefined;
 }
 
 function readRequestId(body: unknown): string | undefined {

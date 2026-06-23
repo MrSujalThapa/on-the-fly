@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import { runAgentGenerationPipeline } from "../../agent-server/src/generation-pipeline.js";
 import { OpenAiGenerationError } from "../../agent-server/src/providers/openai.js";
 import type { ModelProviderAdapter } from "../../agent-server/src/providers/types.js";
-import { createInsertHelperObjectOperation } from "../editor/fixtures.js";
 import type { AgentEditRequest, AgentEditResponse } from "../../src/shared/agent-contracts.js";
 
 const BASE_REQUEST: AgentEditRequest = {
@@ -30,15 +29,11 @@ const BASE_REQUEST: AgentEditRequest = {
 
 describe("generation pipeline", () => {
   it("retries once with repair errors after invalid model output", async () => {
-    const helperOperation = createInsertHelperObjectOperation({
-      source: "agent",
-      status: "preview",
-    });
     const generateStructuredOperations = vi
       .fn<ModelProviderAdapter["generateStructuredOperations"]>()
-      .mockRejectedValueOnce(new OpenAiGenerationError("bad payload", "invalid_model_output"))
+      .mockRejectedValueOnce(new OpenAiGenerationError("bad design plan", "invalid_model_output"))
       .mockResolvedValueOnce({
-        draftOperations: [helperOperation],
+        draftOperations: [],
         summary: ["Added panel"],
         warnings: [],
         confidence: "high",
@@ -56,9 +51,9 @@ describe("generation pipeline", () => {
     );
 
     expect(generateStructuredOperations).toHaveBeenCalledTimes(2);
-    expect(generateStructuredOperations.mock.calls[1]?.[1]?.repairErrors).toEqual(["bad payload"]);
+    expect(generateStructuredOperations.mock.calls[1]?.[1]?.repairErrors).toEqual(["bad design plan"]);
     expect(result.repairAttempted).toBe(true);
-    expect(result.response.draftOperations).toHaveLength(1);
+    expect(result.latencyStages).toBeDefined();
   });
 
   it("returns 422-worthy failure when repair also fails", async () => {

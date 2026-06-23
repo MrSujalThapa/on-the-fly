@@ -1,93 +1,87 @@
 import type { AgentEditRequest, AgentEditResponse } from "../../src/shared/agent-contracts.js";
-import type { InsertHelperObjectOperation } from "../../src/editor/operations.js";
-
-const HELPER_PADDING_PX = 24;
+import { compileDesignPlan } from "../../src/editor/agent/compile-design-plan.js";
+import { prepareAgentDraftOperations } from "../../src/editor/agent/normalize-helper-object-operation.js";
+import { validateAgentOperations } from "../../src/editor/validation/validate-agent-operation.js";
+import {
+  buildAgentScopeContext,
+  type AgentScopeRect,
+} from "../../src/editor/validation/validate-agent-scope.js";
+import type { AgentDesignPlan } from "../../src/shared/agent-design-plan.js";
+import { parseModelAgentEditResponse } from "./response-validation.js";
 
 export function buildMockAgentEditResponse(request: AgentEditRequest): AgentEditResponse {
-  const bounds = computeSelectionBounds(request.selectedNodes);
-  const helperId = createHelperId(request.pageKey);
-  const operation = createHelperObjectOperation(request, bounds, helperId);
-
-  return {
-    draftOperations: [operation],
-    summary: [
-      "Added one soft background panel behind the selected area.",
-      "Preview only. Nothing is saved until approval.",
-    ],
-    warnings: request.selectedNodes.length === 0 ? ["No selected nodes were provided."] : [],
-    confidence: "high",
-  };
-}
-
-function createHelperObjectOperation(
-  request: AgentEditRequest,
-  bounds: { x: number; y: number; width: number; height: number },
-  helperId: string,
-): InsertHelperObjectOperation {
-  const rect = {
-    x: Math.max(0, bounds.x - HELPER_PADDING_PX),
-    y: Math.max(0, bounds.y - HELPER_PADDING_PX),
-    width: Math.max(40, bounds.width + HELPER_PADDING_PX * 2),
-    height: Math.max(40, bounds.height + HELPER_PADDING_PX * 2),
-  };
-
-  return {
-    id: `agent-op-${helperId}`,
-    type: "insertHelperObject",
-    pageKey: request.pageKey,
-    target: {
-      nodeId: helperId,
-      signature: {
-        cssPath: `#otf-helper-${helperId}`,
-        tagName: "div",
-        classList: ["otf-helper-object"],
-        idAttr: `otf-helper-${helperId}`,
-        boundingBoxHint: {
-          xRatio: 0,
-          yRatio: 0,
-          widthRatio: 0,
-          heightRatio: 0,
+  const designPlan: AgentDesignPlan = {
+    actions: [
+      {
+        kind: "add_surface",
+        params: {
+          placement: "behind",
+          fill: "gradient",
+          mood: "cool",
+          shadow: "soft",
+          radius: "rounded",
+          intensity: "subtle",
         },
       },
+    ],
+  };
+
+  const parsed = parseModelAgentEditResponse(
+    {
+      designPlan,
+      summary: [
+        "Added one soft background panel behind the selected area.",
+        "Preview only. Nothing is saved until approval.",
+      ],
+      warnings: request.selectedNodes.length === 0 ? ["No selected nodes were provided."] : [],
+      confidence: "high",
     },
-    payload: {
-      helperId,
-      role: "backgroundPanel",
-      rect,
-      fill: {
-        type: "linearGradient",
-        angleDeg: 135,
-        stops: [
-          { color: "#ffffff", position: 0 },
-          { color: "#eef2ff", position: 100 },
-        ],
-      },
-      borderRadius: "18px",
-      opacity: 0.96,
-      boxShadow: {
-        offsetX: 0,
-        offsetY: 10,
-        blurRadius: 28,
-        spreadRadius: 0,
-        color: "rgba(15, 23, 42, 0.12)",
-      },
-      zIndex: 1,
-      border: {
-        width: 1,
-        color: "#e5e7eb",
-        style: "solid",
-      },
-      label: "Agent background panel",
-    },
-    createdAt: Date.now(),
-    source: "agent",
-    status: "preview",
+    request,
+  );
+
+  if (!parsed.ok) {
+    const fallback = compileMockFallback(request);
+    return fallback;
+  }
+
+  return parsed.response;
+}
+
+function compileMockFallback(request: AgentEditRequest): AgentEditResponse {
+  const designPlan: AgentDesignPlan = {
+    actions: [{ kind: "add_surface", params: { placement: "behind", fill: "gradient" } }],
+  };
+  const compiled = compileDesignPlan(designPlan, request);
+  if (!compiled.ok) {
+    return {
+      draftOperations: [],
+      summary: ["Mock compile failed."],
+      warnings: compiled.errors,
+      confidence: "low",
+    };
+  }
+
+  const prepared = prepareAgentDraftOperations(compiled.operations, request);
+  const scope = buildAgentScopeContext({
+    selectedNodeIds: request.selection.selectedNodeIds,
+    nearbyNodeIds: request.nearbyNodes.map((node) => node.id),
+    selectionBounds: computeSelectionBounds(request.selectedNodes),
+  });
+  const validation = prepared.ok
+    ? validateAgentOperations(prepared.operations, scope)
+    : { ok: false as const, errors: prepared.errors, codes: [] as never[] };
+
+  return {
+    draftOperations: validation.ok ? validation.operations : [],
+    summary: ["Added one soft background panel behind the selected area."],
+    warnings: validation.ok ? [] : validation.errors,
+    confidence: validation.ok ? "high" : "low",
   };
 }
 
 function computeSelectionBounds(
   nodes: AgentEditRequest["selectedNodes"],
-): { x: number; y: number; width: number; height: number } {
+): AgentScopeRect {
   const first = nodes[0];
   if (!first) {
     return { x: 40, y: 40, width: 240, height: 120 };
@@ -111,9 +105,4 @@ function computeSelectionBounds(
     width: Math.max(0, maxX - minX),
     height: Math.max(0, maxY - minY),
   };
-}
-
-function createHelperId(pageKey: string): string {
-  const normalized = pageKey.replace(/[^a-zA-Z0-9]+/g, "-").slice(0, 24);
-  return `mock-${normalized}-${String(Date.now())}`;
 }

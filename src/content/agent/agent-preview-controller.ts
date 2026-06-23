@@ -1,5 +1,7 @@
 import type { AgentEditResponse } from "../../shared/agent-contracts.js";
 import type { AgentFailureCode } from "../../shared/agent-messages.js";
+import { finalizeLatencyStages, type AgentLatencyStages } from "../../shared/agent-latency.js";
+import { buildAgentScopeKey } from "../../shared/agent-scope-key.js";
 import type { DomRuntimeAdapter } from "../../editor/dom/dom-runtime-adapter.js";
 import { validateAgentOperations } from "../../editor/validation/validate-agent-operation.js";
 import { prepareAgentDraftOperations } from "../../editor/agent/normalize-helper-object-operation.js";
@@ -20,6 +22,13 @@ import {
 } from "./context-builder.js";
 import type { AgentEditProxyFailure, AgentEditProxyResult } from "../../shared/agent-messages.js";
 import { runVisualSanityCritic } from "./visual-sanity-critic.js";
+import {
+  buildAgentCacheKey,
+  getCachedAgentResponse,
+  setCachedAgentResponse,
+} from "./agent-session-cache.js";
+
+const LOADING_SLOW_HINT_MS = 8_000;
 
 export interface AgentPreviewState {
   status: "idle" | "loading" | "preview" | "error";
@@ -30,6 +39,9 @@ export interface AgentPreviewState {
   validationErrors: string[];
   lastInstruction: string;
   requestId?: string;
+  pendingScopeKey?: string;
+  loadingSlowHint?: boolean;
+  latencyStages?: AgentLatencyStages;
 }
 
 export interface AgentPreviewControllerOptions {
@@ -42,6 +54,13 @@ export interface AgentPreviewControllerOptions {
   onDebug?: (message: string, data?: unknown) => void;
 }
 
+interface PendingAgentRequest {
+  scopeKey: string;
+  capturedContext: AgentContextInput;
+  instruction: string;
+  generation: number;
+}
+
 export class AgentPreviewController {
   private readonly adapter: DomRuntimeAdapter;
   private readonly getContextInput: (instruction: string) => AgentContextInput | null;
@@ -52,6 +71,9 @@ export class AgentPreviewController {
   private readonly onDebug: (message: string, data?: unknown) => void;
   private previewSnapshot: OperationBatchSnapshot | null = null;
   private previewState: AgentPreviewState = createIdlePreviewState();
+  private pendingRequest: PendingAgentRequest | null = null;
+  private requestGeneration = 0;
+  private loadingSlowTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: AgentPreviewControllerOptions) {
     this.adapter = options.adapter;
@@ -67,8 +89,32 @@ export class AgentPreviewController {
     return this.previewState;
   }
 
+  isRequestPending(): boolean {
+    return this.pendingRequest !== null;
+  }
+
+  hasPendingForScope(scopeKey: string): boolean {
+    return this.pendingRequest?.scopeKey === scopeKey;
+  }
+
   hasActivePreview(): boolean {
     return this.getOperationState().previewOperations.length > 0;
+  }
+
+  cancelPendingRequest(): void {
+    if (!this.pendingRequest) {
+      return;
+    }
+
+    this.requestGeneration += 1;
+    this.pendingRequest = null;
+    this.clearLoadingTimers();
+    this.setPreviewState({
+      ...createIdlePreviewState(),
+      summary: ["Agent request cancelled."],
+      lastInstruction: this.previewState.lastInstruction,
+    });
+    this.onDebug("agent-preview-request-cancelled");
   }
 
   async requestPreview(instruction: string): Promise<boolean> {
@@ -85,6 +131,21 @@ export class AgentPreviewController {
       return false;
     }
 
+    const scopeKey = buildAgentScopeKey(context.selection);
+    if (this.pendingRequest?.scopeKey === scopeKey) {
+      this.cancelPendingRequest();
+    }
+
+    const generation = this.requestGeneration + 1;
+    this.requestGeneration = generation;
+    const capturedContext = cloneAgentContextInput(context);
+    this.pendingRequest = {
+      scopeKey,
+      capturedContext,
+      instruction,
+      generation,
+    };
+
     this.setPreviewState({
       status: "loading",
       summary: [],
@@ -92,13 +153,69 @@ export class AgentPreviewController {
       criticWarnings: [],
       validationErrors: [],
       lastInstruction: instruction,
+      pendingScopeKey: scopeKey,
+      loadingSlowHint: false,
     });
+    this.startLoadingSlowHintTimer();
 
-    const request = buildAgentEditRequest(context);
-    const startedAt = Date.now();
+    const requestStartedAt = Date.now();
+    const contextBuildStartedAt = Date.now();
+    const request = buildAgentEditRequest(capturedContext);
+    const contextBuildMs = Date.now() - contextBuildStartedAt;
+
+    const cacheKey = buildAgentCacheKey(scopeKey, instruction);
+    const cached = getCachedAgentResponse(cacheKey);
+    if (cached) {
+      this.clearLoadingTimers();
+      if (!this.isPendingGeneration(generation)) {
+        return false;
+      }
+      const latencyStages = finalizeLatencyStages(
+        {
+          contextBuildMs,
+          serverRequestMs: 0,
+          cacheHit: true,
+          ...cached.latencyStages,
+        },
+        Date.now() - requestStartedAt,
+      );
+      this.pendingRequest = null;
+      this.onDebug("agent-latency-breakdown", latencyStages);
+      return this.applyValidatedPreview(
+        cached.response,
+        instruction,
+        capturedContext,
+        undefined,
+        latencyStages,
+      );
+    }
+
+    const serverRequestStartedAt = Date.now();
     const proxyResult = await sendAgentEditRequest(request);
+    const serverRequestMs = Date.now() - serverRequestStartedAt;
+
+    this.clearLoadingTimers();
+
+    if (!this.isPendingGeneration(generation)) {
+      this.onDebug("agent-preview-request-stale", { scopeKey, generation });
+      return false;
+    }
+
+    this.pendingRequest = null;
+
+    const latencyStages = finalizeLatencyStages(
+      {
+        contextBuildMs,
+        serverRequestMs,
+        ...(proxyResult.ok && proxyResult.latencyStages ? proxyResult.latencyStages : {}),
+      },
+      Date.now() - requestStartedAt,
+    );
+
+    this.onDebug("agent-latency-breakdown", latencyStages);
+
     if (!proxyResult.ok) {
-      this.logRequestDiagnostics(proxyResult, startedAt, "failed");
+      this.logRequestDiagnostics(proxyResult, latencyStages, "failed");
       this.setPreviewState({
         status: "error",
         failureCode: proxyResult.code,
@@ -107,14 +224,26 @@ export class AgentPreviewController {
         criticWarnings: [],
         validationErrors: buildProxyFailureMessages(proxyResult),
         lastInstruction: instruction,
+        latencyStages,
         ...(proxyResult.requestId ? { requestId: proxyResult.requestId } : {}),
       });
-      this.onDebug("agent-preview-request-failed", sanitizeDiagnostics(proxyResult));
+      this.onDebug("agent-preview-request-failed", sanitizeDiagnostics(proxyResult, latencyStages));
       return false;
     }
 
-    this.logRequestDiagnostics(proxyResult, startedAt, "ok");
-    return this.applyValidatedPreview(proxyResult.response, instruction, context, proxyResult.requestId);
+    setCachedAgentResponse(cacheKey, {
+      response: proxyResult.response,
+      latencyStages,
+    });
+
+    this.logRequestDiagnostics(proxyResult, latencyStages, "ok");
+    return this.applyValidatedPreview(
+      proxyResult.response,
+      instruction,
+      capturedContext,
+      proxyResult.requestId,
+      latencyStages,
+    );
   }
 
   async refinePreview(instruction: string): Promise<boolean> {
@@ -156,12 +285,18 @@ export class AgentPreviewController {
     return true;
   }
 
+  private isPendingGeneration(generation: number): boolean {
+    return this.requestGeneration === generation && this.pendingRequest?.generation === generation;
+  }
+
   private applyValidatedPreview(
     response: AgentEditResponse,
     instruction: string,
     context: AgentContextInput,
-    requestId?: string,
+    requestId: string | undefined,
+    latencyStages: AgentLatencyStages,
   ): boolean {
+    const previewApplyStartedAt = Date.now();
     const scope = buildAgentScopeFromContext(context);
     const request = buildAgentEditRequest(context);
     const prepared = prepareAgentDraftOperations(response.draftOperations, request);
@@ -174,12 +309,8 @@ export class AgentPreviewController {
         criticWarnings: [],
         validationErrors: prepared.errors,
         lastInstruction: instruction,
+        latencyStages: finalizeLatencyStages(latencyStages),
         ...(requestId ? { requestId } : {}),
-      });
-      this.onDebug("agent-preview-validation-failed", {
-        requestId,
-        validationStatus: "failed",
-        errorCount: prepared.errors.length,
       });
       return false;
     }
@@ -194,12 +325,8 @@ export class AgentPreviewController {
         criticWarnings: [],
         validationErrors: validation.errors,
         lastInstruction: instruction,
+        latencyStages: finalizeLatencyStages(latencyStages),
         ...(requestId ? { requestId } : {}),
-      });
-      this.onDebug("agent-preview-validation-failed", {
-        requestId,
-        validationStatus: "failed",
-        errorCount: validation.errors.length,
       });
       return false;
     }
@@ -218,6 +345,7 @@ export class AgentPreviewController {
         criticWarnings: [],
         validationErrors: ["Agent returned no preview operations."],
         lastInstruction: instruction,
+        latencyStages: finalizeLatencyStages(latencyStages),
       });
       return false;
     }
@@ -238,6 +366,7 @@ export class AgentPreviewController {
         criticWarnings: [],
         validationErrors: failed.map((result) => result.error),
         lastInstruction: instruction,
+        latencyStages: finalizeLatencyStages(latencyStages),
       });
       return false;
     }
@@ -265,20 +394,18 @@ export class AgentPreviewController {
         criticWarnings: critic.warnings,
         validationErrors: critic.hardFailures,
         lastInstruction: instruction,
+        latencyStages: finalizeLatencyStages(latencyStages),
         ...(requestId ? { requestId } : {}),
-      });
-      this.onDebug("agent-preview-critic-failed", {
-        requestId,
-        validationStatus: "critic_failed",
-        hardFailureCount: critic.hardFailures.length,
-        warningCount: critic.warnings.length,
       });
       return false;
     }
 
     this.previewSnapshot = this.adapter.buildBatchSnapshot(operations);
-
     this.setOperationState(appendPreviewOperations(this.getOperationState(), operations));
+
+    const previewApplyMs = Date.now() - previewApplyStartedAt;
+    const finalLatency = finalizeLatencyStages({ ...latencyStages, previewApplyMs });
+
     this.setPreviewState({
       status: "preview",
       summary: response.summary,
@@ -286,6 +413,7 @@ export class AgentPreviewController {
       criticWarnings: critic.warnings,
       validationErrors: [],
       lastInstruction: instruction,
+      latencyStages: finalLatency,
       ...(requestId ? { requestId } : {}),
     });
     this.onDebug("agent-preview-applied", {
@@ -293,6 +421,7 @@ export class AgentPreviewController {
       validationStatus: "ok",
       count: operations.length,
       criticWarningCount: critic.warnings.length,
+      latencyStages: finalLatency,
     });
     return true;
   }
@@ -315,17 +444,56 @@ export class AgentPreviewController {
     this.onStateChange(state);
   }
 
+  private startLoadingSlowHintTimer(): void {
+    this.clearLoadingTimers();
+    this.loadingSlowTimer = setTimeout(() => {
+      if (this.previewState.status !== "loading") {
+        return;
+      }
+      this.setPreviewState({
+        ...this.previewState,
+        loadingSlowHint: true,
+      });
+    }, LOADING_SLOW_HINT_MS);
+  }
+
+  private clearLoadingTimers(): void {
+    if (this.loadingSlowTimer !== null) {
+      clearTimeout(this.loadingSlowTimer);
+      this.loadingSlowTimer = null;
+    }
+  }
+
   private logRequestDiagnostics(
     result: AgentEditProxyResult,
-    startedAt: number,
+    latencyStages: AgentLatencyStages,
     validationStatus: "ok" | "failed",
   ): void {
-    const latencyMs = Date.now() - startedAt;
     this.onDebug("agent-request-diagnostics", sanitizeDiagnostics(result, {
-      latencyMs,
+      ...latencyStages,
       validationStatus,
     }));
   }
+}
+
+function cloneAgentContextInput(context: AgentContextInput): AgentContextInput {
+  return {
+    pageKey: context.pageKey,
+    instruction: context.instruction,
+    selection: {
+      ...context.selection,
+      selectedNodeIds: [...context.selection.selectedNodeIds],
+    },
+    selectedNodes: context.selectedNodes.map((node) => ({
+      ...node,
+      rect: { ...node.rect },
+      signature: { ...node.signature, classList: [...node.signature.classList] },
+      computed: { ...node.computed },
+      childIds: [...node.childIds],
+    })),
+    graph: context.graph,
+    existingOperations: [...context.existingOperations],
+  };
 }
 
 function createIdlePreviewState(): AgentPreviewState {
@@ -369,7 +537,7 @@ function resolveDocumentFromContext(context: AgentContextInput): Document {
 
 function sanitizeDiagnostics(
   result: AgentEditProxyResult,
-  extra: Record<string, unknown> = {},
+  extra: AgentLatencyStages | Record<string, unknown> = {},
 ): Record<string, unknown> {
   if (!result.ok) {
     return {
@@ -384,6 +552,7 @@ function sanitizeDiagnostics(
     mode: result.mode,
     repairAttempted: result.repairAttempted ?? false,
     contextBudget: result.contextBudget,
+    latencyStages: result.latencyStages,
     ...extra,
   };
 }

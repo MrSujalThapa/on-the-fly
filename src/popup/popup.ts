@@ -10,14 +10,17 @@ import { parseSettingsResponse } from "../shared/settings.js";
 import { isRestrictedUrl } from "../shared/restricted-url.js";
 import {
   formatAgentStatus,
-  formatPopupDiagnostics,
+  formatSavedOpsDisplayCount,
 } from "./popup-view.js";
 
+const popupRoot = document.querySelector<HTMLElement>("#popup-root");
 const buildModeEl = document.querySelector<HTMLElement>("#build-mode");
 const statusEl = document.querySelector<HTMLElement>("#edit-status");
 const toggleButton = document.querySelector<HTMLButtonElement>("#toggle-button");
+const toggleButtonLabel = toggleButton?.querySelector("span");
 const clearPageButton = document.querySelector<HTMLButtonElement>("#clear-page");
-const diagnosticsLine = document.querySelector<HTMLElement>("#diagnostics-line");
+const savedOpsCountEl = document.querySelector<HTMLElement>("#saved-ops-count");
+const agentStatusEl = document.querySelector<HTMLElement>("#agent-status");
 const openOptionsButton = document.querySelector<HTMLButtonElement>("#open-options");
 
 let activeTabId: number | undefined;
@@ -44,13 +47,31 @@ function formatStatus(status: EditModeStatus): string {
   }
 }
 
+function setToggleButtonLabel(label: string): void {
+  if (toggleButtonLabel) {
+    toggleButtonLabel.textContent = label;
+    return;
+  }
+
+  if (toggleButton) {
+    toggleButton.textContent = label;
+  }
+}
+
 function renderUi(): void {
   if (!statusEl || !toggleButton) {
     return;
   }
 
+  if (popupRoot) {
+    popupRoot.dataset.state = currentStatus;
+  }
+
   statusEl.textContent = formatStatus(currentStatus);
-  statusEl.dataset.status = currentStatus;
+
+  if (savedOpsCountEl) {
+    savedOpsCountEl.textContent = formatSavedOpsDisplayCount(pageOperationCount);
+  }
 
   if (clearPageButton) {
     clearPageButton.disabled = currentStatus === "unavailable" || isBusy || pageOperationCount === 0;
@@ -58,20 +79,20 @@ function renderUi(): void {
 
   if (currentStatus === "unavailable") {
     toggleButton.disabled = true;
-    toggleButton.textContent = "Unavailable on this page";
-    toggleButton.className = "toggle-button is-enable";
+    setToggleButtonLabel("Unavailable on this page");
+    toggleButton.className = "primary is-enable";
     return;
   }
 
   toggleButton.disabled = isBusy;
   if (currentStatus === "active") {
-    toggleButton.textContent = "Disable On the Fly";
-    toggleButton.className = "toggle-button is-disable";
+    setToggleButtonLabel("Disable editor");
+    toggleButton.className = "primary is-disable";
     return;
   }
 
-  toggleButton.textContent = "Enable On the Fly";
-  toggleButton.className = "toggle-button is-enable";
+  setToggleButtonLabel("Enable editor");
+  toggleButton.className = "primary is-enable";
 }
 
 function derivePageKeyFromUrl(url: string | undefined): string | null {
@@ -111,23 +132,17 @@ async function loadPageOperationCount(): Promise<number | null> {
 }
 
 function renderDiagnostics(settingsResponse: ReturnType<typeof parseSettingsResponse>): void {
-  if (!diagnosticsLine) {
+  if (!agentStatusEl) {
     return;
   }
 
   const diagnostics = settingsResponse.diagnostics;
   if (!settingsResponse.ok || !settingsResponse.settings || !diagnostics) {
-    diagnosticsLine.textContent = formatPopupDiagnostics({
-      operationCount: pageOperationCount,
-      agentEnabled: false,
-    });
+    agentStatusEl.textContent = formatAgentStatus(false);
     return;
   }
 
-  diagnosticsLine.textContent = formatPopupDiagnostics({
-    operationCount: pageOperationCount,
-    agentEnabled: diagnostics.agentEnabled,
-  });
+  agentStatusEl.textContent = formatAgentStatus(diagnostics.agentEnabled);
 }
 
 async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
@@ -142,9 +157,10 @@ async function loadSettingsSummary(): Promise<void> {
     );
     pageOperationCount = await loadPageOperationCount();
     renderDiagnostics(response);
+    renderUi();
   } catch {
-    if (diagnosticsLine) {
-      diagnosticsLine.textContent = "Settings unavailable";
+    if (agentStatusEl) {
+      agentStatusEl.textContent = "Settings unavailable";
     }
   }
 }

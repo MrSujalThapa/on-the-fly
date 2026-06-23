@@ -12,7 +12,24 @@ import {
   promotePreviewOperationsToDraft,
   removeDraftOperationsById,
 } from "../../src/content/session-operation-state.js";
-import { createHideOperation, createStyleOperation } from "../editor/fixtures.js";
+import { createHideOperation, createStyleOperation, createTestTarget } from "../editor/fixtures.js";
+import type { ZIndexOperation } from "../../src/editor/operations.js";
+
+const PAGE_KEY = "https://example.com/";
+
+function createZIndexOperation(overrides: Partial<ZIndexOperation> = {}): ZIndexOperation {
+  return {
+    id: "op-z-1",
+    type: "zIndex",
+    pageKey: PAGE_KEY,
+    target: createTestTarget(),
+    payload: { layer: 2, previousLayer: 1 },
+    createdAt: 1,
+    source: "manual",
+    status: "draft",
+    ...overrides,
+  };
+}
 
 describe("session operation state", () => {
   it("tracks saved and draft operations separately", () => {
@@ -87,6 +104,27 @@ describe("session operation state", () => {
     expect(state.previewOperations).toHaveLength(0);
     expect(state.savedOperations.every((operation) => operation.status === "approved")).toBe(true);
     expect(hasUnsavedChanges(state)).toBe(false);
+  });
+
+  it("promotes only the latest zIndex draft per target when saving", () => {
+    let state = createSessionOperationState([
+      createZIndexOperation({ id: "saved-z-back", status: "approved", payload: { layer: 0, previousLayer: 1 } }),
+    ]);
+
+    state = appendDraftOperations(state, [
+      createZIndexOperation({ id: "draft-z-back", payload: { layer: 0, previousLayer: 1 }, createdAt: 2 }),
+      createZIndexOperation({
+        id: "draft-z-front",
+        payload: { layer: 2_147_483_000, previousLayer: 0 },
+        createdAt: 3,
+      }),
+    ]);
+
+    state = promoteAllDraftToSaved(state);
+
+    expect(state.savedOperations).toHaveLength(1);
+    expect(state.savedOperations[0]?.id).toBe("draft-z-front");
+    expect(state.savedOperations[0]?.status).toBe("approved");
   });
 
   it("promotes only kept drafts for save window", () => {

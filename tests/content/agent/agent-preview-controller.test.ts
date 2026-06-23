@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentPreviewController } from "../../../src/content/agent/agent-preview-controller.js";
+import { AgentPreviewController, type AgentPreviewState } from "../../../src/content/agent/agent-preview-controller.js";
 import { DomRuntimeAdapter } from "../../../src/editor/dom/dom-runtime-adapter.js";
 import {
   appendPreviewOperations,
@@ -14,10 +14,12 @@ import {
 } from "../../editor/fixtures.js";
 import type { AgentEditRequest, AgentEditResponse } from "../../../src/shared/agent-contracts.js";
 import type { AgentEditProxyResult } from "../../../src/shared/agent-messages.js";
+import type { AgentLatencyStages } from "../../../src/shared/agent-latency.js";
 import type { AgentContextInput } from "../../../src/content/agent/context-builder.js";
 import { OTF_HELPER_ATTR } from "../../../src/editor/dom/types.js";
 import { VisualLayoutGraph } from "../../../src/editor/visual-graph/visual-layout-graph.js";
 import { createTestSignature } from "../../editor/fixtures.js";
+import { clearAgentSessionCache } from "../../../src/content/agent/agent-session-cache.js";
 
 function createGraph(nodes: Array<{
   id: string;
@@ -68,6 +70,7 @@ describe("AgentPreviewController", () => {
 
   beforeEach(() => {
     sendAgentEditRequestMock.mockReset();
+    clearAgentSessionCache();
     const { document, root } = createTestDocument(`<main><p id="copy">Hello</p></main>`);
     documentRef = document;
     adapter = new DomRuntimeAdapter(document);
@@ -420,4 +423,216 @@ describe("AgentPreviewController", () => {
     expect(operationState.previewOperations).toHaveLength(1);
     expect(documentRef.querySelector(`[${OTF_HELPER_ATTR}]`)).not.toBeNull();
   });
+
+  it("records latency stage diagnostics on successful preview", async () => {
+    sendAgentEditRequestMock.mockResolvedValue({
+      ok: true,
+      response: createMockResponse([
+        createInsertHelperObjectOperation({ source: "agent", status: "preview" }),
+      ]),
+      latencyStages: { openAiCallMs: 900, compileMs: 4, validationMs: 2, serverTotalMs: 950 },
+    });
+
+    await controller.requestPreview("Add background panel");
+    const state = controller.getState();
+    expect(state.latencyStages?.contextBuildMs).toBeGreaterThanOrEqual(0);
+    expect(state.latencyStages?.serverRequestMs).toBeGreaterThanOrEqual(0);
+    expect(state.latencyStages?.openAiCallMs).toBe(900);
+    expect(state.latencyStages?.previewApplyMs).toBeGreaterThanOrEqual(0);
+    expect(state.latencyStages?.totalMs).toBeGreaterThanOrEqual(0);
+    expect(state.latencyStages?.bottleneck).toBeDefined();
+  });
+
+  it("shows still generating hint after slow request exceeds 8 seconds", async () => {
+    vi.useFakeTimers();
+    const deferred = createDeferred<AgentEditProxyResult>();
+    sendAgentEditRequestMock.mockReturnValue(deferred.promise);
+
+    const onStateChange = vi.fn();
+    controller = new AgentPreviewController({
+      adapter,
+      getContextInput: () => contextInput,
+      getOperationState: () => operationState,
+      setOperationState: (state) => {
+        operationState = state;
+      },
+      syncSavedOperationsToStorage: syncSaved,
+      onStateChange,
+    });
+
+    const pending = controller.requestPreview("slow request");
+    expect(controller.getState().loadingSlowHint).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(controller.getState().loadingSlowHint).toBe(true);
+    expect(onStateChange.mock.calls.some(
+      (call: [AgentPreviewState]) => call[0].loadingSlowHint === true,
+    )).toBe(true);
+
+    deferred.resolve({
+      ok: true,
+      response: createMockResponse([
+        createInsertHelperObjectOperation({ source: "agent", status: "preview" }),
+      ]),
+    });
+
+    await pending;
+    vi.useRealTimers();
+  });
+
+  it("does not mutate DOM when request times out", async () => {
+    sendAgentEditRequestMock.mockResolvedValue({
+      ok: false,
+      code: "timeout",
+      error: "OpenAI request timed out after 25000ms",
+    });
+
+    const applied = await controller.requestPreview("slow timeout");
+    expect(applied).toBe(false);
+    expect(operationState.previewOperations).toHaveLength(0);
+    expect(documentRef.querySelector(`[${OTF_HELPER_ATTR}]`)).toBeNull();
+    expect(controller.getState().failureCode).toBe("timeout");
+  });
+
+  it("logs latency breakdown identifying OpenAI as bottleneck", async () => {
+    const onDebug = vi.fn();
+    controller = new AgentPreviewController({
+      adapter,
+      getContextInput: () => contextInput,
+      getOperationState: () => operationState,
+      setOperationState: (state) => {
+        operationState = state;
+      },
+      syncSavedOperationsToStorage: syncSaved,
+      onDebug,
+    });
+
+    sendAgentEditRequestMock.mockResolvedValue({
+      ok: true,
+      response: createMockResponse([
+        createInsertHelperObjectOperation({ source: "agent", status: "preview" }),
+      ]),
+      latencyStages: { openAiCallMs: 15_000, compileMs: 3, validationMs: 2, serverTotalMs: 15_010 },
+    });
+
+    await controller.requestPreview("Add background panel");
+
+    const breakdownCall = onDebug.mock.calls.find((call) => call[0] === "agent-latency-breakdown");
+    expect(breakdownCall).toBeDefined();
+    const breakdown = breakdownCall?.[1] as AgentLatencyStages | undefined;
+    expect(breakdown?.bottleneck).toBe("openai");
+    expect(breakdown?.openAiCallMs).toBe(15_000);
+  });
+
+  it("skips duplicate server calls for same scope and instruction in session", async () => {
+    sendAgentEditRequestMock.mockResolvedValue({
+      ok: true,
+      response: createMockResponse([
+        createInsertHelperObjectOperation({ id: "cached-preview", source: "agent", status: "preview" }),
+      ]),
+    });
+
+    await controller.requestPreview("Add background panel");
+    controller.rejectPreview();
+    await controller.requestPreview("Add background panel");
+
+    expect(sendAgentEditRequestMock).toHaveBeenCalledTimes(1);
+    expect(operationState.previewOperations[0]?.id).toBe("cached-preview");
+  });
+
+  it("ignores stale responses after cancel", async () => {
+    let resolveRequest: ((value: AgentEditProxyResult) => void) | undefined;
+    sendAgentEditRequestMock.mockImplementation(
+      () =>
+        new Promise<AgentEditProxyResult>((resolve) => {
+          resolveRequest = resolve;
+        }),
+    );
+
+    const pending = controller.requestPreview("slow request");
+    controller.cancelPendingRequest();
+
+    resolveRequest?.({
+      ok: true,
+      response: createMockResponse([
+        createInsertHelperObjectOperation({ source: "agent", status: "preview" }),
+      ]),
+    });
+
+    const applied = await pending;
+    expect(applied).toBe(false);
+    expect(operationState.previewOperations).toHaveLength(0);
+  });
+
+  it("applies preview to captured scope after live selection changes", async () => {
+    const deferred = createDeferred<AgentEditProxyResult>();
+    sendAgentEditRequestMock.mockReturnValue(deferred.promise);
+
+    const originalNode = contextInput.selectedNodes[0]?.element as HTMLElement;
+    const pending = controller.requestPreview("Add background panel");
+    void originalNode;
+
+    contextInput = {
+      ...contextInput,
+      selection: { selectedNodeIds: ["other-node"], source: "click" },
+      selectedNodes: [
+        {
+          ...contextInput.selectedNodes[0] as AgentContextInput["selectedNodes"][number],
+          id: "other-node",
+          element: documentRef.createElement("span"),
+        },
+      ],
+    };
+
+    deferred.resolve({
+      ok: true,
+      response: createMockResponse([
+        createInsertHelperObjectOperation({
+          source: "agent",
+          status: "preview",
+          target: createInsertHelperObjectOperation().target,
+        }),
+      ]),
+    });
+
+    const applied = await pending;
+    expect(applied).toBe(true);
+    expect(operationState.previewOperations.some((op) => op.target.nodeId === "helper-panel-1")).toBe(true);
+  });
+
+  it("replaces pending same-scope request instead of running two previews", async () => {
+    const first = createDeferred<AgentEditProxyResult>();
+    const second = createDeferred<AgentEditProxyResult>();
+    sendAgentEditRequestMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+    const firstPending = controller.requestPreview("first");
+    const secondPending = controller.requestPreview("second");
+
+    first.resolve({
+      ok: true,
+      response: createMockResponse([
+        createInsertHelperObjectOperation({ id: "stale", source: "agent", status: "preview" }),
+      ]),
+    });
+    second.resolve({
+      ok: true,
+      response: createMockResponse([
+        createInsertHelperObjectOperation({ id: "fresh", source: "agent", status: "preview" }),
+      ]),
+    });
+
+    const firstApplied = await firstPending;
+    const secondApplied = await secondPending;
+    expect(firstApplied).toBe(false);
+    expect(secondApplied).toBe(true);
+    expect(operationState.previewOperations[0]?.id).toBe("fresh");
+  });
 });
+
+function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
