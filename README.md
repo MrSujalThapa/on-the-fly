@@ -1,16 +1,18 @@
 # On the Fly
 
-On the Fly is a local-first Chrome extension for visually editing live websites. Select real page elements, move, resize, restyle, edit text, layer objects, and keep changes in your browser—no hosted backend or account required.
+is a tool used to turn any live or internal website into a figma style sandbox. Select real page elements, move, resize, restyle, edit text, layer objects, and keep changes persistant in your browser, no hosted backend or account required.
 
 ## What it does
 
 - Turn any normal webpage into a lightweight visual editor sandbox
-- Select elements with click; multi-select with Shift+click
-- Move, resize, rotate, crop, hide, and restyle selections
+- Select elements with click; multi-select with Shift+click, group elements
+- Move, resize, rotate, duplicated, and delete elements
+- Crop, hide, layer, and restyle selections using the toolbar
 - Edit text while preserving page formatting where possible
 - Undo/redo with Ctrl/Cmd+Z and Ctrl/Cmd+Y
 - Toggle **Interact mode** (`I`) so site navbars, drawers, and buttons work normally
 - **Clear page** to remove all saved and unsaved edits for the current page
+- Call an AI agent on a specific element/section to make changes 
 
 ## Install (development / unpacked)
 
@@ -25,11 +27,12 @@ For day-to-day local development with the optional AI agent, use `npm run build`
 
 1. Open any normal https page.
 2. Click the extension icon and choose **Enable editor**.
-3. Click elements to select them. Double-click a selection to open the compact toolbar.
+3. Click elements to select them. Press t to open the compact toolbar.
 4. Make changes—they stay in the current session as **unsaved** drafts until you save.
 5. Click **Save all** in the editor overlay to persist every unsaved change, or press **`S` and drag** a region to save only edits inside that area.
 6. Refresh or restart the browser—only **saved** changes replay automatically.
 7. Use **Clear** in the popup or toolbar to remove all saved and unsaved changes and reload the page.
+8. double click a section/group/element to call an agent - you can work in parallel while the agent is running
 
 ### Shortcuts (edit mode)
 
@@ -37,6 +40,10 @@ For day-to-day local development with the optional AI agent, use `npm run build`
 |---|---|
 | `S` + drag | Enter save-window mode; persist draft ops inside the drawn region |
 | `I` | Toggle interact / edit mode |
+| `T` | Toggle toolbar |
+| `ctrl` + `shift` | select elements together |
+| `ctrl` + `g` | group elements that are both selected using ctrl + shift|
+| `ctrl` + `shift` + `g` | ungroup elements |
 | `T` | Toggle toolbar |
 | `Escape` | Cancel preview, close panels, or clear selection |
 | Ctrl/Cmd+Z | Undo |
