@@ -168,6 +168,9 @@ export class EditorShell {
     }
 
     label.textContent = "Edit mode — press I to interact";
+    if (this.saveButtonVisible && this.saveButtonCount > 0) {
+      label.textContent = `Edit mode — ${String(this.saveButtonCount)} unsaved · press S and drag to save a region`;
+    }
     dot.style.background = "#34d399";
     dot.style.boxShadow = "0 0 0 3px rgba(52, 211, 153, 0.25)";
     this.modeIndicatorEl.dataset.mode = "edit";
@@ -194,9 +197,10 @@ export class EditorShell {
 
     const count = this.saveButtonCount;
     const label =
-      count > 0 ? `Save (${String(count)} unsaved)` : "Save";
+      count > 0 ? `Save all (${String(count)} unsaved)` : "Save all";
     this.saveButtonEl.textContent = label;
-    this.saveButtonEl.setAttribute("aria-label", label);
+    this.saveButtonEl.setAttribute("aria-label", "Use Save button to save all changes");
+    this.saveButtonEl.setAttribute("title", "Use Save button to save all changes");
   }
 
   getSessionMode(): EditorSessionMode {

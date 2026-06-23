@@ -306,7 +306,6 @@ export class EditSession implements SessionCommandHost {
           this.syncPageCustomizationOperations();
           this.updateSaveButton();
         },
-        syncSavedOperationsToStorage: () => this.pageCustomization.syncOperationsToStorage(),
         onStateChange: (state) => {
           if (this.agentPanel?.isOpen()) {
             this.agentPanel.renderState(state);
@@ -724,6 +723,10 @@ export class EditSession implements SessionCommandHost {
 
   hasUnsavedChanges(): boolean {
     return hasUnsavedChanges(this.operationState);
+  }
+
+  getUnsavedChangeCount(): number {
+    return unsavedChangeCount(this.operationState);
   }
 
   applyStyle(property: StyleProperty, value: string): void {

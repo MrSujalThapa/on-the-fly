@@ -38,6 +38,7 @@ export const OTF_MESSAGE = {
   GET_SETTINGS: "OTF_GET_SETTINGS",
   SET_SETTINGS: "OTF_SET_SETTINGS",
   CLEAR_PAGE_REQUEST: "OTF_CLEAR_PAGE_REQUEST",
+  GET_UNSAVED_STATE: "OTF_GET_UNSAVED_STATE",
 } as const;
 
 export type EditModeStatus = "inactive" | "active" | "unavailable";
@@ -61,6 +62,16 @@ export type OtfEditModeChangedMessage = {
 export type OtfClearPageRequestMessage = {
   type: typeof OTF_MESSAGE.CLEAR_PAGE_REQUEST;
 };
+
+export type OtfGetUnsavedStateMessage = {
+  type: typeof OTF_MESSAGE.GET_UNSAVED_STATE;
+};
+
+export interface UnsavedStateResponse {
+  ok: boolean;
+  hasUnsavedChanges: boolean;
+  unsavedCount: number;
+}
 
 export type OtfGetSettingsMessage = {
   type: typeof OTF_MESSAGE.GET_SETTINGS;
@@ -145,6 +156,36 @@ export function isClearPageRequestMessage(value: unknown): value is OtfClearPage
     "type" in value &&
     value.type === OTF_MESSAGE.CLEAR_PAGE_REQUEST
   );
+}
+
+export function isGetUnsavedStateMessage(value: unknown): value is OtfGetUnsavedStateMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === OTF_MESSAGE.GET_UNSAVED_STATE
+  );
+}
+
+export function parseUnsavedStateResponse(value: unknown): UnsavedStateResponse {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "ok" in value &&
+    typeof value.ok === "boolean" &&
+    "hasUnsavedChanges" in value &&
+    typeof value.hasUnsavedChanges === "boolean" &&
+    "unsavedCount" in value &&
+    typeof value.unsavedCount === "number"
+  ) {
+    return {
+      ok: value.ok,
+      hasUnsavedChanges: value.hasUnsavedChanges,
+      unsavedCount: value.unsavedCount,
+    };
+  }
+
+  return { ok: false, hasUnsavedChanges: false, unsavedCount: 0 };
 }
 
 export function createEditModeChangedMessage(enabled: boolean): OtfEditModeChangedMessage {

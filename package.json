@@ -7,6 +7,9 @@
   "scripts": {
     "build": "cross-env LOCAL_DEV_AGENT_ENABLED=true LOCAL_AGENT_SERVER_URL=http://127.0.0.1:4317 node scripts/build.mjs",
     "build:public": "cross-env PUBLIC_AGENT_ENABLED=false PUBLIC_BACKEND_ENABLED=false LOCAL_DEV_AGENT_ENABLED=false node scripts/build.mjs",
+    "verify:public": "node scripts/verify-public-build.mjs",
+    "package:public": "node scripts/package-release.mjs",
+    "release:public": "npm run build:public && npm run verify:public && npm run package:public",
     "dev:agent": "tsc -p agent-server/tsconfig.json && node agent-server/dist/agent-server/src/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
