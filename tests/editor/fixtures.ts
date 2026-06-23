@@ -1,7 +1,7 @@
 import type { ElementSignature } from "../../src/editor/element-signature.js";
 import { createEmptyBoundingBoxHint } from "../../src/editor/element-signature.js";
 import type { EditorTarget } from "../../src/editor/editor-target.js";
-import type { HideOperation, MoveOperation, ResizeOperation, RotateOperation, StyleOperation, TextOperation } from "../../src/editor/operations.js";
+import type { HideOperation, InsertHelperObjectOperation, MoveOperation, ResizeOperation, RotateOperation, StyleOperation, TextOperation } from "../../src/editor/operations.js";
 
 const PAGE_KEY = "https://example.com/";
 
@@ -106,6 +106,58 @@ export function createTextOperation(overrides: Partial<TextOperation> = {}): Tex
     target: createTestTarget(),
     payload: { value: "Updated", preserveFormat: true },
     createdAt: 1_700_000_000_005,
+    source: "manual",
+    status: "approved",
+    ...overrides,
+  };
+}
+
+export function createInsertHelperObjectOperation(
+  overrides: Partial<InsertHelperObjectOperation> = {},
+): InsertHelperObjectOperation {
+  return {
+    id: "op-helper-1",
+    type: "insertHelperObject",
+    pageKey: PAGE_KEY,
+    target: {
+      nodeId: "helper-panel-1",
+      signature: createTestSignature({
+        cssPath: "#otf-helper-helper-panel-1",
+        tagName: "div",
+        idAttr: "otf-helper-helper-panel-1",
+        classList: ["otf-helper-object"],
+      }),
+    },
+    payload: {
+      helperId: "helper-panel-1",
+      role: "backgroundPanel",
+      rect: { x: 24, y: 32, width: 240, height: 120 },
+      fill: {
+        type: "linearGradient",
+        angleDeg: 135,
+        stops: [
+          { color: "#ffffff", position: 0 },
+          { color: "#f1f5f9", position: 100 },
+        ],
+      },
+      borderRadius: "16px",
+      opacity: 0.95,
+      boxShadow: {
+        offsetX: 0,
+        offsetY: 12,
+        blurRadius: 28,
+        spreadRadius: 0,
+        color: "rgba(15, 23, 42, 0.18)",
+      },
+      zIndex: 3,
+      border: {
+        width: 1,
+        color: "#e2e8f0",
+        style: "solid",
+      },
+      label: "Generated background panel",
+    },
+    createdAt: 1_700_000_000_006,
     source: "manual",
     status: "approved",
     ...overrides,

@@ -1,4 +1,4 @@
-import { buildFlags, isAgentEnabled, isBackendEnabled } from "./build-flags.js";
+import { isBackendEnabled, isLocalAgentAvailable } from "./build-flags.js";
 
 export const SETTINGS_SCHEMA_VERSION = 1 as const;
 export const SETTINGS_STORAGE_KEY = "otf_settings_v1";
@@ -57,8 +57,8 @@ export function createDefaultSettingsSnapshot(): SettingsSnapshot {
 export function createSettingsDiagnostics(): SettingsDiagnostics {
   return {
     extensionVersion: chrome.runtime.getManifest().version,
-    buildMode: isAgentEnabled() ? "local-developer" : "public",
-    agentEnabled: buildFlags.publicAgentEnabled,
+    buildMode: isLocalAgentAvailable() ? "local-developer" : "public",
+    agentEnabled: isLocalAgentAvailable(),
     backendEnabled: isBackendEnabled(),
     schemaVersion: SETTINGS_SCHEMA_VERSION,
   };

@@ -115,9 +115,9 @@ describe("clear-all vs stale replay generation guard", () => {
     // Effect registry is populated: re-applying the same id is rejected.
     const duplicateApply = adapter.applyOperation(style);
     expect(duplicateApply.ok).toBe(false);
-    expect(duplicateApply.ok === false && duplicateApply.code).toBe(
-      "operation_already_applied",
-    );
+    if (!duplicateApply.ok) {
+      expect(duplicateApply.code).toBe("operation_already_applied");
+    }
 
     await controller.clearPage();
 
@@ -139,10 +139,12 @@ describe("clear-all vs stale replay generation guard", () => {
 
     // Backing store that clear actually empties.
     let stored: EditorOperation[] = [operation];
-    vi.spyOn(storageClient, "loadPageOperations").mockImplementation(async () => [...stored]);
-    vi.spyOn(storageClient, "clearPageOperations").mockImplementation(async () => {
+    vi.spyOn(storageClient, "loadPageOperations").mockImplementation(() =>
+      Promise.resolve([...stored]),
+    );
+    vi.spyOn(storageClient, "clearPageOperations").mockImplementation(() => {
       stored = [];
-      return true;
+      return Promise.resolve(true);
     });
 
     const firstLoad = new PageCustomizationController(document);

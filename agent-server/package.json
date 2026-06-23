@@ -1,0 +1,11 @@
+{
+  "name": "@on-the-fly/agent-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Optional local-only On the Fly agent server skeleton",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json && node dist/agent-server/src/index.js"
+  }
+}

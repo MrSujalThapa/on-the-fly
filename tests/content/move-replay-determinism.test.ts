@@ -60,7 +60,7 @@ function rect(x: number, y: number, width: number, height: number): DOMRect {
     right: x + width,
     bottom: y + height,
     toJSON: () => ({}),
-  } as DOMRect;
+  };
 }
 
 function setScroll(document: Document, x: number, y: number): void {

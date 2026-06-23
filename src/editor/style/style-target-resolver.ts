@@ -10,6 +10,7 @@ export const MAX_SURFACE_PROMOTION_DESCENDANTS = 80;
 
 export const CONTAINER_STYLE_PROPERTIES: ReadonlySet<StyleProperty> = new Set([
   "backgroundColor",
+  "backgroundImage",
   "borderRadius",
   "opacity",
   "borderColor",

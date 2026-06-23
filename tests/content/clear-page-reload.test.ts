@@ -16,9 +16,9 @@ describe("clear page hard reload", () => {
     }
 
     const order: string[] = [];
-    vi.spyOn(storageClient, "clearPageOperations").mockImplementation(async () => {
+    vi.spyOn(storageClient, "clearPageOperations").mockImplementation(() => {
       order.push("delete");
-      return true;
+      return Promise.resolve(true);
     });
     const reloadSpy = vi.spyOn(view.location, "reload").mockImplementation(() => {
       order.push("reload");

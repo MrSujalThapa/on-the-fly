@@ -10,12 +10,15 @@ const distDir = join(rootDir, "dist");
 
 const publicAgentEnabled = process.env.PUBLIC_AGENT_ENABLED === "true";
 const publicBackendEnabled = process.env.PUBLIC_BACKEND_ENABLED === "true";
+const localDevAgentEnabled =
+  publicAgentEnabled ? false : process.env.LOCAL_DEV_AGENT_ENABLED !== "false";
 const localAgentServerUrl = process.env.LOCAL_AGENT_SERVER_URL ?? "";
 
 /** @type {import('esbuild').BuildOptions['define']} */
 const define = {
   __PUBLIC_AGENT_ENABLED__: String(publicAgentEnabled),
   __PUBLIC_BACKEND_ENABLED__: String(publicBackendEnabled),
+  __LOCAL_DEV_AGENT_ENABLED__: String(localDevAgentEnabled),
   __LOCAL_AGENT_SERVER_URL__: JSON.stringify(localAgentServerUrl),
 };
 
@@ -69,10 +72,16 @@ async function build() {
 
   const manifest = JSON.parse(readFileSync(join(distDir, "manifest.json"), "utf8"));
   manifest.version = JSON.parse(readFileSync(join(rootDir, "package.json"), "utf8")).version;
+  if (localDevAgentEnabled) {
+    manifest.host_permissions = [
+      "http://127.0.0.1/*",
+      "http://localhost/*",
+    ];
+  }
   writeFileSync(join(distDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
   console.log(
-    `Build complete (agent=${publicAgentEnabled}, backend=${publicBackendEnabled}, dist=${distDir})`,
+    `Build complete (agent=${publicAgentEnabled}, localDevAgent=${localDevAgentEnabled}, backend=${publicBackendEnabled}, dist=${distDir})`,
   );
 }
 

@@ -1,3 +1,7 @@
+import {
+  formatAllowedHelperRoles,
+  isHelperObjectRole,
+} from "../helper-object-contract.js";
 import type { EditorOperation, EditorOperationType, ResizeMode, StyleProperty } from "../operations.js";
 import { isEditorOperationType } from "../operations.js";
 import { validateEditorTarget } from "./validate-target.js";
@@ -11,6 +15,7 @@ import type { ValidationErrorCode } from "./validation-codes.js";
 const STYLE_PROPERTIES = new Set<StyleProperty>([
   "color",
   "backgroundColor",
+    "backgroundImage",
   "borderColor",
   "borderWidth",
   "borderRadius",
@@ -23,6 +28,11 @@ const STYLE_PROPERTIES = new Set<StyleProperty>([
 ]);
 
 const RESIZE_MODES = new Set<ResizeMode>(["box", "font-aware", "image"]);
+const HELPER_BORDER_STYLES = new Set(["solid", "dashed", "dotted"]);
+const HELPER_ID_PATTERN = /^[a-zA-Z0-9_-]{1,80}$/;
+const LENGTH_PATTERN = /^(?:0|-?\d+(?:\.\d+)?(?:px|rem|em|%)?)$/;
+const SAFE_COLOR_PATTERN =
+  /^(?:#[0-9a-fA-F]{3,8}|rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)|hsla?\(\s*-?\d+(?:\.\d+)?(?:deg)?\s*,\s*\d{1,3}%\s*,\s*\d{1,3}%(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)|transparent|currentColor|black|white|gray|grey|red|green|blue|yellow|orange|purple|pink|teal|cyan|indigo|slate|zinc|neutral|stone)$/i;
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -34,6 +44,105 @@ function isFiniteNumber(value: unknown): value is number {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function isSafeColor(value: unknown): value is string {
+  return typeof value === "string" && SAFE_COLOR_PATTERN.test(value.trim());
+}
+
+function isSafeCssLength(value: unknown): value is string {
+  return typeof value === "string" && LENGTH_PATTERN.test(value.trim());
+}
+
+function validateHelperFill(fill: unknown, errors: string[], codes: ValidationErrorCode[]): void {
+  if (!isRecord(fill)) {
+    errors.push("insertHelperObject.fill must be an object");
+    codes.push("invalid_payload");
+    return;
+  }
+
+  if (fill.type === "solid") {
+    if (!isSafeColor(fill.color)) {
+      errors.push("insertHelperObject.fill.color must be a safe color");
+      codes.push("invalid_payload");
+    }
+    return;
+  }
+
+  if (fill.type === "linearGradient") {
+    if (!isFiniteNumber(fill.angleDeg)) {
+      errors.push("insertHelperObject.fill.angleDeg must be a finite number");
+      codes.push("invalid_payload");
+    }
+    if (!Array.isArray(fill.stops) || fill.stops.length < 2 || fill.stops.length > 5) {
+      errors.push("insertHelperObject.fill.stops must include 2-5 stops");
+      codes.push("invalid_payload");
+      return;
+    }
+    for (const stop of fill.stops) {
+      if (!isRecord(stop) || !isSafeColor(stop.color) || !isFiniteNumber(stop.position)) {
+        errors.push("insertHelperObject.fill.stops entries must include safe color and finite position");
+        codes.push("invalid_payload");
+        continue;
+      }
+      if (stop.position < 0 || stop.position > 100) {
+        errors.push("insertHelperObject.fill.stops position must be between 0 and 100");
+        codes.push("invalid_payload");
+      }
+    }
+    return;
+  }
+
+  errors.push("insertHelperObject.fill.type is invalid");
+  codes.push("invalid_payload");
+}
+
+function validateHelperBoxShadow(
+  boxShadow: unknown,
+  errors: string[],
+  codes: ValidationErrorCode[],
+): void {
+  if (!isRecord(boxShadow)) {
+    errors.push("insertHelperObject.boxShadow must be an object");
+    codes.push("invalid_payload");
+    return;
+  }
+
+  for (const key of ["offsetX", "offsetY", "blurRadius"] as const) {
+    if (!isFiniteNumber(boxShadow[key])) {
+      errors.push(`insertHelperObject.boxShadow.${key} must be finite`);
+      codes.push("invalid_payload");
+    }
+  }
+  if (boxShadow.spreadRadius !== undefined && !isFiniteNumber(boxShadow.spreadRadius)) {
+    errors.push("insertHelperObject.boxShadow.spreadRadius must be finite");
+    codes.push("invalid_payload");
+  }
+  if (!isSafeColor(boxShadow.color)) {
+    errors.push("insertHelperObject.boxShadow.color must be a safe color");
+    codes.push("invalid_payload");
+  }
+}
+
+function validateHelperBorder(border: unknown, errors: string[], codes: ValidationErrorCode[]): void {
+  if (!isRecord(border)) {
+    errors.push("insertHelperObject.border must be an object");
+    codes.push("invalid_payload");
+    return;
+  }
+
+  if (!isFiniteNumber(border.width) || border.width < 0) {
+    errors.push("insertHelperObject.border.width must be a non-negative number");
+    codes.push("invalid_payload");
+  }
+  if (!isSafeColor(border.color)) {
+    errors.push("insertHelperObject.border.color must be a safe color");
+    codes.push("invalid_payload");
+  }
+  if (!HELPER_BORDER_STYLES.has(String(border.style))) {
+    errors.push("insertHelperObject.border.style is invalid");
+    codes.push("invalid_payload");
+  }
 }
 
 function validateCommonOperationFields(
@@ -200,6 +309,67 @@ function validatePayload(operation: EditorOperation, errors: string[], codes: Va
       }
       if (!isFiniteNumber(operation.payload.x) || !isFiniteNumber(operation.payload.y)) {
         errors.push("insertImage.x and insertImage.y must be finite numbers");
+        codes.push("invalid_payload");
+      }
+      break;
+    case "insertHelperObject":
+      if (!isNonEmptyString(operation.payload.helperId) || !HELPER_ID_PATTERN.test(operation.payload.helperId)) {
+        errors.push("insertHelperObject.helperId is invalid");
+        codes.push("invalid_payload");
+      }
+      if (!isHelperObjectRole(operation.payload.role)) {
+        const got =
+          typeof operation.payload.role === "string"
+            ? operation.payload.role
+            : String(operation.payload.role);
+        errors.push(
+          `insertHelperObject.role is invalid (got "${got}", allowed: ${formatAllowedHelperRoles()})`,
+        );
+        codes.push("invalid_payload");
+      }
+      if (!isRecord(operation.payload.rect)) {
+        errors.push("insertHelperObject.rect must be an object");
+        codes.push("invalid_payload");
+      } else {
+        for (const key of ["x", "y", "width", "height"] as const) {
+          if (!isFiniteNumber(operation.payload.rect[key])) {
+            errors.push(`insertHelperObject.rect.${key} must be finite`);
+            codes.push("invalid_payload");
+          }
+        }
+        if (operation.payload.rect.width <= 0 || operation.payload.rect.height <= 0) {
+          errors.push("insertHelperObject.rect width and height must be positive");
+          codes.push("invalid_payload");
+        }
+      }
+      if (operation.payload.fill !== undefined) {
+        validateHelperFill(operation.payload.fill, errors, codes);
+      }
+      if (operation.payload.borderRadius !== undefined && !isSafeCssLength(operation.payload.borderRadius)) {
+        errors.push("insertHelperObject.borderRadius must be a safe length");
+        codes.push("invalid_payload");
+      }
+      if (
+        operation.payload.opacity !== undefined &&
+        (!isFiniteNumber(operation.payload.opacity) ||
+          operation.payload.opacity < 0 ||
+          operation.payload.opacity > 1)
+      ) {
+        errors.push("insertHelperObject.opacity must be between 0 and 1");
+        codes.push("invalid_payload");
+      }
+      if (operation.payload.boxShadow !== undefined) {
+        validateHelperBoxShadow(operation.payload.boxShadow, errors, codes);
+      }
+      if (operation.payload.zIndex !== undefined && !Number.isInteger(operation.payload.zIndex)) {
+        errors.push("insertHelperObject.zIndex must be an integer");
+        codes.push("invalid_payload");
+      }
+      if (operation.payload.border !== undefined) {
+        validateHelperBorder(operation.payload.border, errors, codes);
+      }
+      if (operation.payload.label !== undefined && typeof operation.payload.label !== "string") {
+        errors.push("insertHelperObject.label must be a string");
         codes.push("invalid_payload");
       }
       break;

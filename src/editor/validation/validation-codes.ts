@@ -7,7 +7,8 @@ export type ValidationErrorCode =
   | "invalid_signature"
   | "unsupported_dom_operation"
   | "invalid_status"
-  | "invalid_source";
+  | "invalid_source"
+  | "out_of_scope";
 
 export type DomErrorCode =
   | "validation_failed"
@@ -27,6 +28,7 @@ export const SUPPORTED_DOM_OPERATION_TYPES = [
   "move",
   "resize",
   "rotate",
+  "insertHelperObject",
   "duplicate",
 ] as const;
 
@@ -66,6 +68,7 @@ export function inferValidationErrorCodes(errors: string[]): ValidationErrorCode
       error.startsWith("group.") ||
       error.startsWith("crop.") ||
       error.startsWith("insertImage.") ||
+      error.startsWith("insertHelperObject.") ||
       error.startsWith("duplicate.") ||
       error.startsWith("resize.")
     ) {

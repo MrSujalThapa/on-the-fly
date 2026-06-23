@@ -6,6 +6,8 @@ export interface SessionOperationState {
   savedOperations: EditorOperation[];
   /** Current-session edits not yet persisted. */
   draftOperations: EditorOperation[];
+  /** Unsaved preview edits, separate from drafts until explicit approval. */
+  previewOperations: EditorOperation[];
 }
 
 export function createSessionOperationState(
@@ -14,11 +16,12 @@ export function createSessionOperationState(
   return {
     savedOperations: [...savedOperations],
     draftOperations: [],
+    previewOperations: [],
   };
 }
 
 export function getAppliedOperations(state: SessionOperationState): EditorOperation[] {
-  return [...state.savedOperations, ...state.draftOperations];
+  return [...state.savedOperations, ...state.draftOperations, ...state.previewOperations];
 }
 
 export function hasUnsavedChanges(state: SessionOperationState): boolean {
@@ -49,6 +52,26 @@ export function appendDraftOperations(
   };
 }
 
+export function appendPreviewOperations(
+  state: SessionOperationState,
+  operations: EditorOperation[],
+): SessionOperationState {
+  if (operations.length === 0) {
+    return state;
+  }
+
+  const previews = operations.map((operation) =>
+    operation.status === "preview"
+      ? operation
+      : { ...operation, status: "preview" as const },
+  );
+
+  return {
+    ...state,
+    previewOperations: appendOperations(state.previewOperations, previews),
+  };
+}
+
 export function removeDraftOperationsById(
   state: SessionOperationState,
   ids: ReadonlySet<string>,
@@ -66,6 +89,34 @@ export function setDraftOperations(
   return {
     ...state,
     draftOperations: [...draftOperations],
+  };
+}
+
+export function clearPreviewOperations(state: SessionOperationState): SessionOperationState {
+  return {
+    ...state,
+    previewOperations: [],
+  };
+}
+
+export function promotePreviewOperationsToDraft(
+  state: SessionOperationState,
+  previewOperations: EditorOperation[] = state.previewOperations,
+): SessionOperationState {
+  if (previewOperations.length === 0) {
+    return state;
+  }
+
+  const previewIds = new Set(previewOperations.map((operation) => operation.id));
+  const drafts = previewOperations.map((operation) => ({
+    ...operation,
+    status: "draft" as const,
+  }));
+
+  return {
+    ...state,
+    draftOperations: appendOperations(state.draftOperations, drafts),
+    previewOperations: state.previewOperations.filter((operation) => !previewIds.has(operation.id)),
   };
 }
 
@@ -88,6 +139,7 @@ export function promoteAllDraftToSaved(state: SessionOperationState): SessionOpe
   return {
     savedOperations: appendOperations(state.savedOperations, approved),
     draftOperations: [],
+    previewOperations: state.previewOperations,
   };
 }
 
@@ -104,6 +156,7 @@ export function promoteDraftOperationsToSaved(
   return {
     savedOperations: appendOperations(state.savedOperations, approved),
     draftOperations: state.draftOperations.filter((operation) => !keptIds.has(operation.id)),
+    previewOperations: state.previewOperations,
   };
 }
 
@@ -118,5 +171,6 @@ export function clearAllOperations(): SessionOperationState {
   return {
     savedOperations: [],
     draftOperations: [],
+    previewOperations: [],
   };
 }

@@ -2,13 +2,26 @@ import type { StyleProperty } from "../editor/operations.js";
 import type { VisualNodeRect } from "../editor/visual-node.js";
 import type { ResolvedCommand } from "../editor/commands/command-registry.js";
 import { OPACITY_MAX, OPACITY_MIN, OPACITY_STEP } from "../editor/style/opacity-value.js";
+import {
+  buildBoxShadowValue,
+  buildGradientFromPreset,
+  buildLinearGradientValue,
+  GRADIENT_ANGLE_PRESETS,
+  GRADIENT_PRESETS,
+  parseBoxShadowPreset,
+  parseLinearGradientValue,
+  SHADOW_PRESETS,
+  type ShadowPresetId,
+} from "./style-panel-controls.js";
 
 export interface StylePanelValues {
   backgroundColor: string;
+  backgroundImage: string;
   color: string;
   fontSize: string;
   fontWeight: string;
   borderRadius: string;
+  boxShadow: string;
   opacity: string;
 }
 
@@ -263,10 +276,12 @@ export class FloatingToolbar {
       return;
     }
     setInputValue(this.stylePanelEl, "backgroundColor", values.backgroundColor);
+    syncGradientControls(this.stylePanelEl, values.backgroundImage);
     setInputValue(this.stylePanelEl, "color", values.color);
     setInputValue(this.stylePanelEl, "fontSize", values.fontSize);
     setInputValue(this.stylePanelEl, "fontWeight", values.fontWeight);
     setInputValue(this.stylePanelEl, "borderRadius", values.borderRadius);
+    syncShadowControls(this.stylePanelEl, values.boxShadow);
     if (values.opacity !== undefined) {
       const range = this.stylePanelEl.querySelector<HTMLInputElement>('[data-style-field="opacity"]');
       if (range) {
@@ -456,6 +471,10 @@ export class FloatingToolbar {
       });
     }
 
+    this.wireGradientControls();
+    this.wireShadowControls();
+    this.wireOverlayInputKeyboardGuards(this.stylePanelEl);
+
     const opacityRange = this.stylePanelEl.querySelector<HTMLInputElement>('[data-style-field="opacity"]');
     const opacityReadout = this.stylePanelEl.querySelector<HTMLSpanElement>("[data-opacity-readout]");
     opacityRange?.addEventListener("input", () => {
@@ -502,6 +521,72 @@ export class FloatingToolbar {
         this.setStylePanelValues(values);
       }
     });
+  }
+
+  private wireGradientControls(): void {
+    if (!this.stylePanelEl) {
+      return;
+    }
+
+    const applyGradient = (): void => {
+      const start = this.stylePanelEl?.querySelector<HTMLInputElement>('[data-gradient-start]')?.value ?? "#3B82F6";
+      const end = this.stylePanelEl?.querySelector<HTMLInputElement>('[data-gradient-end]')?.value ?? "#06B6D4";
+      const angle = Number(this.stylePanelEl?.querySelector<HTMLSelectElement>('[data-gradient-angle]')?.value ?? "135");
+      const value = buildLinearGradientValue(start, end, angle);
+      if (value) {
+        this.callbacks.onStyleChange("backgroundImage", value);
+      }
+    };
+
+    for (const button of Array.from(
+      this.stylePanelEl.querySelectorAll<HTMLButtonElement>("[data-gradient-preset]"),
+    )) {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const presetId = button.getAttribute("data-gradient-preset");
+        const preset = GRADIENT_PRESETS.find((entry) => entry.id === presetId);
+        if (!preset || !this.stylePanelEl) {
+          return;
+        }
+        syncGradientControls(this.stylePanelEl, buildGradientFromPreset(preset));
+        this.callbacks.onStyleChange("backgroundImage", buildGradientFromPreset(preset));
+      });
+    }
+
+    for (const field of ["[data-gradient-start]", "[data-gradient-end]", "[data-gradient-angle]"]) {
+      this.stylePanelEl.querySelector(field)?.addEventListener("input", applyGradient);
+      this.stylePanelEl.querySelector(field)?.addEventListener("change", applyGradient);
+    }
+  }
+
+  private wireShadowControls(): void {
+    if (!this.stylePanelEl) {
+      return;
+    }
+
+    const applyShadow = (): void => {
+      const presetId = (this.stylePanelEl?.querySelector<HTMLSelectElement>('[data-shadow-preset]')?.value ??
+        "none") as ShadowPresetId;
+      const intensityInput = this.stylePanelEl?.querySelector<HTMLInputElement>('[data-shadow-intensity]');
+      const intensity = Number(intensityInput?.value ?? "1");
+      const readout = this.stylePanelEl?.querySelector<HTMLSpanElement>("[data-shadow-intensity-readout]");
+      if (readout) {
+        readout.textContent = String(intensity);
+      }
+      this.callbacks.onStyleChange("boxShadow", buildBoxShadowValue(presetId, intensity));
+    };
+
+    this.stylePanelEl.querySelector('[data-shadow-preset]')?.addEventListener("change", applyShadow);
+    this.stylePanelEl.querySelector('[data-shadow-intensity]')?.addEventListener("input", applyShadow);
+  }
+
+  private wireOverlayInputKeyboardGuards(root: HTMLElement): void {
+    for (const input of Array.from(root.querySelectorAll("input, textarea, select, button"))) {
+      input.addEventListener("keydown", (event) => {
+        event.stopPropagation();
+      });
+    }
   }
 
   private updateToolButtonPositions(): void {
@@ -893,6 +978,19 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function createStylePanelMarkup(): string {
+  const gradientChips = GRADIENT_PRESETS.map(
+    (preset) =>
+      `<button type="button" class="otf-gradient-chip" data-gradient-preset="${preset.id}" title="${preset.label}" style="background:${buildGradientFromPreset(preset)}"></button>`,
+  ).join("");
+
+  const angleOptions = GRADIENT_ANGLE_PRESETS.map(
+    (angle) => `<option value="${String(angle)}">${String(angle)}°</option>`,
+  ).join("");
+
+  const shadowOptions = SHADOW_PRESETS.map(
+    (preset) => `<option value="${preset.id}">${preset.label}</option>`,
+  ).join("");
+
   return `
     <div class="otf-style-panel-header">
       <div class="otf-style-panel-title"><span class="otf-style-panel-title-dot"></span><span>Style</span></div>
@@ -909,11 +1007,62 @@ function createStylePanelMarkup(): string {
         <input type="range" min="${String(OPACITY_MIN)}" max="${String(OPACITY_MAX)}" step="${String(OPACITY_STEP)}" value="1" data-style-field="opacity" />
       </label>
     </div>
+    <div class="otf-style-section">
+      <div class="otf-style-section-label">Gradient</div>
+      <div class="otf-gradient-chips">${gradientChips}</div>
+      <div class="otf-style-panel-grid otf-gradient-grid">
+        <label class="otf-style-field"><span>Start</span><input type="color" data-gradient-start value="#3B82F6" /></label>
+        <label class="otf-style-field"><span>End</span><input type="color" data-gradient-end value="#06B6D4" /></label>
+        <label class="otf-style-field otf-gradient-angle-field"><span>Angle</span><select data-gradient-angle>${angleOptions}</select></label>
+      </div>
+    </div>
+    <div class="otf-style-section">
+      <div class="otf-style-section-label">Shadow</div>
+      <div class="otf-style-panel-grid otf-shadow-grid">
+        <label class="otf-style-field"><span>Preset</span><select data-shadow-preset>${shadowOptions}</select></label>
+        <label class="otf-style-field otf-shadow-intensity-field">
+          <span>Intensity <strong data-shadow-intensity-readout>1</strong></span>
+          <input type="range" min="0.25" max="2" step="0.05" value="1" data-shadow-intensity />
+        </label>
+      </div>
+    </div>
     <div class="otf-style-panel-actions">
       <button type="button" data-style-reset>Reset</button>
       <button type="button" data-style-apply>Apply</button>
     </div>
   `;
+}
+
+function syncGradientControls(root: HTMLElement, value: string | undefined): void {
+  const parsed = value ? parseLinearGradientValue(value) : null;
+  const start = root.querySelector<HTMLInputElement>("[data-gradient-start]");
+  const end = root.querySelector<HTMLInputElement>("[data-gradient-end]");
+  const angle = root.querySelector<HTMLSelectElement>("[data-gradient-angle]");
+  if (start && parsed?.startColor) {
+    start.value = parsed.startColor;
+  }
+  if (end && parsed?.endColor) {
+    end.value = parsed.endColor;
+  }
+  if (angle && parsed) {
+    angle.value = String(Math.round(parsed.angleDeg));
+  }
+}
+
+function syncShadowControls(root: HTMLElement, value: string | undefined): void {
+  const parsed = parseBoxShadowPreset(value ?? "none");
+  const preset = root.querySelector<HTMLSelectElement>("[data-shadow-preset]");
+  const intensity = root.querySelector<HTMLInputElement>("[data-shadow-intensity]");
+  const readout = root.querySelector<HTMLSpanElement>("[data-shadow-intensity-readout]");
+  if (preset) {
+    preset.value = parsed.presetId;
+  }
+  if (intensity) {
+    intensity.value = String(parsed.intensity);
+  }
+  if (readout) {
+    readout.textContent = String(parsed.intensity);
+  }
 }
 
 const CURVED_TOOLBAR_CSS = `
@@ -1118,6 +1267,56 @@ const CURVED_TOOLBAR_CSS = `
   .otf-opacity-field strong {
     font: inherit;
     color: #202020;
+  }
+  .otf-style-section {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(32,32,32,0.12);
+  }
+  .otf-style-section-label {
+    font-size: 12px;
+    font-weight: 760;
+    color: rgba(32,32,32,0.62);
+    margin-bottom: 8px;
+  }
+  .otf-gradient-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .otf-gradient-chip {
+    width: 34px;
+    height: 34px;
+    border-radius: 999px;
+    border: 1px solid rgba(32,32,32,0.16);
+    cursor: pointer;
+    padding: 0;
+  }
+  .otf-gradient-grid,
+  .otf-shadow-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .otf-gradient-angle-field,
+  .otf-shadow-intensity-field {
+    grid-column: 1 / -1;
+  }
+  .otf-style-field select {
+    width: 100%;
+    min-width: 0;
+    height: 40px;
+    border: 1px solid rgba(32,32,32,0.16);
+    border-radius: 8px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.56), rgba(255,255,255,0.32));
+    color: #202020;
+    padding: 0 12px;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 650;
+  }
+  .otf-shadow-intensity-field input[type="range"] {
+    width: 100%;
+    accent-color: #202020;
   }
   .otf-style-panel-actions {
     display: flex;

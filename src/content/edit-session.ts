@@ -19,6 +19,11 @@ import {
   createSelectionController,
   type SelectionController,
 } from "../editor/selection/selection-controller.js";
+import {
+  buildGroupOperation,
+  buildUngroupOperation,
+  findLatestPersistedGroupState,
+} from "../editor/selection/group-operation-state.js";
 import type { EditorSelection } from "../editor/editor-selection.js";
 import type { SelectionResolveResult } from "../editor/selection/selection-resolver.js";
 import type { LayerCommand, TransformTarget } from "../editor/transform/index.js";
@@ -63,6 +68,7 @@ import {
   appendDraftOperations,
   clearAllOperations,
   createSessionOperationState,
+  getAppliedOperations,
   hasUnsavedChanges,
   promoteAllDraftToSaved,
   removeDraftOperationsById,
@@ -83,6 +89,10 @@ import {
 } from "../editor/style/text-target-resolver.js";
 import { SaveWindowController } from "./save-window-controller.js";
 import { createEmptyBatchSnapshot } from "../editor/dom/operation-batch-snapshot.js";
+import { isLocalAgentAvailable } from "../shared/build-flags.js";
+import { AgentPreviewController } from "./agent/agent-preview-controller.js";
+import { AgentPanel } from "./agent/agent-panel.js";
+import type { AgentContextInput } from "./agent/context-builder.js";
 
 export interface EditSessionOptions {
   shell: EditorShell;
@@ -128,6 +138,22 @@ export class EditSession implements SessionCommandHost {
   private lastSelectionResult: SelectionResolveResult | null = null;
   private lastClickTime = 0;
   private lastClickNodeId: string | null = null;
+  private lastClickX = 0;
+  private lastClickY = 0;
+  private clickSelectionSnapshot: {
+    selection: EditorSelection;
+    resolvedNodes: VisualNode[];
+  } | null = null;
+  private firstClickSelectionSnapshot: {
+    selection: EditorSelection;
+    resolvedNodes: VisualNode[];
+  } | null = null;
+  private lastGroupedSelectionSnapshot: {
+    selection: EditorSelection;
+    resolvedNodes: VisualNode[];
+  } | null = null;
+  private agentSelectionOverride: EditorSelection | null = null;
+  private agentSelectedNodesOverride: VisualNode[] | null = null;
   private lastSelectionKey: string | null = null;
   private textEditTarget: TransformTarget | null = null;
   private inPlaceTextEdit: InPlaceTextEditState | null = null;
@@ -138,6 +164,9 @@ export class EditSession implements SessionCommandHost {
   private pendingLassoRect: ReturnType<typeof normalizeLassoRect> | null = null;
   private editorClipboard: EditorClipboardEntry[] | null = null;
   private saveWindowController: SaveWindowController | null = null;
+  private agentPreviewController: AgentPreviewController | null = null;
+  private agentPanel: AgentPanel | null = null;
+  private lastPersistedGroupId: string | null = null;
 
   constructor(options: EditSessionOptions) {
     this.shell = options.shell;
@@ -189,7 +218,7 @@ export class EditSession implements SessionCommandHost {
       getOperationState: () => this.operationState,
       setOperationState: (state) => {
         this.operationState = state;
-        this.pageCustomization.setPageOperations(state.savedOperations);
+        this.syncPageCustomizationOperations();
         this.updateSaveButton();
       },
       syncSavedOperationsToStorage: () => this.pageCustomization.syncOperationsToStorage(),
@@ -267,6 +296,49 @@ export class EditSession implements SessionCommandHost {
         },
       });
       this.toolbar.mount();
+
+      this.agentPreviewController = new AgentPreviewController({
+        adapter: this.adapter,
+        getContextInput: (instruction) => this.buildAgentContextInput(instruction),
+        getOperationState: () => this.operationState,
+        setOperationState: (state) => {
+          this.operationState = state;
+          this.syncPageCustomizationOperations();
+          this.updateSaveButton();
+        },
+        syncSavedOperationsToStorage: () => this.pageCustomization.syncOperationsToStorage(),
+        onStateChange: (state) => {
+          if (this.agentPanel?.isOpen()) {
+            this.agentPanel.renderState(state);
+          }
+        },
+        onDebug: this.onDebug,
+      });
+
+      this.agentPanel = new AgentPanel({
+        shadowRoot,
+        isAvailable: () => isLocalAgentAvailable(),
+        callbacks: {
+          onSubmit: (instruction) => {
+            void this.agentPreviewController?.requestPreview(instruction);
+          },
+          onApprove: () => {
+            void this.agentPreviewController?.approvePreview();
+          },
+          onReject: () => {
+            this.agentPreviewController?.rejectPreview();
+            this.clearAgentSelectionOverride();
+          },
+          onRefine: (instruction) => {
+            void this.agentPreviewController?.refinePreview(instruction);
+          },
+          onClose: () => {
+            this.agentPreviewController?.rejectPreview();
+            this.clearAgentSelectionOverride();
+          },
+        },
+      });
+      this.agentPanel.mount();
     }
 
     this.selectionController = createSelectionController({
@@ -307,6 +379,33 @@ export class EditSession implements SessionCommandHost {
 
     this.attachKeyHandler(windowRef);
     this.cacheController.cache.ensureFresh();
+    this.restorePersistedGroupSelection();
+  }
+
+  private restorePersistedGroupSelection(): void {
+    const groupState = findLatestPersistedGroupState(
+      this.computePageKey(),
+      getAppliedOperations(this.operationState),
+    );
+    if (!groupState || !this.selectionController) {
+      return;
+    }
+
+    const restored = this.selectionController.restorePersistedGroup(groupState);
+    if (restored?.group) {
+      this.lastPersistedGroupId = restored.group.id;
+      this.lastGroupedSelectionSnapshot = {
+        selection: {
+          ...restored.selection,
+          selectedNodeIds: [...restored.selection.selectedNodeIds],
+        },
+        resolvedNodes: [...restored.resolvedNodes],
+      };
+      this.onDebug("group-restore", {
+        groupId: restored.group.id,
+        memberCount: restored.group.memberIds.length,
+      });
+    }
   }
 
   afterExternalClearPage(): void {
@@ -315,13 +414,23 @@ export class EditSession implements SessionCommandHost {
     this.operationState = clearAllOperations();
     this.sessionHistory = createSessionHistory();
     this.transformController?.setCropMode(false);
-    this.selectionController?.clearSelection();
+    this.selectionController?.clearSelectionAndGroup();
     this.transformController?.clearSelection();
     this.closeToolbar();
     this.shell.clearOverlays();
     this.updateSaveButton();
     this.lastSelectionKey = null;
     this.textEditTarget = null;
+    this.lastGroupedSelectionSnapshot = null;
+    this.lastPersistedGroupId = null;
+    this.clearAgentSelectionOverride();
+  }
+
+  private syncPageCustomizationOperations(): void {
+    this.pageCustomization.setPageOperations([
+      ...this.operationState.savedOperations,
+      ...this.operationState.draftOperations,
+    ]);
   }
 
   private recordOperations(operations: EditorOperation[]): void {
@@ -339,6 +448,7 @@ export class EditSession implements SessionCommandHost {
       });
     } else {
       this.operationState = appendDraftOperations(this.operationState, operations);
+      this.syncPageCustomizationOperations();
     }
     this.updateSaveButton();
     this.updateToolbar();
@@ -383,13 +493,16 @@ export class EditSession implements SessionCommandHost {
     this.operationState = clearAllOperations();
     this.sessionHistory = createSessionHistory();
     this.transformController?.setCropMode(false);
-    this.selectionController?.clearSelection();
+    this.selectionController?.clearSelectionAndGroup();
     this.transformController?.clearSelection();
     this.closeToolbar();
     this.shell.clearOverlays();
     this.updateSaveButton();
     this.lastSelectionKey = null;
     this.textEditTarget = null;
+    this.lastGroupedSelectionSnapshot = null;
+    this.lastPersistedGroupId = null;
+    this.clearAgentSelectionOverride();
     this.onDebug("clear-page", { pageKey: this.computePageKey() });
   }
 
@@ -421,12 +534,18 @@ export class EditSession implements SessionCommandHost {
     this.movePending = false;
     this.moveActive = false;
     this.lastSelectionResult = null;
+    this.agentPanel?.close();
+    this.agentPreviewController?.rejectPreview();
+    this.syncPageCustomizationOperations();
     this.operationState = createSessionOperationState();
     this.sessionHistory = createSessionHistory();
     this.shell.setSaveButton({ visible: false, count: 0 });
     this.toolbarOpen = false;
     this.perf.reset();
     this.saveWindowController = null;
+    this.agentPanel?.unmount();
+    this.agentPanel = null;
+    this.agentPreviewController = null;
   }
 
   isInteractMode(): boolean {
@@ -803,7 +922,11 @@ export class EditSession implements SessionCommandHost {
         return true;
       }
 
-      if (isTextEntryElement(target)) {
+      if (target.closest("[data-otf-ui='agent-panel']")) {
+        return true;
+      }
+
+      if (target.closest("[data-otf-ui='text-editor']")) {
         return true;
       }
     }
@@ -869,10 +992,12 @@ export class EditSession implements SessionCommandHost {
 
     return {
       backgroundColor: this.styleTextController.readStyleForTarget(target, "backgroundColor"),
+      backgroundImage: this.styleTextController.readStyleForTarget(target, "backgroundImage"),
       color: this.styleTextController.readStyleForTarget(target, "color"),
       fontSize: this.styleTextController.readStyleForTarget(target, "fontSize"),
       fontWeight: this.styleTextController.readStyleForTarget(target, "fontWeight"),
       borderRadius: this.styleTextController.readStyleForTarget(target, "borderRadius"),
+      boxShadow: this.styleTextController.readStyleForTarget(target, "boxShadow"),
       opacity: this.styleTextController.readStyleForTarget(target, "opacity"),
     };
   }
@@ -959,18 +1084,44 @@ export class EditSession implements SessionCommandHost {
 
   groupSelection(): void {
     const result = this.selectionController?.groupSelection();
-    if (result) {
+    if (result?.group) {
+      this.lastGroupedSelectionSnapshot = {
+        selection: {
+          ...result.selection,
+          selectedNodeIds: [...result.selection.selectedNodeIds],
+        },
+        resolvedNodes: [...result.resolvedNodes],
+      };
+      this.lastPersistedGroupId = result.group.id;
+      const operation = buildGroupOperation(result.group, {
+        pageKey: this.computePageKey(),
+        createId: createOperationId,
+        sourceCommand: "group",
+      });
+      this.recordOperations([operation]);
       this.onDebug("group", {
-        grouped: result.group !== undefined,
-        memberCount: result.group?.memberIds.length ?? 0,
+        grouped: true,
+        memberCount: result.group.memberIds.length,
         rejectionReason: result.rejectionReason,
       });
     }
   }
 
   ungroupSelection(): void {
+    const activeGroup = this.selectionController?.getActiveGroup();
+    const groupId = activeGroup?.id ?? this.lastPersistedGroupId;
     const result = this.selectionController?.ungroupSelection();
     if (result) {
+      if (groupId) {
+        const operation = buildUngroupOperation(groupId, {
+          pageKey: this.computePageKey(),
+          createId: createOperationId,
+          sourceCommand: "ungroup",
+        });
+        this.recordOperations([operation]);
+        this.lastPersistedGroupId = null;
+      }
+      this.lastGroupedSelectionSnapshot = null;
       this.onDebug("ungroup", {
         memberCount: result.resolvedNodes.length,
         rejectionReason: result.rejectionReason,
@@ -1186,10 +1337,7 @@ export class EditSession implements SessionCommandHost {
       const context = this.buildCommandContext();
       const command = findCommandForKeyboardEvent(registry, event, context);
       if (command) {
-        if (
-          command.id === "saveWindow.start" &&
-          this.shouldIgnoreToolbarShortcut(event)
-        ) {
+        if (this.shouldIgnoreToolbarShortcut(event)) {
           return;
         }
         event.preventDefault();
@@ -1204,9 +1352,19 @@ export class EditSession implements SessionCommandHost {
 
       const key = event.key.toLowerCase();
       if (key === "g") {
-        if (!this.selectionController?.getSelection()) {
+        const selection = this.selectionController?.getSelection();
+        if (!selection) {
           return;
         }
+
+        if (event.shiftKey) {
+          if (!this.selectionController?.getActiveGroup()) {
+            return;
+          }
+        } else if (selection.selectedNodeIds.length < 2) {
+          return;
+        }
+
         event.preventDefault();
         event.stopPropagation();
         if (event.shiftKey) {
@@ -1231,6 +1389,13 @@ export class EditSession implements SessionCommandHost {
   }
 
   handleEscape(): boolean {
+    if (this.agentPanel?.isOpen()) {
+      this.agentPreviewController?.rejectPreview();
+      this.clearAgentSelectionOverride();
+      this.agentPanel.close();
+      return true;
+    }
+
     if (this.saveWindowController?.isActive()) {
       this.saveWindowController.cancel();
       return true;
@@ -1325,6 +1490,18 @@ export class EditSession implements SessionCommandHost {
       event.shiftKey,
       event.altKey,
     );
+    const currentSelection = this.selectionController?.getSelection();
+    if (currentSelection) {
+      this.clickSelectionSnapshot = {
+        selection: {
+          ...currentSelection,
+          selectedNodeIds: [...currentSelection.selectedNodeIds],
+        },
+        resolvedNodes: [...(this.lastSelectionResult?.resolvedNodes ?? [])],
+      };
+    } else {
+      this.clickSelectionSnapshot = null;
+    }
     this.movePending =
       !event.shiftKey &&
       !event.altKey &&
@@ -1524,30 +1701,244 @@ export class EditSession implements SessionCommandHost {
 
   private handleClickDoubleTap(
     result: SelectionResolveResult,
-    shiftKey: boolean,
+    _shiftKey: boolean,
     clientX: number,
     clientY: number,
   ): void {
-    const nodeId = result.resolvedNodes[0]?.id ?? null;
+    const clickedNodeId = result.resolvedNodes[0]?.id ?? null;
     const now = Date.now();
-    const isDoubleClick =
-      nodeId !== null &&
-      nodeId === this.lastClickNodeId &&
+    const isSameTargetDoubleClick =
+      clickedNodeId !== null &&
+      clickedNodeId === this.lastClickNodeId &&
       now - this.lastClickTime <= DOUBLE_CLICK_MS;
+    const isSameSpotDoubleClick =
+      now - this.lastClickTime <= DOUBLE_CLICK_MS &&
+      Math.abs(clientX - this.lastClickX) <= 8 &&
+      Math.abs(clientY - this.lastClickY) <= 8;
+    const isDoubleClick = isSameTargetDoubleClick || isSameSpotDoubleClick;
 
     this.lastClickTime = now;
-    this.lastClickNodeId = nodeId;
+    this.lastClickNodeId = clickedNodeId;
+    this.lastClickX = clientX;
+    this.lastClickY = clientY;
 
-    if (!isDoubleClick || result.resolvedNodes.length !== 1) {
+    if (!isDoubleClick) {
+      this.firstClickSelectionSnapshot = this.clickSelectionSnapshot;
       return;
     }
 
-    if (shiftKey) {
-      this.onDebug("agent-disabled", { reason: "shift-double-click-reserved" });
+    const agentContext = this.resolveAgentSelectionForDoubleClick(
+      clickedNodeId,
+      result,
+      clientX,
+      clientY,
+    );
+    this.firstClickSelectionSnapshot = null;
+    if (!agentContext) {
       return;
     }
 
-    this.openTextEditor(clientX, clientY);
+    this.agentSelectionOverride = agentContext.selection;
+    this.agentSelectedNodesOverride = agentContext.nodes;
+    this.reapplyAgentSelection(agentContext);
+
+    if (isLocalAgentAvailable()) {
+      this.openAgentPanel(clientX, clientY);
+    } else {
+      this.onDebug("agent-disabled", { reason: "public-build" });
+    }
+  }
+
+  private reapplyAgentSelection(agentContext: {
+    selection: EditorSelection;
+    nodes: VisualNode[];
+  }): void {
+    if (!this.selectionController) {
+      return;
+    }
+
+    const activeGroup = this.selectionController.getActiveGroup();
+    if (
+      agentContext.selection.activeGroupId &&
+      activeGroup?.id === agentContext.selection.activeGroupId
+    ) {
+      return;
+    }
+
+    if (agentContext.selection.activeGroupId) {
+      const restored = this.selectionController.restorePersistedGroup({
+        groupId: agentContext.selection.activeGroupId,
+        memberNodeIds: [...agentContext.selection.selectedNodeIds],
+        memberSignatures: agentContext.nodes.map((node) => node.signature),
+      });
+      if (restored) {
+        return;
+      }
+    }
+
+    this.selectionController.applySelectionSnapshot(
+      agentContext.selection,
+      agentContext.nodes,
+      null,
+    );
+  }
+
+  private resolveAgentSelectionForDoubleClick(
+    clickedNodeId: VisualNodeId | null,
+    result: SelectionResolveResult,
+    clientX: number,
+    clientY: number,
+  ): { selection: EditorSelection; nodes: VisualNode[] } | null {
+    const candidates = [
+      this.lastGroupedSelectionSnapshot,
+      this.firstClickSelectionSnapshot,
+      this.clickSelectionSnapshot,
+    ].filter((snapshot): snapshot is NonNullable<typeof snapshot> => snapshot !== null);
+    const snapshot = candidates
+      .filter((entry) =>
+        this.snapshotContainsAgentClickTarget(entry, clickedNodeId, result, clientX, clientY),
+      )
+      .sort(
+        (left, right) => right.selection.selectedNodeIds.length - left.selection.selectedNodeIds.length,
+      )[0];
+
+    if (
+      snapshot &&
+      (snapshot.selection.activeGroupId || snapshot.selection.selectedNodeIds.length > 1)
+    ) {
+      const selectedIds = new Set(snapshot.selection.selectedNodeIds);
+      const graph = this.cacheController?.cache.getGraph();
+      const nodes = snapshot.selection.selectedNodeIds
+        .map(
+          (nodeId) =>
+            graph?.getNodeById(nodeId) ??
+            snapshot.resolvedNodes.find((node) => node.id === nodeId),
+        )
+        .filter((node): node is VisualNode => node !== undefined);
+      const resolvedNodes =
+        nodes.length >= snapshot.selection.selectedNodeIds.length
+          ? nodes
+          : snapshot.resolvedNodes.filter((node) => selectedIds.has(node.id));
+      if (resolvedNodes.length > 0) {
+        return { selection: snapshot.selection, nodes: resolvedNodes };
+      }
+    }
+
+    const currentSelection = this.selectionController?.getSelection();
+    if (
+      clickedNodeId &&
+      currentSelection &&
+      currentSelection.selectedNodeIds.length === 1 &&
+      currentSelection.selectedNodeIds[0] === clickedNodeId
+    ) {
+      return { selection: currentSelection, nodes: result.resolvedNodes };
+    }
+
+    if (
+      clickedNodeId &&
+      currentSelection &&
+      currentSelection.selectedNodeIds.includes(clickedNodeId) &&
+      (currentSelection.activeGroupId || currentSelection.selectedNodeIds.length > 1)
+    ) {
+      const nodes = result.resolvedNodes.filter((node) =>
+        currentSelection.selectedNodeIds.includes(node.id),
+      );
+      if (nodes.length > 0) {
+        return { selection: currentSelection, nodes };
+      }
+    }
+
+    return null;
+  }
+
+  private snapshotContainsAgentClickTarget(
+    snapshot: {
+      selection: EditorSelection;
+      resolvedNodes: VisualNode[];
+    },
+    clickedNodeId: VisualNodeId | null,
+    result: SelectionResolveResult,
+    clientX: number,
+    clientY: number,
+  ): boolean {
+    if (clickedNodeId && snapshot.selection.selectedNodeIds.includes(clickedNodeId)) {
+      return true;
+    }
+
+    const clickedNode = result.resolvedNodes[0];
+    const clickedElement =
+      clickedNode?.element ??
+      (clickedNode ? matchElementBySignature(this.root, clickedNode.signature) : null);
+    if (clickedElement) {
+      for (const node of snapshot.resolvedNodes) {
+        const memberElement =
+          node.element?.isConnected === true
+            ? node.element
+            : matchElementBySignature(this.root, node.signature);
+        if (memberElement?.contains(clickedElement)) {
+          return true;
+        }
+      }
+    }
+
+    if (
+      snapshot.selection.activeGroupId ||
+      snapshot.selection.selectedNodeIds.length > 1
+    ) {
+      return snapshot.resolvedNodes.some((node) => pointInRect(clientX, clientY, node.rect));
+    }
+
+    return false;
+  }
+
+  private openAgentPanel(clientX: number, clientY: number): void {
+    if (!isLocalAgentAvailable() || !this.agentPanel || !this.agentPreviewController) {
+      return;
+    }
+
+    this.agentPanel.open({ x: clientX, y: clientY });
+    this.agentPanel.renderState(this.agentPreviewController.getState());
+  }
+
+  private buildAgentContextInput(instruction: string): AgentContextInput | null {
+    const selection =
+      this.agentSelectionOverride ?? this.selectionController?.getSelection();
+    const graph = this.cacheController?.cache.getGraph();
+    if (!selection || selection.selectedNodeIds.length === 0 || !graph) {
+      return null;
+    }
+
+    const selectedNodes =
+      this.agentSelectedNodesOverride && this.agentSelectedNodesOverride.length > 0
+        ? this.agentSelectedNodesOverride
+        : selection.selectedNodeIds
+            .map((nodeId) => graph.getNodeById(nodeId))
+            .filter((node): node is VisualNode => node !== undefined);
+
+    if (selectedNodes.length === 0) {
+      return null;
+    }
+
+    return {
+      pageKey: this.computePageKey(),
+      instruction,
+      selection: {
+        ...selection,
+        selectedNodeIds: [...selection.selectedNodeIds],
+      },
+      selectedNodes,
+      graph,
+      existingOperations: [
+        ...this.operationState.savedOperations,
+        ...this.operationState.draftOperations,
+      ],
+    };
+  }
+
+  private clearAgentSelectionOverride(): void {
+    this.agentSelectionOverride = null;
+    this.agentSelectedNodesOverride = null;
+    this.lastGroupedSelectionSnapshot = null;
   }
 
   private handlePointerCancel(event: PointerEvent): void {
@@ -1697,6 +2088,10 @@ export function createEditSession(options: EditSessionOptions): EditSession {
 
 function selectionKeyFrom(selection: EditorSelection): string {
   return `${selection.selectedNodeIds.join(",")}:${selection.activeGroupId ?? ""}`;
+}
+
+function pointInRect(x: number, y: number, rect: VisualNodeRect): boolean {
+  return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
 }
 
 function toTransformSelectionInput(

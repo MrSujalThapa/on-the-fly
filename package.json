@@ -5,8 +5,9 @@
   "description": "Local-first Chrome extension for visually editing live websites",
   "type": "module",
   "scripts": {
-    "build": "node scripts/build.mjs",
-    "build:public": "cross-env PUBLIC_AGENT_ENABLED=false PUBLIC_BACKEND_ENABLED=false node scripts/build.mjs",
+    "build": "cross-env LOCAL_DEV_AGENT_ENABLED=true LOCAL_AGENT_SERVER_URL=http://127.0.0.1:4317 node scripts/build.mjs",
+    "build:public": "cross-env PUBLIC_AGENT_ENABLED=false PUBLIC_BACKEND_ENABLED=false LOCAL_DEV_AGENT_ENABLED=false node scripts/build.mjs",
+    "dev:agent": "tsc -p agent-server/tsconfig.json && node agent-server/dist/agent-server/src/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run"
@@ -14,6 +15,7 @@
   "devDependencies": {
     "@eslint/js": "^9.28.0",
     "@types/chrome": "^0.0.323",
+    "@types/node": "^26.0.0",
     "cross-env": "^7.0.3",
     "esbuild": "^0.25.5",
     "eslint": "^9.28.0",

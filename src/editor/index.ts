@@ -37,7 +37,13 @@ export type {
   EditorOperation,
   EditorOperationType,
   GroupOperation,
+  HelperObjectBorder,
+  HelperObjectBoxShadow,
+  HelperObjectFill,
+  HelperObjectRect,
+  HelperObjectRole,
   HideOperation,
+  InsertHelperObjectOperation,
   InsertImageOperation,
   MoveOperation,
   OperationBase,
@@ -82,6 +88,11 @@ export {
   validateUnknownOperation,
   validateUnknownOperations,
 } from "./validation/validate-unknown-operation.js";
+export {
+  AGENT_OPERATION_TYPES,
+  validateAgentOperation,
+  validateAgentOperations,
+} from "./validation/validate-agent-operation.js";
 export type {
   OperationValidationFailure,
   OperationValidationResult,

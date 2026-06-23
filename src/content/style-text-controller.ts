@@ -21,6 +21,7 @@ import {
 const STYLE_CSS_MAP: Record<StyleProperty, string> = {
   color: "color",
   backgroundColor: "background-color",
+  backgroundImage: "background-image",
   borderColor: "border-color",
   borderWidth: "border-width",
   borderRadius: "border-radius",
