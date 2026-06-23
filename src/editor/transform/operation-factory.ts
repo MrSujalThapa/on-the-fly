@@ -174,20 +174,28 @@ export function buildZIndexOperation(
   layer: number,
   previousLayer: number | undefined,
   options: BuildOperationOptions,
+  liveElement?: HTMLElement,
 ): ZIndexOperation {
   const { id, createdAt } = resolveMeta(options);
   const payload: ZIndexOperation["payload"] =
     previousLayer === undefined ? { layer } : { layer, previousLayer };
+
+  const persistedTarget: EditorTarget = liveElement
+    ? { nodeId: target.nodeId, signature: buildPersistableElementSignature(liveElement) }
+    : transformTargetToEditorTarget(target);
+
   return {
     id,
     type: "zIndex",
     pageKey: options.pageKey,
-    target: transformTargetToEditorTarget(target),
+    target: persistedTarget,
     payload,
     createdAt,
     source: "manual",
     status: "draft",
-    metadata: buildMetadataFromTransformTarget(target, options.sourceCommand),
+    metadata: liveElement
+      ? buildMetadataFromElement(liveElement, persistedTarget.signature, options.sourceCommand)
+      : buildMetadataFromTransformTarget(target, options.sourceCommand),
   };
 }
 

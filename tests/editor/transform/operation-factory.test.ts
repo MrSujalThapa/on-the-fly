@@ -11,6 +11,8 @@ import {
 import type { TransformTarget } from "../../../src/editor/transform/transform-target.js";
 import { validateOperationForDom } from "../../../src/editor/validation/validate-dom-operation.js";
 import { createEmptyBoundingBoxHint } from "../../../src/editor/element-signature.js";
+import { buildPersistableElementSignature } from "../../../src/editor/measurement/signature-builder.js";
+import { createTestDocument } from "../dom/test-document.js";
 
 const PAGE_KEY = "https://example.com/";
 
@@ -85,6 +87,21 @@ describe("transform operation factory", () => {
 
     expect(op.type).toBe("zIndex");
     expect(op.payload).toEqual({ layer: 5, previousLayer: 2 });
+    expect(validateOperationForDom(op).ok).toBe(true);
+  });
+
+  it("prefers a persistable live-element signature when provided", () => {
+    const { document } = createTestDocument(`<main><div class="live">Live</div></main>`);
+    const element = document.querySelector(".live") as HTMLElement;
+    element.style.position = "absolute";
+    document.body.appendChild(element);
+
+    const op = buildZIndexOperation(makeTarget("live", "Live"), 9, 2, baseOptions, element);
+
+    expect(op.target.signature?.cssPath).not.toBe("main .live");
+    expect(op.target.signature?.cssPath).toBe(
+      buildPersistableElementSignature(element).cssPath,
+    );
     expect(validateOperationForDom(op).ok).toBe(true);
   });
 

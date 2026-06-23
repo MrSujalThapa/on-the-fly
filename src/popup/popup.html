@@ -3,34 +3,64 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
     <title>On the Fly</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <main class="popup">
-      <header class="popup-header">
-        <h1>On the Fly</h1>
-        <p class="build-mode" id="build-mode">Agent disabled</p>
-      </header>
+    <section class="extension-card" id="popup-root" data-state="inactive">
+      <div class="content">
+        <header class="top">
+          <div class="brand">
+            <div class="logo">
+              <img src="logo.png" alt="On the Fly logo" />
+            </div>
 
-      <section class="status-panel" aria-live="polite">
-        <span class="status-label">Status</span>
-        <span class="status-value" id="edit-status">Loading...</span>
-      </section>
+            <div>
+              <h1>On the Fly</h1>
+              <p class="hint">Visual page editor</p>
+              <p class="build-mode" id="build-mode" aria-live="polite">Agent disabled</p>
+            </div>
+          </div>
 
-      <button class="toggle-button" id="toggle-button" type="button" disabled>
-        Loading...
-      </button>
+          <div class="status-pill" aria-live="polite">
+            <span class="dot" aria-hidden="true"></span>
+            <span id="edit-status">Loading...</span>
+          </div>
+        </header>
 
-      <button class="link-button" id="clear-page" type="button" disabled>
-        Clear changes on this page
-      </button>
+        <div class="hero">
+          <h2 class="hero-title">Do it on the fly</h2>
+        </div>
 
-      <footer class="popup-footer">
-        <p class="diagnostics" id="diagnostics-line">Saved ops: - | Agent disabled</p>
-        <button class="link-button" id="open-options" type="button">Open settings</button>
-      </footer>
-    </main>
+        <button id="toggle-button" class="primary" type="button" disabled>
+          <span>Loading...</span>
+        </button>
+
+        <footer class="bottom">
+          <div class="small-status">
+            <span id="saved-ops-count" aria-live="polite">-</span>
+            <span class="saved-ops-label"> saved ops</span>
+            <span class="diagnostics-separator" aria-hidden="true"> · </span>
+            <span id="agent-status" aria-live="polite">Agent disabled</span>
+          </div>
+
+          <div class="actions">
+            <button id="clear-page" class="text-action" type="button" disabled>
+              Clear
+            </button>
+
+            <button id="open-options" class="icon-action" type="button" aria-label="Open settings">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M9.6 3.4 9 5.7a7.8 7.8 0 0 0-1.4.8L5.3 5.9 3.1 9.7l1.7 1.7a7.7 7.7 0 0 0 0 1.6l-1.7 1.7 2.2 3.8 2.3-.6c.4.3.9.6 1.4.8l.6 2.3H14l.6-2.3c.5-.2 1-.5 1.4-.8l2.3.6 2.2-3.8-1.7-1.7a7.7 7.7 0 0 0 0-1.6l1.7-1.7-2.2-3.8-2.3.6c-.4-.3-.9-.6-1.4-.8L14 3.4H9.6Zm2.2 5.4a3.2 3.2 0 1 1 0 6.4 3.2 3.2 0 0 1 0-6.4Z"
+                />
+              </svg>
+            </button>
+          </div>
+        </footer>
+      </div>
+    </section>
     <script type="module" src="popup.js"></script>
   </body>
 </html>

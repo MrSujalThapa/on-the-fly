@@ -1,4 +1,9 @@
 import type { EditorOperation } from "../editor/operations.js";
+import {
+  keepLatestZIndexOperations,
+  stripZIndexOperationsForTargetKeys,
+  zIndexTargetKeys,
+} from "../editor/persistence/coalesce-page-operations.js";
 import { appendOperations, removeOperationsById } from "./session-history.js";
 
 /** Saved operations loaded from IndexedDB and replayed on page load. */
@@ -130,14 +135,29 @@ export function setSavedOperations(
   };
 }
 
-export function promoteAllDraftToSaved(state: SessionOperationState): SessionOperationState {
-  const approved = state.draftOperations.map((operation) => ({
+function promoteDraftsToSavedOperations(
+  savedOperations: EditorOperation[],
+  draftOperations: EditorOperation[],
+): EditorOperation[] {
+  const approved = draftOperations.map((operation) => ({
     ...operation,
     status: "approved" as const,
   }));
+  const latestApproved = keepLatestZIndexOperations(approved);
+  const incomingZIndexKeys = zIndexTargetKeys(latestApproved);
+  const savedWithoutSupersededZIndex = stripZIndexOperationsForTargetKeys(
+    savedOperations,
+    incomingZIndexKeys,
+  );
+  return appendOperations(savedWithoutSupersededZIndex, latestApproved);
+}
 
+export function promoteAllDraftToSaved(state: SessionOperationState): SessionOperationState {
   return {
-    savedOperations: appendOperations(state.savedOperations, approved),
+    savedOperations: promoteDraftsToSavedOperations(
+      state.savedOperations,
+      state.draftOperations,
+    ),
     draftOperations: [],
     previewOperations: state.previewOperations,
   };
@@ -148,13 +168,9 @@ export function promoteDraftOperationsToSaved(
   keptDrafts: EditorOperation[],
 ): SessionOperationState {
   const keptIds = new Set(keptDrafts.map((operation) => operation.id));
-  const approved = keptDrafts.map((operation) => ({
-    ...operation,
-    status: "approved" as const,
-  }));
 
   return {
-    savedOperations: appendOperations(state.savedOperations, approved),
+    savedOperations: promoteDraftsToSavedOperations(state.savedOperations, keptDrafts),
     draftOperations: state.draftOperations.filter((operation) => !keptIds.has(operation.id)),
     previewOperations: state.previewOperations,
   };

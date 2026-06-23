@@ -57,4 +57,45 @@ describe("coalescePageOperations", () => {
     expect(result.applied).toBe(1);
     expect(result.operations).toEqual([]);
   });
+
+  it("replaces prior zIndex ops for the same target with the latest incoming op", () => {
+    const target = {
+      nodeId: "box-a",
+      signature: {
+        cssPath: "main .box-a",
+        tagName: "div",
+        classList: ["box-a"],
+        boundingBoxHint: createEmptyBoundingBoxHint(),
+      },
+    };
+    const existing = [
+      {
+        id: "z-old",
+        type: "zIndex" as const,
+        pageKey: PAGE_KEY,
+        target,
+        payload: { layer: 0, previousLayer: 1 },
+        createdAt: 1,
+        source: "manual" as const,
+        status: "approved" as const,
+      },
+    ];
+    const incoming = [
+      {
+        id: "z-new",
+        type: "zIndex" as const,
+        pageKey: PAGE_KEY,
+        target,
+        payload: { layer: 2_147_483_000, previousLayer: 0 },
+        createdAt: 2,
+        source: "manual" as const,
+        status: "approved" as const,
+      },
+    ];
+
+    const result = coalescePageOperations(existing, incoming);
+
+    expect(result.applied).toBe(1);
+    expect(result.operations.map((operation) => operation.id)).toEqual(["z-new"]);
+  });
 });
