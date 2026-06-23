@@ -4,6 +4,7 @@ import {
   OTF_MESSAGE,
   OTF_STORAGE_MESSAGE,
   parseEditModeResponse,
+  parseUnsavedStateResponse,
   type PageStateResponse,
 } from "../shared/messages.js";
 import { parseSettingsResponse } from "../shared/settings.js";
@@ -11,6 +12,7 @@ import { isRestrictedUrl } from "../shared/restricted-url.js";
 import {
   formatAgentStatus,
   formatSavedOpsDisplayCount,
+  formatUnsavedStatus,
 } from "./popup-view.js";
 
 const popupRoot = document.querySelector<HTMLElement>("#popup-root");
@@ -20,6 +22,7 @@ const toggleButton = document.querySelector<HTMLButtonElement>("#toggle-button")
 const toggleButtonLabel = toggleButton?.querySelector("span");
 const clearPageButton = document.querySelector<HTMLButtonElement>("#clear-page");
 const savedOpsCountEl = document.querySelector<HTMLElement>("#saved-ops-count");
+const unsavedStatusEl = document.querySelector<HTMLElement>("#unsaved-status");
 const agentStatusEl = document.querySelector<HTMLElement>("#agent-status");
 const openOptionsButton = document.querySelector<HTMLButtonElement>("#open-options");
 
@@ -27,6 +30,7 @@ let activeTabId: number | undefined;
 let currentStatus: EditModeStatus = "inactive";
 let isBusy = false;
 let pageOperationCount: number | null = null;
+let unsavedChangeCount: number | null = null;
 
 function setBuildModeLabel(): void {
   if (!buildModeEl) {
@@ -71,6 +75,12 @@ function renderUi(): void {
 
   if (savedOpsCountEl) {
     savedOpsCountEl.textContent = formatSavedOpsDisplayCount(pageOperationCount);
+  }
+
+  if (unsavedStatusEl) {
+    const unsavedLabel = formatUnsavedStatus(unsavedChangeCount, currentStatus === "active");
+    unsavedStatusEl.textContent = unsavedLabel;
+    unsavedStatusEl.hidden = unsavedLabel.length === 0;
   }
 
   if (clearPageButton) {
@@ -123,6 +133,28 @@ async function loadPageOperationCount(): Promise<number | null> {
 
     if (response.ok && typeof response.operationCount === "number") {
       return response.operationCount;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+async function loadUnsavedState(): Promise<number | null> {
+  if (activeTabId === undefined || currentStatus !== "active") {
+    return null;
+  }
+
+  try {
+    const response = parseUnsavedStateResponse(
+      await chrome.tabs.sendMessage(activeTabId, {
+        type: OTF_MESSAGE.GET_UNSAVED_STATE,
+      }),
+    );
+
+    if (response.ok) {
+      return response.unsavedCount;
     }
   } catch {
     return null;
@@ -185,6 +217,7 @@ async function refreshEditModeState(): Promise<void> {
 
     currentStatus = response.status;
     pageOperationCount = await loadPageOperationCount();
+    unsavedChangeCount = await loadUnsavedState();
     renderUi();
     void loadSettingsSummary();
   } catch {
@@ -215,6 +248,8 @@ async function setEditMode(enabled: boolean): Promise<void> {
     currentStatus = "unavailable";
   } finally {
     isBusy = false;
+    pageOperationCount = await loadPageOperationCount();
+    unsavedChangeCount = await loadUnsavedState();
     renderUi();
   }
 }
@@ -244,6 +279,7 @@ async function clearCurrentPage(): Promise<void> {
       type: OTF_MESSAGE.CLEAR_PAGE_REQUEST,
     });
     pageOperationCount = await loadPageOperationCount();
+    unsavedChangeCount = 0;
     void loadSettingsSummary();
   } catch {
     // Content script may be unavailable; storage stays intact.

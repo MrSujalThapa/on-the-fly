@@ -150,6 +150,22 @@ input[type="text"] {
   color: #dc2626;
 }
 
+.privacy-copy {
+  display: grid;
+  gap: 12px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.privacy-copy p {
+  margin: 0;
+}
+
+.privacy-copy code {
+  font-size: 13px;
+}
+
 .diagnostics {
   display: grid;
   grid-template-columns: 160px 1fr;

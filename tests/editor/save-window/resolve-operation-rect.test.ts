@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createTestDocument } from "../dom/test-document.js";
 import { layoutElement } from "../measurement/layout-helpers.js";
 import { resolveOperationAffectedRect } from "../../../src/editor/save-window/resolve-operation-rect.js";
-import { createHideOperation, createStyleOperation, PAGE_KEY } from "../fixtures.js";
+import { createHideOperation, createInsertHelperObjectOperation, createStyleOperation, PAGE_KEY } from "../fixtures.js";
 import type { DuplicateOperation } from "../../../src/editor/operations.js";
 
 describe("resolve operation affected rect", () => {
@@ -82,5 +82,20 @@ describe("resolve operation affected rect", () => {
 
     const result = resolveOperationAffectedRect(document, operation);
     expect(result.rect).toEqual({ x: 40, y: 60, width: 120, height: 24 });
+  });
+
+  it("uses helper payload rect for insertHelperObject operations", () => {
+    const { document } = createTestDocument(`<main></main>`);
+    const operation = createInsertHelperObjectOperation({
+      payload: {
+        ...createInsertHelperObjectOperation().payload,
+        rect: { x: 10, y: 40, width: 140, height: 80 },
+      },
+    });
+
+    const result = resolveOperationAffectedRect(document, operation);
+    expect(result.reason).toBe("insert_helper_payload");
+    expect(result.rect).toEqual({ x: 10, y: 40, width: 140, height: 80 });
+    expect(result.unresolved).toBe(false);
   });
 });

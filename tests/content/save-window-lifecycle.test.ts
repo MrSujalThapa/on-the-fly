@@ -201,7 +201,7 @@ describe("save window lifecycle", () => {
     shell.unmount();
   });
 
-  it("ignores the S shortcut while typing", async () => {
+  it("ignores the S shortcut while typing in a page input", async () => {
     const doc = globalThis.document;
     const win = globalThis.window;
     doc.body.innerHTML = `<main><input class="name" value="Ada" /><p id="copy">Hello</p></main>`;
@@ -227,6 +227,38 @@ describe("save window lifecycle", () => {
     );
 
     expect(session.isSaveWindowActive()).toBe(false);
+    expect(session.hasUnsavedChanges()).toBe(true);
+
+    session.stop();
+    shell.unmount();
+  });
+
+  it("starts save window with plain S", async () => {
+    const doc = globalThis.document;
+    const win = globalThis.window;
+    doc.body.innerHTML = `<main><p id="copy">Hello</p></main>`;
+    const copy = doc.querySelector("#copy") as HTMLElement;
+    layoutElement(copy, { x: 10, y: 10, width: 120, height: 24 });
+    doc.elementsFromPoint = () => [copy, doc.body, doc.documentElement];
+
+    const shell = new EditorShell();
+    shell.mount({ onDeactivate: () => undefined });
+    const session = createEditSession({ shell, root: doc, pageCustomization: new PageCustomizationController(doc) });
+    await session.start();
+
+    dispatchPointer(win, copy, "pointerdown", { clientX: 15, clientY: 15, buttons: 1 });
+    dispatchPointer(win, copy, "pointerup", { clientX: 15, clientY: 15, buttons: 0 });
+    session.applyStyle("color", "rgb(255, 0, 0)");
+
+    win.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "s",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+    expect(session.isSaveWindowActive()).toBe(true);
 
     session.stop();
     shell.unmount();

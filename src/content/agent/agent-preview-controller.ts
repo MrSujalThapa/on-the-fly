@@ -9,7 +9,6 @@ import type { OperationBatchSnapshot } from "../../editor/dom/operation-batch-sn
 import {
   appendPreviewOperations,
   clearPreviewOperations,
-  promoteAllDraftToSaved,
   promotePreviewOperationsToDraft,
   type SessionOperationState,
 } from "../session-operation-state.js";
@@ -49,7 +48,6 @@ export interface AgentPreviewControllerOptions {
   getContextInput: (instruction: string) => AgentContextInput | null;
   getOperationState: () => SessionOperationState;
   setOperationState: (state: SessionOperationState) => void;
-  syncSavedOperationsToStorage: () => Promise<void>;
   onStateChange?: (state: AgentPreviewState) => void;
   onDebug?: (message: string, data?: unknown) => void;
 }
@@ -66,7 +64,6 @@ export class AgentPreviewController {
   private readonly getContextInput: (instruction: string) => AgentContextInput | null;
   private readonly getOperationState: () => SessionOperationState;
   private readonly setOperationState: (state: SessionOperationState) => void;
-  private readonly syncSavedOperationsToStorage: () => Promise<void>;
   private readonly onStateChange: (state: AgentPreviewState) => void;
   private readonly onDebug: (message: string, data?: unknown) => void;
   private previewSnapshot: OperationBatchSnapshot | null = null;
@@ -80,7 +77,6 @@ export class AgentPreviewController {
     this.getContextInput = options.getContextInput;
     this.getOperationState = options.getOperationState;
     this.setOperationState = options.setOperationState;
-    this.syncSavedOperationsToStorage = options.syncSavedOperationsToStorage;
     this.onStateChange = options.onStateChange ?? (() => undefined);
     this.onDebug = options.onDebug ?? (() => undefined);
   }
@@ -259,28 +255,26 @@ export class AgentPreviewController {
     this.onDebug("agent-preview-rejected");
   }
 
-  async approvePreview(): Promise<boolean> {
+  approvePreview(): boolean {
     const current = this.getOperationState();
     if (current.previewOperations.length === 0) {
       return false;
     }
 
-    let nextState = promotePreviewOperationsToDraft(current);
-    nextState = promoteAllDraftToSaved(nextState);
+    const nextState = promotePreviewOperationsToDraft(current);
     this.setOperationState(nextState);
     this.previewSnapshot = null;
-    await this.syncSavedOperationsToStorage();
 
     this.setPreviewState({
       status: "idle",
-      summary: ["Preview approved and saved locally."],
+      summary: ["Preview approved into session. Use Save to persist."],
       warnings: [],
       criticWarnings: [],
       validationErrors: [],
       lastInstruction: this.previewState.lastInstruction,
     });
     this.onDebug("agent-preview-approved", {
-      savedCount: nextState.savedOperations.length,
+      draftCount: nextState.draftOperations.length,
     });
     return true;
   }

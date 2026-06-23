@@ -2,10 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentPreviewController, type AgentPreviewState } from "../../../src/content/agent/agent-preview-controller.js";
 import { DomRuntimeAdapter } from "../../../src/editor/dom/dom-runtime-adapter.js";
 import {
+  appendDraftOperations,
   appendPreviewOperations,
   createSessionOperationState,
+  promoteAllDraftToSaved,
+  promoteDraftOperationsToSaved,
   type SessionOperationState,
 } from "../../../src/content/session-operation-state.js";
+import type { EditorOperation } from "../../../src/editor/operations.js";
 import { createTestDocument } from "../../editor/dom/test-document.js";
 import {
   createInsertHelperObjectOperation,
@@ -64,9 +68,42 @@ describe("AgentPreviewController", () => {
   let documentRef: Document;
   let adapter: DomRuntimeAdapter;
   let operationState: SessionOperationState;
-  let syncSaved: ReturnType<typeof vi.fn>;
   let controller: AgentPreviewController;
   let contextInput: AgentContextInput;
+
+  function createPreviewHelperOp(id = "preview-helper") {
+    return createInsertHelperObjectOperation({
+      id,
+      source: "agent",
+      status: "preview",
+      payload: {
+        ...createInsertHelperObjectOperation().payload,
+        rect: { x: 0, y: 0, width: 140, height: 80 },
+        zIndex: 1,
+      },
+    });
+  }
+
+  async function requestPreviewWithOp(id = "preview-helper") {
+    sendAgentEditRequestMock.mockResolvedValue({
+      ok: true,
+      response: createMockResponse([createPreviewHelperOp(id)]),
+    });
+    return controller.requestPreview("Add background panel");
+  }
+
+  function simulateRefresh(state: SessionOperationState): {
+    state: SessionOperationState;
+    adapter: DomRuntimeAdapter;
+    document: Document;
+  } {
+    const { document, root } = createTestDocument(`<main><p id="copy">Hello</p></main>`);
+    const adapter = new DomRuntimeAdapter(document);
+    const refreshedState = createSessionOperationState(state.savedOperations);
+    adapter.replayOperations(refreshedState.savedOperations);
+    void root;
+    return { state: refreshedState, adapter, document };
+  }
 
   beforeEach(() => {
     sendAgentEditRequestMock.mockReset();
@@ -77,7 +114,6 @@ describe("AgentPreviewController", () => {
     operationState = createSessionOperationState([
       createStyleOperation({ id: "saved-1", status: "approved" }),
     ]);
-    syncSaved = vi.fn(() => Promise.resolve());
 
     const copy = root.querySelector("#copy") as HTMLElement;
     contextInput = {
@@ -110,90 +146,119 @@ describe("AgentPreviewController", () => {
       setOperationState: (state) => {
         operationState = state;
       },
-      syncSavedOperationsToStorage: syncSaved,
     });
   });
 
   it("applies preview operations without saving", async () => {
-    const previewOp = createInsertHelperObjectOperation({
-      id: "preview-helper",
-      source: "agent",
-      status: "preview",
-      payload: {
-        ...createInsertHelperObjectOperation().payload,
-        rect: { x: 0, y: 0, width: 140, height: 80 },
-        zIndex: 1,
-      },
-    });
-    sendAgentEditRequestMock.mockResolvedValue({
-      ok: true,
-      response: createMockResponse([previewOp]),
-    });
+    await requestPreviewWithOp();
 
-    const applied = await controller.requestPreview("Add background panel");
-    expect(applied).toBe(true);
     expect(operationState.previewOperations.map((operation) => operation.id)).toEqual([
       "preview-helper",
     ]);
     expect(operationState.savedOperations.map((operation) => operation.id)).toEqual(["saved-1"]);
-    expect(syncSaved).not.toHaveBeenCalled();
+    expect(operationState.draftOperations).toHaveLength(0);
     expect(documentRef.querySelector(`[${OTF_HELPER_ATTR}]`)).not.toBeNull();
   });
 
-  it("reverts preview on reject", async () => {
-    const previewOp = createInsertHelperObjectOperation({
-      id: "preview-helper",
-      source: "agent",
-      status: "preview",
-      payload: {
-        ...createInsertHelperObjectOperation().payload,
-        rect: { x: 0, y: 0, width: 140, height: 80 },
-        zIndex: 1,
-      },
-    });
-    sendAgentEditRequestMock.mockResolvedValue({
-      ok: true,
-      response: createMockResponse([previewOp]),
-    });
-
-    await controller.requestPreview("Add background panel");
+  it("reverts preview on reject without saving", async () => {
+    await requestPreviewWithOp();
     expect(documentRef.querySelector(`[${OTF_HELPER_ATTR}]`)).not.toBeNull();
 
     controller.rejectPreview();
 
     expect(operationState.previewOperations).toHaveLength(0);
+    expect(operationState.draftOperations).toHaveLength(0);
+    expect(operationState.savedOperations.map((operation) => operation.id)).toEqual(["saved-1"]);
     expect(documentRef.querySelector(`[${OTF_HELPER_ATTR}]`)).toBeNull();
   });
 
-  it("saves only approved preview operations", async () => {
-    const previewOp = createInsertHelperObjectOperation({
-      id: "preview-helper",
-      source: "agent",
-      status: "preview",
-      payload: {
-        ...createInsertHelperObjectOperation().payload,
-        rect: { x: 0, y: 0, width: 140, height: 80 },
-        zIndex: 1,
-      },
-    });
-    sendAgentEditRequestMock.mockResolvedValue({
-      ok: true,
-      response: createMockResponse([previewOp]),
-    });
-
-    await controller.requestPreview("Add background panel");
-    const approved = await controller.approvePreview();
+  it("promotes approved preview to draft without persisting", async () => {
+    await requestPreviewWithOp();
+    const approved = controller.approvePreview();
 
     expect(approved).toBe(true);
     expect(operationState.previewOperations).toHaveLength(0);
-    expect(operationState.savedOperations.map((operation) => operation.id)).toEqual([
+    expect(operationState.draftOperations.map((operation) => operation.id)).toEqual([
+      "preview-helper",
+    ]);
+    expect(operationState.draftOperations.every((operation) => operation.status === "draft")).toBe(
+      true,
+    );
+    expect(operationState.savedOperations.map((operation) => operation.id)).toEqual(["saved-1"]);
+    expect(documentRef.querySelector(`[${OTF_HELPER_ATTR}]`)).not.toBeNull();
+  });
+
+  it("loses approved changes on refresh before explicit save", async () => {
+    await requestPreviewWithOp();
+    controller.approvePreview();
+
+    const refreshed = simulateRefresh(operationState);
+
+    expect(refreshed.state.draftOperations).toHaveLength(0);
+    expect(refreshed.state.savedOperations.map((operation) => operation.id)).toEqual(["saved-1"]);
+    expect(refreshed.document.querySelector(`[${OTF_HELPER_ATTR}]`)).toBeNull();
+  });
+
+  it("persists approved changes after explicit save and refresh", async () => {
+    await requestPreviewWithOp();
+    controller.approvePreview();
+
+    operationState = promoteAllDraftToSaved(operationState);
+    const refreshed = simulateRefresh(operationState);
+
+    expect(refreshed.state.savedOperations.map((operation) => operation.id)).toEqual([
       "saved-1",
       "preview-helper",
     ]);
-    expect(operationState.savedOperations.every((operation) => operation.status === "approved")).toBe(
-      true,
-    );
+    expect(refreshed.document.querySelector(`[${OTF_HELPER_ATTR}]`)).not.toBeNull();
+  });
+
+  it("persists scoped approved changes after save window promotion", async () => {
+    await requestPreviewWithOp("scoped-helper");
+    controller.approvePreview();
+    operationState = appendDraftOperations(operationState, [
+      createStyleOperation({ id: "manual-draft", status: "draft" }),
+    ]);
+
+    const kept = operationState.draftOperations.filter((operation) => operation.id === "scoped-helper");
+    operationState = promoteDraftOperationsToSaved(operationState, kept);
+
+    expect(operationState.savedOperations.map((operation) => operation.id)).toEqual([
+      "saved-1",
+      "scoped-helper",
+    ]);
+    expect(operationState.draftOperations.map((operation) => operation.id)).toEqual(["manual-draft"]);
+
+    const refreshed = simulateRefresh(operationState);
+
+    expect(refreshed.state.savedOperations.map((operation) => operation.id)).toEqual([
+      "saved-1",
+      "scoped-helper",
+    ]);
+    expect(refreshed.state.draftOperations).toHaveLength(0);
+    expect(refreshed.document.querySelector(`[${OTF_HELPER_ATTR}]`)).not.toBeNull();
+  });
+
+  it("only writes to storage through explicit save actions", async () => {
+    const syncSaved = vi.fn(() => Promise.resolve());
+    let persistedSaved: EditorOperation[] = operationState.savedOperations;
+
+    const persistSaved = async () => {
+      operationState = promoteAllDraftToSaved(operationState);
+      persistedSaved = [...operationState.savedOperations];
+      await syncSaved();
+    };
+
+    await requestPreviewWithOp();
+    expect(syncSaved).not.toHaveBeenCalled();
+
+    controller.approvePreview();
+    expect(syncSaved).not.toHaveBeenCalled();
+    expect(persistedSaved.map((operation) => operation.id)).toEqual(["saved-1"]);
+
+    await persistSaved();
     expect(syncSaved).toHaveBeenCalledTimes(1);
+    expect(persistedSaved.map((operation) => operation.id)).toEqual(["saved-1", "preview-helper"]);
   });
 
   it("clears previous preview before refine", async () => {
@@ -382,11 +447,12 @@ describe("AgentPreviewController", () => {
     expect(applied).toBe(true);
     expect(controller.getState().criticWarnings.length).toBeGreaterThan(0);
 
-    const approved = await controller.approvePreview();
+    const approved = controller.approvePreview();
     expect(approved).toBe(true);
-    expect(operationState.savedOperations.map((operation) => operation.id)).toContain(
+    expect(operationState.draftOperations.map((operation) => operation.id)).toContain(
       "warning-helper",
     );
+    expect(operationState.savedOperations.map((operation) => operation.id)).toEqual(["saved-1"]);
   });
 
   it("normalizes helper operations missing targets before preview apply", async () => {
@@ -456,7 +522,6 @@ describe("AgentPreviewController", () => {
       setOperationState: (state) => {
         operationState = state;
       },
-      syncSavedOperationsToStorage: syncSaved,
       onStateChange,
     });
 
@@ -466,7 +531,7 @@ describe("AgentPreviewController", () => {
     await vi.advanceTimersByTimeAsync(8_000);
     expect(controller.getState().loadingSlowHint).toBe(true);
     expect(onStateChange.mock.calls.some(
-      (call: [AgentPreviewState]) => call[0].loadingSlowHint === true,
+      (call) => (call[0] as AgentPreviewState).loadingSlowHint === true,
     )).toBe(true);
 
     deferred.resolve({
@@ -503,7 +568,6 @@ describe("AgentPreviewController", () => {
       setOperationState: (state) => {
         operationState = state;
       },
-      syncSavedOperationsToStorage: syncSaved,
       onDebug,
     });
 

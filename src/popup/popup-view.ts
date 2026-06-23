@@ -10,6 +10,13 @@ export function formatSavedOpsDisplayCount(count: number | null): string {
   return count === null ? "-" : String(count);
 }
 
+export function formatUnsavedStatus(count: number | null, editModeActive: boolean): string {
+  if (!editModeActive || count === null || count === 0) {
+    return "";
+  }
+  return `${String(count)} unsaved`;
+}
+
 export function formatPopupDiagnostics(options: {
   operationCount: number | null;
   agentEnabled: boolean;

@@ -656,7 +656,7 @@ function resolveAgentStatusMessage(state: AgentPreviewState): string {
     if (state.criticWarnings.length > 0) {
       return "Preview ready with warnings. Review checks, then approve or reject.";
     }
-    return "Preview ready. Approve to save or reject to revert.";
+    return "Preview ready. Approve to add to session (Save to persist) or reject to revert.";
   }
 
   if (state.status === "error") {

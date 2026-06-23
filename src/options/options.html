@@ -49,6 +49,33 @@
         </div>
       </section>
 
+      <section class="panel privacy-panel" aria-labelledby="privacy-heading">
+        <h2 id="privacy-heading">Privacy</h2>
+        <div class="privacy-copy">
+          <p>
+            On the Fly stores your edits locally in this browser only. Saved changes live in
+            extension-owned IndexedDB and lightweight settings in <code>chrome.storage.local</code>.
+            Nothing is sent to a hosted backend, cloud account, or analytics service.
+          </p>
+          <p>
+            The published extension does not call AI services or make network requests for editing.
+            Manual editing works fully offline after install.
+          </p>
+          <p>
+            Edits you make in a session are unsaved until you click <strong>Save all</strong> in the
+            editor or press <strong>S and drag</strong> a region to save intersecting changes.
+            Refresh or restart replays only saved operations.
+            <strong>Clear page</strong> removes saved and unsaved changes for the current page and
+            reloads to restore the original site.
+          </p>
+          <p>
+            Use <strong>Export backup</strong> and <strong>Import backup</strong> below to copy
+            your local data to a JSON file on your device. Uninstalling the extension or clearing
+            browser extension data removes stored edits unless you exported a backup first.
+          </p>
+        </div>
+      </section>
+
       <section class="panel" aria-labelledby="data-heading">
         <h2 id="data-heading">Local data</h2>
         <p class="field-hint">

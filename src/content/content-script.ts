@@ -1,6 +1,7 @@
 import {
   isClearPageRequestMessage,
   isEditModeChangedMessage,
+  isGetUnsavedStateMessage,
   OTF_MESSAGE,
   parseEditModeResponse,
 } from "../shared/messages.js";
@@ -74,6 +75,15 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
         sendResponse({ ok: false, error: "clear_failed" });
       },
     );
+    return true;
+  }
+
+  if (isGetUnsavedStateMessage(message)) {
+    sendResponse({
+      ok: true,
+      hasUnsavedChanges: editSession?.hasUnsavedChanges() ?? false,
+      unsavedCount: editSession?.getUnsavedChangeCount() ?? 0,
+    });
     return true;
   }
 

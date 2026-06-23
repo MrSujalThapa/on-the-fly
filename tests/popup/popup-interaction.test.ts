@@ -26,17 +26,24 @@ async function flushPopupInit(): Promise<void> {
 
 describe("popup interactions", () => {
   beforeEach(() => {
+    let editModeEnabled = false;
+
     vi.stubGlobal("chrome", {
       runtime: {
         sendMessage: vi.fn((message: { type: string; tabId?: number; enabled?: boolean }) => {
           if (message.type === OTF_MESSAGE.GET_EDIT_MODE) {
-            return Promise.resolve({ ok: true, enabled: false, status: "inactive" });
-          }
-          if (message.type === OTF_MESSAGE.SET_EDIT_MODE) {
             return Promise.resolve({
               ok: true,
-              enabled: message.enabled === true,
-              status: message.enabled ? "active" : "inactive",
+              enabled: editModeEnabled,
+              status: editModeEnabled ? "active" : "inactive",
+            });
+          }
+          if (message.type === OTF_MESSAGE.SET_EDIT_MODE) {
+            editModeEnabled = message.enabled === true;
+            return Promise.resolve({
+              ok: true,
+              enabled: editModeEnabled,
+              status: editModeEnabled ? "active" : "inactive",
             });
           }
           if (message.type === OTF_MESSAGE.GET_SETTINGS) {
@@ -55,7 +62,12 @@ describe("popup interactions", () => {
       },
       tabs: {
         query: vi.fn(() => Promise.resolve([{ id: 42, url: "https://example.com/page" }])),
-        sendMessage: vi.fn(() => Promise.resolve()),
+        sendMessage: vi.fn((tabId: number, message: { type: string }) => {
+          if (message.type === OTF_MESSAGE.GET_UNSAVED_STATE) {
+            return Promise.resolve({ ok: true, hasUnsavedChanges: false, unsavedCount: 0 });
+          }
+          return Promise.resolve({ ok: true });
+        }),
       },
     });
   });
@@ -71,12 +83,16 @@ describe("popup interactions", () => {
 
     await import("../../src/popup/popup.js");
     await flushPopupInit();
+    await flushPopupInit();
+    await flushPopupInit();
 
     const toggleButton = document.querySelector<HTMLButtonElement>("#toggle-button");
     expect(toggleButton?.disabled).toBe(false);
     expect(toggleButton?.querySelector("span")?.textContent).toBe("Enable editor");
 
     toggleButton?.click();
+    await flushPopupInit();
+    await flushPopupInit();
     await flushPopupInit();
 
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(

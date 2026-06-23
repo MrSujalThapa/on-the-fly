@@ -75,6 +75,8 @@ async function build() {
       "http://127.0.0.1/*",
       "http://localhost/*",
     ];
+  } else {
+    delete manifest.host_permissions;
   }
   writeFileSync(join(distDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 

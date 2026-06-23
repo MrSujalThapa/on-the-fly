@@ -49,6 +49,15 @@ export function resolveOperationAffectedRect(
     };
   }
 
+  if (operation.type === "insertHelperObject") {
+    const { x, y, width, height } = operation.payload.rect;
+    return {
+      rect: { x, y, width, height },
+      unresolved: false,
+      reason: "insert_helper_payload",
+    };
+  }
+
   if (operation.type === "duplicate") {
     const clone = resolveDuplicateClone(root, operation.payload.cloneId);
     if (clone) {

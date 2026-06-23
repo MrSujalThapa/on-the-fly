@@ -9,6 +9,7 @@ import { createSessionOperationState } from "../../src/content/session-operation
 import { createSessionHistory } from "../../src/content/session-history.js";
 import { layoutElement } from "../editor/measurement/layout-helpers.js";
 import { createStyleOperation } from "../editor/fixtures.js";
+import type { EditorOperation } from "../../src/editor/operations.js";
 import { createTestDocument } from "../editor/dom/test-document.js";
 import * as storageClient from "../../src/content/storage-client.js";
 
@@ -123,10 +124,79 @@ describe("draft persistence", () => {
 
     const saveButton = shell.getShadowRoot()?.querySelector(".otf-save-button") as HTMLButtonElement;
     expect(saveButton.hidden).toBe(false);
-    expect(saveButton.textContent).toContain("unsaved");
+    expect(saveButton.textContent).toContain("Save all");
 
     session.stop();
     shell.unmount();
+  });
+
+  it("loses manual edits on refresh simulation without save", async () => {
+    const doc = globalThis.document;
+    const win = globalThis.window;
+    doc.body.innerHTML = `<main><p id="copy">Hello</p></main>`;
+    const copy = doc.querySelector("#copy") as HTMLElement;
+    layoutElement(copy, { x: 10, y: 10, width: 120, height: 24 });
+    doc.elementsFromPoint = () => [copy, doc.body, doc.documentElement];
+
+    vi.spyOn(storageClient, "loadPageOperations").mockResolvedValue([]);
+
+    const shell = new EditorShell();
+    shell.mount({ onDeactivate: () => undefined });
+    const pageCustomization = createTestPageCustomization(doc);
+    const session = createEditSession({ shell, root: doc, pageCustomization });
+    await session.start();
+
+    dispatchPointer(win, copy, "pointerdown", { clientX: 15, clientY: 15, buttons: 1 });
+    dispatchPointer(win, copy, "pointerup", { clientX: 15, clientY: 15, buttons: 0 });
+    session.applyStyle("color", "rgb(255, 0, 0)");
+    expect(copy.style.color).toBe("rgb(255, 0, 0)");
+    expect(session.hasUnsavedChanges()).toBe(true);
+
+    session.stop();
+    shell.unmount();
+
+    copy.style.removeProperty("color");
+    await pageCustomization.ensureReplayed();
+
+    expect(copy.style.color).toBe("");
+  });
+
+  it("replays manual edits after save and refresh simulation", async () => {
+    const doc = globalThis.document;
+    const win = globalThis.window;
+    doc.body.innerHTML = `<main><p id="copy">Hello</p></main>`;
+    const copy = doc.querySelector("#copy") as HTMLElement;
+    layoutElement(copy, { x: 10, y: 10, width: 120, height: 24 });
+    doc.elementsFromPoint = () => [copy, doc.body, doc.documentElement];
+
+    let persistedOps: EditorOperation[] = [];
+    vi.spyOn(storageClient, "replacePageOperations").mockImplementation((_pageKey, operations) => {
+      persistedOps = [...operations];
+      return Promise.resolve({ ok: true });
+    });
+    vi.spyOn(storageClient, "loadPageOperations").mockImplementation((): Promise<EditorOperation[]> =>
+      Promise.resolve(persistedOps),
+    );
+
+    const shell = new EditorShell();
+    shell.mount({ onDeactivate: () => undefined });
+    const pageCustomization = createTestPageCustomization(doc);
+    const session = createEditSession({ shell, root: doc, pageCustomization });
+    await session.start();
+
+    dispatchPointer(win, copy, "pointerdown", { clientX: 15, clientY: 15, buttons: 1 });
+    dispatchPointer(win, copy, "pointerup", { clientX: 15, clientY: 15, buttons: 0 });
+    session.applyStyle("color", "rgb(0, 128, 0)");
+    await session.saveAll();
+
+    session.stop();
+    shell.unmount();
+
+    copy.style.removeProperty("color");
+    const replayController = new PageCustomizationController(doc);
+    await replayController.ensureReplayed();
+
+    expect(copy.style.color).toBe("rgb(0, 128, 0)");
   });
 
   it("persists draft operations on explicit save", async () => {
