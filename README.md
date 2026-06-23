@@ -2,6 +2,15 @@
 
 is a tool used to turn any live or internal website into a figma style sandbox. Select real page elements, move, resize, restyle, edit text, layer objects, and keep changes persistant in your browser, no hosted backend or account required.
 
+**On the Fly Core** is open source under the [Apache License 2.0](./LICENSE). You can use, fork, inspect, and contribute to the core extension and editor. A separate commercial or enterprise product may be offered later (hosted sync, teams, admin controls, SSO, audit logs, managed AI, enterprise deployment, support). That code is not in this repository.
+
+## Community
+
+- [Contributing](./CONTRIBUTING.md) — setup, workflow, and PR expectations
+- [Code of Conduct](./CODE_OF_CONDUCT.md)
+- [Security](./SECURITY.md) — report vulnerabilities privately
+- [License](./LICENSE) — Apache-2.0
+
 ## What it does
 
 - Turn any normal webpage into a lightweight visual editor sandbox
@@ -80,6 +89,7 @@ The optional agent workflow is for local development only. It is not required to
 cp agent-server/.env.example agent-server/.env
 ```
 
+This runs the public build, verification checks, and packages `release/on-the-fly-v<version>.zip`. Maintainers can follow [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) before tagging a release.
 2. Add your own API key to `agent-server/.env`.
 
 3. Start the local agent development mode:
@@ -127,4 +137,7 @@ npm test
 
 For changes that affect extension behavior, include a short summary of what changed, what was tested, and any remaining risks.
 
+On the Fly Core is licensed under the [Apache License, Version 2.0](./LICENSE) (SPDX: `Apache-2.0`).
+
+Copyright © Sujal Thapa
 Please do not commit API keys, `.env` files, local planning docs, build artifacts, or generated release zip files.
