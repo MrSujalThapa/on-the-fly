@@ -1,6 +1,6 @@
 # On the Fly
 
-On the Fly is a local-first Chrome extension for visually editing live websites. Select real page elements, move, resize, restyle, edit text, layer objects, and keep changes in your browser—no hosted backend or account required.
+is a tool used to turn any live or internal website into a figma style sandbox. Select real page elements, move, resize, restyle, edit text, layer objects, and keep changes persistant in your browser, no hosted backend or account required.
 
 **On the Fly Core** is open source under the [Apache License 2.0](./LICENSE). You can use, fork, inspect, and contribute to the core extension and editor. A separate commercial or enterprise product may be offered later (hosted sync, teams, admin controls, SSO, audit logs, managed AI, enterprise deployment, support). That code is not in this repository.
 
@@ -14,12 +14,14 @@ On the Fly is a local-first Chrome extension for visually editing live websites.
 ## What it does
 
 - Turn any normal webpage into a lightweight visual editor sandbox
-- Select elements with click; multi-select with Shift+click
-- Move, resize, rotate, crop, hide, and restyle selections
+- Select elements with click; multi-select with Shift+click, group elements
+- Move, resize, rotate, duplicated, and delete elements
+- Crop, hide, layer, and restyle selections using the toolbar
 - Edit text while preserving page formatting where possible
 - Undo/redo with Ctrl/Cmd+Z and Ctrl/Cmd+Y
 - Toggle **Interact mode** (`I`) so site navbars, drawers, and buttons work normally
 - **Clear page** to remove all saved and unsaved edits for the current page
+- Call an AI agent on a specific element/section to make changes 
 
 ## Install (development / unpacked)
 
@@ -34,11 +36,12 @@ For day-to-day local development with the optional AI agent, use `npm run build`
 
 1. Open any normal https page.
 2. Click the extension icon and choose **Enable editor**.
-3. Click elements to select them. Double-click a selection to open the compact toolbar.
+3. Click elements to select them. Press t to open the compact toolbar.
 4. Make changes—they stay in the current session as **unsaved** drafts until you save.
 5. Click **Save all** in the editor overlay to persist every unsaved change, or press **`S` and drag** a region to save only edits inside that area.
 6. Refresh or restart the browser—only **saved** changes replay automatically.
 7. Use **Clear** in the popup or toolbar to remove all saved and unsaved changes and reload the page.
+8. double click a section/group/element to call an agent - you can work in parallel while the agent is running
 
 ### Shortcuts (edit mode)
 
@@ -46,6 +49,10 @@ For day-to-day local development with the optional AI agent, use `npm run build`
 |---|---|
 | `S` + drag | Enter save-window mode; persist draft ops inside the drawn region |
 | `I` | Toggle interact / edit mode |
+| `T` | Toggle toolbar |
+| `ctrl` + `shift` | select elements together |
+| `ctrl` + `g` | group elements that are both selected using ctrl + shift|
+| `ctrl` + `shift` + `g` | ungroup elements |
 | `T` | Toggle toolbar |
 | `Escape` | Cancel preview, close panels, or clear selection |
 | Ctrl/Cmd+Z | Undo |
@@ -68,41 +75,69 @@ See **Options → Privacy** in the extension for the full disclosure.
 - **Export backup** — Downloads a JSON file with your local sites, pages, operations, and assets (subject to local size limits).
 - **Import backup** — Validates schema and operation types before writing; review warnings in Options after import.
 
-## Production release build
+## Local developer agent optional
+
+The public/local manual editor works without AI, accounts, backend services, or API keys.
+
+The optional agent workflow is for local development only. It is not required to use the extension.
+
+### Run local agent mode
+
+1. Copy the agent environment file:
 
 ```bash
-npm run release:public
+cp agent-server/.env.example agent-server/.env
 ```
 
 This runs the public build, verification checks, and packages `release/on-the-fly-v<version>.zip`. Maintainers can follow [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) before tagging a release.
+2. Add your own API key to `agent-server/.env`.
 
-## Local developer agent (optional)
+3. Start the local agent development mode:
 
-The public Chrome Web Store build has AI **disabled**. For local development only:
+```bash
+npm run dev:agent
+```
 
-1. Copy `.env.example` to `.env` in the repo root and configure your local agent server URL if needed.
-2. Run `npm run build` (not `build:public`) to enable localhost host permissions.
-3. Start the optional local agent server from `agent-server/` with your own API key in `agent-server/.env` (never commit keys).
-4. On a page, Shift+double-click a selection to open the agent panel (local dev build only).
+4. Load the generated extension build from `dist/` in `chrome://extensions`.
 
-Agent previews are temporary. **Approve** adds operations to the current session only; **Save all** or **`S` + drag** persists them. **Reject** or **Escape** reverts the preview.
+5. On a page, enable edit mode, select an element or group, then use the local agent shortcut to open the agent panel.
 
-The agent server is for local development and is not included in the published extension package.
+Agent previews are temporary. Approving an agent result adds the generated operations to the current unsaved session only.
+
+To persist changes:
+
+* Use the Save button to save all dirty changes.
+* Use `S` + drag to save only changes inside a selected region.
+* Pressing `S` alone does not save.
 
 ## Development scripts
 
-| Command | Purpose |
-|---|---|
-| `npm run build:public` | Store-safe build (agent off, no localhost permissions) |
-| `npm run build` | Local dev build with agent hooks |
-| `npm run verify:public` | Fail if public `dist/` includes dev-only permissions or agent flags |
-| `npm run package:public` | Zip `dist/` for store upload |
-| `npm run typecheck` | TypeScript check |
-| `npm run lint` | ESLint |
-| `npm test` | Vitest suite |
+| Command                  | Purpose                                                                                    |
+| ------------------------ | ------------------------------------------------------------------------------------------ |
+| `npm run build:public`   | Build the local-first public/manual editor with agent disabled                             |
+| `npm run dev:agent`      | Build/run local development mode with optional agent support                               |
+| `npm run verify:public`  | Verify the public build does not include dev-only agent permissions or enabled agent flags |
+| `npm run package:public` | Package the public build artifact for maintainers                                          |
+| `npm run typecheck`      | Run TypeScript checks                                                                      |
+| `npm run lint`           | Run ESLint                                                                                 |
+| `npm test`               | Run the test suite                                                                         |
 
-## License
+## Contributing
+
+On the Fly is open source. Contributions are welcome through issues and pull requests.
+
+Before opening a pull request:
+
+```bash
+npm install
+npm run typecheck
+npm run lint
+npm test
+```
+
+For changes that affect extension behavior, include a short summary of what changed, what was tested, and any remaining risks.
 
 On the Fly Core is licensed under the [Apache License, Version 2.0](./LICENSE) (SPDX: `Apache-2.0`).
 
 Copyright © Sujal Thapa
+Please do not commit API keys, `.env` files, local planning docs, build artifacts, or generated release zip files.
