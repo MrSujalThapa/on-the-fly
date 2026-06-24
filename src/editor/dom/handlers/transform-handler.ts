@@ -7,6 +7,13 @@ import {
   writeStoredTransformState,
 } from "../element-snapshot.js";
 import { applyPersistedDetachPlacement } from "../managed-detach.js";
+import {
+  applyPersistedInteractionSafeFixed,
+  applyInteractionSafeFixedDelta,
+  isInteractionSafeFixed,
+  isLegacyTransformOnlyMovePayload,
+  shouldApplyInteractionSafeFixed,
+} from "../interactive-fixed-placement.js";
 import { OTF_TRANSFORM_ATTR, type AppliedDomEffect, type StoredTransformState } from "../types.js";
 
 function createInitialTransformState(
@@ -61,13 +68,22 @@ export function applyMoveOperation(
     return applyMoveToFinalRect(element, operation, snapshotStore);
   }
 
+  if (isInteractionSafeFixed(element)) {
+    return applyInteractionSafeFixedDelta(
+      element,
+      operation.payload.dx,
+      operation.payload.dy,
+      snapshotStore,
+    );
+  }
+
   const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
   state.dx += operation.payload.dx;
   state.dy += operation.payload.dy;
 
   const changes = commitTransformState(element, state, previousSerialized);
 
-  if (operation.payload.detached) {
+  if (operation.payload.detached && !operation.payload.interactionSafeFixed && !isLegacyTransformOnlyMovePayload(operation)) {
     applyPersistedDetachPlacement(element, operation);
   }
 
@@ -85,7 +101,11 @@ function applyMoveToFinalRect(
     return [];
   }
 
-  if (operation.payload.detached) {
+  if (shouldApplyInteractionSafeFixed(operation)) {
+    return applyPersistedInteractionSafeFixed(element, operation, snapshotStore);
+  }
+
+  if (operation.payload.detached && !operation.payload.interactionSafeFixed && !isLegacyTransformOnlyMovePayload(operation)) {
     applyPersistedDetachPlacement(element, operation);
 
     // `detachedLeft/detachedTop` are page coordinates (viewport + scroll at save

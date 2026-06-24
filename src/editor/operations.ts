@@ -114,6 +114,19 @@ export type MoveOperation = OperationBase<
     previousDy?: number;
     /** Set when the element was promoted to the managed body layer after moving outside its parent. */
     detached?: boolean;
+    /** Interactive targets stay in the original DOM tree with viewport-fixed placement. */
+    interactionSafeFixed?: boolean;
+    fixedViewportLeft?: number;
+    fixedViewportTop?: number;
+    fixedWidth?: number;
+    fixedHeight?: number;
+    /** Persisted inline coords for deterministic replay (no re-inference). */
+    interactionPlacementMode?: "viewport-fixed" | "containing-block-absolute";
+    interactionPlacementLeft?: number;
+    interactionPlacementTop?: number;
+    interactionAnchorCssPath?: string | null;
+    /** @deprecated Use interactionSafeFixed. Legacy transform-only moves. */
+    transformOnly?: boolean;
     detachedLeft?: number;
     detachedTop?: number;
     detachedZIndex?: string;

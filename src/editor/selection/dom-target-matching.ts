@@ -40,6 +40,23 @@ export function findDirectClickableInComposedPath(path: EventTarget[]): HTMLElem
     if (tagName === "input" || tagName === "textarea" || tagName === "select") {
       return target;
     }
+
+    const role = target.getAttribute("role")?.trim().toLowerCase();
+    if (
+      role &&
+      (role === "tab" ||
+        role === "radio" ||
+        role === "menuitem" ||
+        role === "option" ||
+        role === "button" ||
+        role === "link")
+    ) {
+      return target;
+    }
+
+    if (target.hasAttribute("aria-checked") || target.hasAttribute("aria-selected")) {
+      return target;
+    }
   }
 
   return null;

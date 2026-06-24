@@ -122,6 +122,38 @@ export function applyStoredTransformState(
   element: HTMLElement,
   state: StoredTransformState,
 ): void {
+  if (
+    state.position === "fixed" ||
+    state.position === "absolute"
+  ) {
+    if (
+      state.fixedLeft !== null &&
+      state.fixedLeft !== undefined &&
+      state.fixedTop !== null &&
+      state.fixedTop !== undefined
+    ) {
+      element.style.position = state.position;
+      element.style.left = `${String(state.fixedLeft)}px`;
+      element.style.top = `${String(state.fixedTop)}px`;
+      if (state.rotate !== 0) {
+        element.style.transform = `rotate(${String(state.rotate)}deg)`;
+      } else {
+        element.style.transform = "";
+      }
+      if (state.width !== null) {
+        element.style.width = `${String(state.width)}px`;
+      } else {
+        element.style.removeProperty("width");
+      }
+      if (state.height !== null) {
+        element.style.height = `${String(state.height)}px`;
+      } else {
+        element.style.removeProperty("height");
+      }
+      return;
+    }
+  }
+
   element.style.position = state.position;
   element.style.transform = `translate(${String(state.dx)}px, ${String(state.dy)}px) rotate(${String(state.rotate)}deg)`;
 

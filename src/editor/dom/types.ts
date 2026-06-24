@@ -5,6 +5,10 @@ export const OTF_TRANSFORM_ATTR = "data-otf-transform";
 export const OTF_CROP_ATTR = "data-otf-crop";
 export const OTF_HELPER_ATTR = "data-otf-helper-id";
 export const OTF_HELPER_ROLE_ATTR = "data-otf-helper-role";
+/** Set when a move must stay transform-only to preserve app/event behavior. */
+export const OTF_TRANSFORM_ONLY_ATTR = "data-otf-transform-only";
+/** Original node kept in DOM tree with viewport-fixed placement for interactive moves. */
+export const OTF_INTERACTION_FIXED_ATTR = "data-otf-interaction-fixed";
 
 export interface ElementStyleSnapshot {
   inlineStyle: string;
@@ -88,6 +92,10 @@ export interface StoredTransformState {
   height: number | null;
   rotate: number;
   position: string;
+  fixedLeft?: number | null;
+  fixedTop?: number | null;
+  placementMode?: "viewport-fixed" | "containing-block-absolute";
+  anchorCssPath?: string | null;
 }
 
 export interface MatchViewport {

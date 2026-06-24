@@ -1,4 +1,6 @@
 import { createDomRuntimeAdapter, type DomRuntimeAdapter } from "../editor/dom/dom-runtime-adapter.js";
+import { waitForDocumentReady, waitForReplayTargets } from "../editor/dom/replay-readiness.js";
+import { sortOperationsForReplay } from "../editor/persistence/replay-operation-order.js";
 import type { EditorOperation } from "../editor/operations.js";
 import type { PageKey } from "../editor/ids.js";
 import {
@@ -100,19 +102,37 @@ export class PageCustomizationController {
     }
 
     this.pageOperations = [...operations];
-    this.replayed = true;
 
     if (operations.length === 0) {
+      this.replayed = true;
       onDebug?.("page-replay", { pageKey: this.pageKey, count: 0, durationMs: 0 });
       return { pageKey: this.pageKey, count: 0, failed: 0, resolved: 0, unresolved: 0 };
     }
 
+    await waitForDocumentReady(this.root);
+    const targetWait = await waitForReplayTargets(this.root, operations);
+    onDebug?.("page-replay-target-wait", {
+      pageKey: this.pageKey,
+      resolved: targetWait.resolved,
+      total: targetWait.total,
+      timedOut: targetWait.timedOut,
+    });
+
+    if (generation !== this.replayGeneration) {
+      onDebug?.("page-replay-cancelled", {
+        pageKey: this.pageKey,
+        reason: "generation-changed-after-target-wait",
+      });
+      return { pageKey: this.pageKey, count: 0, failed: 0, resolved: 0, unresolved: 0 };
+    }
+
+    this.replayed = true;
+
+    const replayOperations = sortOperationsForReplay(operations);
     const replayStartedAt = performance.now();
-    const batch = this.adapter.replayOperationsWithDiagnostics(operations);
+    const batch = this.adapter.replayOperationsWithDiagnostics(replayOperations);
     const durationMs = performance.now() - replayStartedAt;
     const failed = batch.results.filter((result) => !result.ok).length;
-    const resolved = batch.diagnostics.filter((entry) => entry.resolved).length;
-    const unresolved = batch.diagnostics.length - resolved;
 
     for (const entry of batch.diagnostics) {
       onDebug?.("page-replay-op", entry);
@@ -122,12 +142,21 @@ export class PageCustomizationController {
       pageKey: this.pageKey,
       count: operations.length,
       failed,
-      resolved,
-      unresolved,
+      applied: batch.applied,
+      skipped: batch.skipped,
+      resolved: batch.applied,
+      unresolved: batch.unresolved,
+      targetWait,
       durationMs,
     });
 
-    return { pageKey: this.pageKey, count: operations.length, failed, resolved, unresolved };
+    return {
+      pageKey: this.pageKey,
+      count: operations.length,
+      failed,
+      resolved: batch.applied,
+      unresolved: batch.unresolved,
+    };
   }
 
   /**

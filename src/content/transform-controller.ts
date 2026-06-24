@@ -2,7 +2,27 @@ import type { PageKey, VisualNodeId } from "../editor/ids.js";
 import type { EditorOperation } from "../editor/operations.js";
 import type { VisualNodeRect } from "../editor/visual-node.js";
 import { matchElementBySignature } from "../editor/dom/signature-matcher.js";
-import { findCounterTransformDescendants, tryDetachMovedElement } from "../editor/dom/managed-detach.js";
+import {
+  describeZIndexOperation,
+  layerCommandToSource,
+  logMoveStrategyDiagnostic,
+  logZIndexOperationDiagnostic,
+} from "../editor/diagnostics/editor-diagnostics.js";
+import {
+  requiresInteractionSafeFixedMove,
+  requiresTransformOnlyMove,
+  resolveInteractionMoveTarget,
+} from "../editor/dom/interactive-safety.js";
+import { resolveLayerPlan } from "../editor/dom/layer-overlap-resolver.js";
+import {
+  applyInteractionSafeFixedPlacement,
+  buildInteractionSafeFixedPayload,
+} from "../editor/dom/interactive-fixed-placement.js";
+import {
+  findCounterTransformDescendants,
+  markTransformOnlyMove,
+  tryDetachMovedElement,
+} from "../editor/dom/managed-detach.js";
 import { readStoredTransformState } from "../editor/dom/element-snapshot.js";
 import { buildElementSignature } from "../editor/measurement/signature-builder.js";
 import { readStoredCropInsets } from "../editor/dom/handlers/crop-handler.js";
@@ -20,12 +40,10 @@ import {
   buildRotateOperation,
   buildZIndexOperation,
   computeCrop,
-  computeNextLayer,
   computeResize,
   cropInsetsToClipPath,
   isResizeHandleId,
   rectCenterPoint,
-  resolveCurrentManagedLayer,
   snapDegrees,
   type CropInsets,
   type LayerCommand,
@@ -55,6 +73,7 @@ export interface TransformControllerOptions {
   onDebug?: (message: string, data?: unknown) => void;
   onInteractionStart?: () => void;
   onInteractionEnd?: () => void;
+  onGeometryChanged?: () => void;
   onFrame?: (durationMs: number, phase: "transform") => void;
 }
 
@@ -130,6 +149,7 @@ export class TransformController {
   private readonly onDebug: (message: string, data?: unknown) => void;
   private readonly onInteractionStart: (() => void) | undefined;
   private readonly onInteractionEnd: (() => void) | undefined;
+  private readonly onGeometryChanged: (() => void) | undefined;
   private readonly onFrame: ((durationMs: number, phase: "transform") => void) | undefined;
   private interactionDepth = 0;
 
@@ -159,6 +179,7 @@ export class TransformController {
     this.onDebug = options.onDebug ?? (() => undefined);
     this.onInteractionStart = options.onInteractionStart;
     this.onInteractionEnd = options.onInteractionEnd;
+    this.onGeometryChanged = options.onGeometryChanged;
     this.onFrame = options.onFrame;
     this.shell.setHandlePointerDownHandler((handleId, event) => {
       this.handleHandlePointerDown(handleId, event);
@@ -271,21 +292,23 @@ export class TransformController {
             phase: "move",
             selected: describeSignature(target),
             target: describeElement(element),
+            moveTarget: describeElement(resolveInteractionMoveTarget(element)),
           });
         }
-        return element;
-      })
-      .filter((element): element is HTMLElement => element !== null)
-      .map((element) => {
-        const stored = readStoredTransformState(element);
+        const moveElement = element ? resolveInteractionMoveTarget(element) : null;
+        if (!moveElement) {
+          return null;
+        }
+        const stored = readStoredTransformState(moveElement);
         return {
-          element,
-          snapshot: captureInlineSnapshot(element),
+          element: moveElement,
+          snapshot: captureInlineSnapshot(moveElement),
           baseDx: stored?.dx ?? 0,
           baseDy: stored?.dy ?? 0,
           baseRotate: stored?.rotate ?? 0,
         };
-      });
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 
     if (elements.length === 0) {
       this.onDebug("transform-move-no-target", {
@@ -327,7 +350,12 @@ export class TransformController {
     const dx = x - drag.startX;
     const dy = y - drag.startY;
     this.scheduleFrame(() => {
+      const moved = new Set<HTMLElement>();
       for (const entry of drag.elements) {
+        if (moved.has(entry.element)) {
+          continue;
+        }
+        moved.add(entry.element);
         entry.element.style.transform = composeTransform(
           entry.baseDx + dx,
           entry.baseDy + dy,
@@ -392,17 +420,18 @@ export class TransformController {
       }
     }
 
-    const coMoved = drag.elements.map((entry) => entry.element);
+    const coMoved = [...new Set(drag.elements.map((entry) => entry.element))];
     const operationElements: HTMLElement[] = [];
     for (const operation of operations) {
       const nodeId = operation.target.nodeId;
       const override = nodeId ? this.elementRegistry.get(nodeId) ?? null : null;
-      const element =
+      const resolved =
         override?.isConnected
           ? override
           : operation.target.signature
             ? matchElementBySignature(this.document, operation.target.signature)
             : null;
+      const element = resolved ? resolveInteractionMoveTarget(resolved) : null;
       if (element) {
         operationElements.push(element);
       }
@@ -411,13 +440,13 @@ export class TransformController {
     const originalRects = operationElements.map((element) =>
       measurementRectToAffectedRect(extractBoundingBox(element)),
     );
-    for (const operation of operations) {
-      const nodeId = operation.target.nodeId;
-      const override = nodeId ? this.elementRegistry.get(nodeId) ?? null : null;
-      const result = this.adapter.applyOperation(
-        operation,
-        override?.isConnected ? override : null,
-      );
+    for (let index = 0; index < operations.length; index += 1) {
+      const operation = operations[index];
+      const element = operationElements[index];
+      if (!operation || !element) {
+        continue;
+      }
+      const result = this.adapter.applyOperation(operation, element);
       if (!result.ok) {
         this.onDebug("transform-apply-failed", { code: result.code, error: result.error });
       }
@@ -430,41 +459,105 @@ export class TransformController {
     const finalRects = operationElements.map((element) =>
       measurementRectToAffectedRect(extractBoundingBox(element)),
     );
+    const finalRectByElement = new Map(
+      operationElements.map((element, index) => [element, finalRects[index]] as const),
+    );
+    const originalRectByElement = new Map(
+      operationElements.map((element, index) => [element, originalRects[index]] as const),
+    );
 
     const primaryCount = this.selection?.targets.length ?? 0;
+    const processedMoveElements = new Set<HTMLElement>();
     for (let index = 0; index < primaryCount; index += 1) {
       const entry = drag.elements[index];
       const operation = operations[index];
       if (!entry || operation?.type !== "move") {
         continue;
       }
+      if (processedMoveElements.has(entry.element)) {
+        operation.payload = {
+          ...operation.payload,
+          transformOnly: true,
+          interactionSafeFixed: false,
+          detached: false,
+        };
+        continue;
+      }
+      processedMoveElements.add(entry.element);
 
-      const placement = tryDetachMovedElement(entry.element, coMoved, finalRects[index]);
+      const finalRect = finalRectByElement.get(entry.element);
+
+      if (requiresInteractionSafeFixedMove(entry.element)) {
+        if (finalRect) {
+          applyInteractionSafeFixedPlacement(
+            entry.element,
+            finalRect,
+            this.adapter.getSnapshotStore(),
+          );
+          operation.payload = buildInteractionSafeFixedPayload(operation, finalRect, entry.element);
+        }
+        logMoveStrategyDiagnostic(
+          this.onDebug,
+          entry.element,
+          operation.id,
+          "interaction-safe-fixed",
+          false,
+        );
+        continue;
+      }
+
+      if (requiresTransformOnlyMove(entry.element)) {
+        markTransformOnlyMove(entry.element);
+        operation.payload = {
+          ...operation.payload,
+          transformOnly: true,
+          interactionSafeFixed: false,
+          detached: false,
+        };
+        logMoveStrategyDiagnostic(
+          this.onDebug,
+          entry.element,
+          operation.id,
+          "transform-only",
+          false,
+        );
+        continue;
+      }
+
+      const placement = tryDetachMovedElement(entry.element, coMoved, finalRectByElement.get(entry.element));
       if (!placement) {
+        logMoveStrategyDiagnostic(
+          this.onDebug,
+          entry.element,
+          operation.id,
+          "in-flow",
+          false,
+        );
         continue;
       }
 
       operation.payload = {
         ...operation.payload,
         detached: true,
+        transformOnly: false,
         detachedLeft: placement.left,
         detachedTop: placement.top,
         ...(placement.zIndex && placement.zIndex !== "auto"
           ? { detachedZIndex: placement.zIndex }
           : {}),
       };
-      this.onDebug("transform-detach", {
-        tag: entry.element.tagName.toLowerCase(),
-        left: placement.left,
-        top: placement.top,
-      });
+      logMoveStrategyDiagnostic(this.onDebug, entry.element, operation.id, "detached", true);
     }
 
     for (let index = 0; index < operations.length; index += 1) {
       const operation = operations[index];
-      const originalRect = originalRects[index];
-      const finalRect = finalRects[index];
-      if (!operation || !originalRect || !finalRect) {
+      const element = operationElements[index];
+      if (!operation || !element) {
+        continue;
+      }
+      const originalRect = originalRectByElement.get(element);
+      const finalRect = finalRectByElement.get(element);
+      if (!originalRect || !finalRect) {
         continue;
       }
       operations[index] = enrichOperationWithRects(operation, originalRect, finalRect);
@@ -474,6 +567,7 @@ export class TransformController {
       this.onApply?.(operations);
     }
     this.refreshOutlineFromDom();
+    this.onGeometryChanged?.();
     this.onDebug("transform-move-commit", { dx, dy, count: operations.length });
     return operations;
   }
@@ -507,6 +601,7 @@ export class TransformController {
 
     const pageKey = this.getPageKey();
     const operations: EditorOperation[] = [];
+    const elements: HTMLElement[] = [];
     for (const target of targets) {
       const element = this.resolveElement(target);
       if (!element) {
@@ -517,33 +612,44 @@ export class TransformController {
         continue;
       }
 
-      const currentLayer = resolveCurrentManagedLayer(
-        element.style.zIndex,
-        readComputedZIndex(element),
+      const plan = resolveLayerPlan(element, command, this.adapter.getSnapshotStore(), {
+        onDebug: this.onDebug,
+      });
+      const sourceCommand = layerCommandToSource(command);
+      const operation = buildZIndexOperation(
+        targetFromLiveElement(element, this.document),
+        plan.layer,
+        plan.previousLayer,
+        { pageKey, sourceCommand },
+        element,
       );
-      const nextLayer = computeNextLayer(currentLayer, command);
+      logZIndexOperationDiagnostic(this.onDebug, {
+        ...describeZIndexOperation(operation, "created", { sourceCommand }),
+      });
       this.onDebug("transform-target", {
         phase: "layer",
         command,
         selected: describeSignature(target),
-        target: describeElement(element),
-        currentLayer,
-        nextLayer,
-        reason: describeStackingRisk(element),
+        target: describeElement(plan.host),
+        currentLayer: plan.previousLayer,
+        nextLayer: plan.layer,
+        reason: plan.reason ?? plan.diagnostic.reason ?? describeStackingRisk(plan.host),
+        verification: plan.verification,
+        selectedHostDiffersFromSelected: plan.host !== element,
       });
-      operations.push(
-        buildZIndexOperation(target, nextLayer, currentLayer, { pageKey }, element),
-      );
+      operations.push(operation);
+      elements.push(element);
     }
 
     if (operations.length === 0) {
       return [];
     }
 
-    this.applyOperations(operations);
+    const applied = this.applyOperations(operations, { elements });
     this.refreshOutlineFromDom();
-    this.onDebug("transform-layer", { command, count: operations.length });
-    return operations;
+    this.onGeometryChanged?.();
+    this.onDebug("transform-layer", { command, count: applied.length });
+    return applied;
   }
 
   // --- Hide / show (5C) ---
@@ -1014,31 +1120,40 @@ export class TransformController {
     options: { elements?: HTMLElement[] } = {},
   ): EditorOperation[] {
     const elements = options.elements ?? [];
-    const originalRects = elements.map((element) =>
-      measurementRectToAffectedRect(extractBoundingBox(element)),
-    );
+    const enriched: EditorOperation[] = [];
 
-    for (const operation of operations) {
-      const nodeId = operation.target.nodeId;
-      const override = nodeId ? this.elementRegistry.get(nodeId) ?? null : null;
+    for (let index = 0; index < operations.length; index += 1) {
+      const operation = operations[index];
+      if (!operation) {
+        continue;
+      }
+      let element = elements[index] ?? null;
+      if (!element) {
+        const nodeId = operation.target.nodeId;
+        const override = nodeId ? this.elementRegistry.get(nodeId) ?? null : null;
+        element =
+          override?.isConnected
+            ? override
+            : operation.target.signature
+              ? matchElementBySignature(this.document, operation.target.signature)
+              : null;
+      }
       const result = this.adapter.applyOperation(
         operation,
-        override?.isConnected ? override : null,
+        element?.isConnected ? element : null,
       );
       if (!result.ok) {
         this.onDebug("transform-apply-failed", { code: result.code, error: result.error });
+        continue;
+      }
+
+      if (element) {
+        const rect = measurementRectToAffectedRect(extractBoundingBox(element));
+        enriched.push(enrichOperationWithRects(operation, rect, rect));
+      } else {
+        enriched.push(operation);
       }
     }
-
-    const enriched = operations.map((operation, index) => {
-      const element = elements[index];
-      const originalRect = originalRects[index];
-      if (!element || !originalRect) {
-        return operation;
-      }
-      const finalRect = measurementRectToAffectedRect(extractBoundingBox(element));
-      return enrichOperationWithRects(operation, originalRect, finalRect);
-    });
 
     if (enriched.length > 0) {
       this.onApply?.(enriched);
@@ -1356,11 +1471,6 @@ function describeElement(element: HTMLElement): { tag: string; classes: string[]
     tag: element.tagName.toLowerCase(),
     classes: Array.from(element.classList),
   };
-}
-
-function readComputedZIndex(element: HTMLElement): string {
-  const view = element.ownerDocument.defaultView;
-  return view ? view.getComputedStyle(element).zIndex : "";
 }
 
 /**

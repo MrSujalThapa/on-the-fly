@@ -21,6 +21,50 @@ export function layoutElement(
   });
 }
 
+export function layoutManagedElement(
+  element: HTMLElement,
+  base: MeasurementRect,
+): void {
+  element.getBoundingClientRect = () => {
+    if (element.style.position === "fixed" || element.style.position === "absolute") {
+      const x = Number.parseFloat(element.style.left) || base.x;
+      const y = Number.parseFloat(element.style.top) || base.y;
+      const width = element.style.width
+        ? Number.parseFloat(element.style.width)
+        : base.width;
+      const height = element.style.height
+        ? Number.parseFloat(element.style.height)
+        : base.height;
+      return {
+        x,
+        y,
+        width,
+        height,
+        top: y,
+        left: x,
+        right: x + width,
+        bottom: y + height,
+        toJSON: () => ({}),
+      };
+    }
+
+    const match = /translate\(([-\d.]+)px,\s*([-\d.]+)px\)/.exec(element.style.transform);
+    const dx = match ? Number.parseFloat(match[1] ?? "0") : 0;
+    const dy = match ? Number.parseFloat(match[2] ?? "0") : 0;
+    return {
+      x: base.x + dx,
+      y: base.y + dy,
+      width: base.width,
+      height: base.height,
+      top: base.y + dy,
+      left: base.x + dx,
+      right: base.x + dx + base.width,
+      bottom: base.y + dy + base.height,
+      toJSON: () => ({}),
+    };
+  };
+}
+
 export function layoutTree(root: ParentNode): void {
   if (!(root instanceof HTMLElement)) {
     return;

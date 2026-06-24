@@ -1,8 +1,20 @@
 import { readStoredTransformState, writeStoredTransformState, applyStoredTransformState } from "./element-snapshot.js";
-import { OTF_MANAGED_ATTR, type StoredTransformState } from "./types.js";
+import { requiresTransformOnlyMove } from "./interactive-safety.js";
+import { OTF_INTERACTION_FIXED_ATTR, OTF_MANAGED_ATTR, OTF_TRANSFORM_ONLY_ATTR, type StoredTransformState } from "./types.js";
 import type { MoveOperation } from "../operations.js";
 
 export const OTF_DETACH_ATTR = "data-otf-detached";
+
+export function markTransformOnlyMove(element: HTMLElement): void {
+  element.setAttribute(OTF_TRANSFORM_ONLY_ATTR, "true");
+}
+
+export function isTransformOnlyMove(element: HTMLElement): boolean {
+  return (
+    element.getAttribute(OTF_TRANSFORM_ONLY_ATTR) === "true" ||
+    element.getAttribute(OTF_INTERACTION_FIXED_ATTR) === "true"
+  );
+}
 
 const OUTSIDE_PARENT_TOLERANCE_PX = 2;
 
@@ -30,7 +42,17 @@ export function hasIndependentManagedTransform(element: HTMLElement): boolean {
     state.dy !== 0 ||
     state.rotate !== 0 ||
     state.width !== null ||
-    state.height !== null
+    state.height !== null ||
+    (state.position === "fixed" &&
+      state.fixedLeft !== null &&
+      state.fixedLeft !== undefined &&
+      state.fixedTop !== null &&
+      state.fixedTop !== undefined) ||
+    (state.position === "absolute" &&
+      state.fixedLeft !== null &&
+      state.fixedLeft !== undefined &&
+      state.fixedTop !== null &&
+      state.fixedTop !== undefined)
   );
 }
 
@@ -75,6 +97,10 @@ export function shouldDetachAfterMove(
   element: HTMLElement,
   coMovedElements: readonly HTMLElement[],
 ): boolean {
+  if (requiresTransformOnlyMove(element)) {
+    return false;
+  }
+
   if (!hasIndependentManagedTransform(element)) {
     return false;
   }
