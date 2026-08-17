@@ -41,6 +41,7 @@ const ALLOWED_PREFIXES = [
   "src/editor/dom/replay-readiness.ts",
   "src/editor/dom/match-viewport.ts",
   "src/content/storage-client.ts",
+  "src/content/page-identity.ts",
   "src/shared/",
 ];
 
@@ -165,6 +166,108 @@ describe("runtime-v2 import boundaries", () => {
       }
     }
 
+    expect(violations).toEqual([]);
+  });
+
+  it("runtime-v2 source never names legacy orchestration constructors", () => {
+    const files = listTsFiles(RUNTIME_V2);
+    const forbidden = [
+      "createEditSession",
+      "new EditSession",
+      "TransformController",
+      "DomRuntimeAdapter",
+      "PageCustomizationController",
+      "session-operation-state",
+      "session-history",
+    ];
+    const violations: string[] = [];
+    for (const file of files) {
+      const source = readFileSync(file, "utf8");
+      for (const token of forbidden) {
+        if (source.includes(token)) {
+          violations.push(`${srcRelative(file)} contains ${token}`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("has no second writable operation collection outside the ledger", () => {
+    const files = listTsFiles(RUNTIME_V2);
+    const forbidden = [
+      "draftOperations",
+      "savedOperations",
+      "sessionHistory",
+      "pageOperations",
+      "previewOperations",
+    ];
+    const violations: string[] = [];
+    for (const file of files) {
+      const source = readFileSync(file, "utf8");
+      const rel = srcRelative(file);
+      if (rel.endsWith("create-operation-ledger.ts") || rel.endsWith("operation-ledger.ts")) {
+        continue;
+      }
+      for (const token of forbidden) {
+        if (source.includes(token)) {
+          violations.push(`${rel} contains ${token}`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("PlacementEngine does not mutate the DOM", () => {
+    const source = readFileSync(join(RUNTIME_V2, "create-placement-engine.ts"), "utf8");
+    expect(source).not.toMatch(/\.style\./);
+    expect(source).not.toContain("appendChild");
+    expect(source).not.toContain("setAttribute");
+    expect(source).not.toContain("replacePageOperations");
+    expect(source).not.toContain("ledger");
+  });
+
+  it("OverlayCoordinator does not persist or write the ledger", () => {
+    const source = readFileSync(join(RUNTIME_V2, "create-overlay-coordinator.ts"), "utf8");
+    expect(source).not.toContain("replacePageOperations");
+    expect(source).not.toContain("loadPageOperations");
+    expect(source).not.toContain("ledger");
+    expect(source).not.toContain("applyMoveOperation");
+  });
+
+  it("interaction does not persist, and persistence does not mutate DOM", () => {
+    const runtime = readFileSync(join(RUNTIME_V2, "create-editor-runtime.ts"), "utf8");
+    expect(runtime).toContain("replacePageOperations");
+    expect(runtime).not.toContain("applyMoveOperation");
+    const storage = readFileSync(join(SRC, "content/storage-client.ts"), "utf8");
+    expect(storage).not.toContain("applyMoveOperation");
+    expect(storage).not.toContain("getBoundingClientRect");
+  });
+
+  it("long-lived HTMLElement identity is limited to the registry cache and active gesture", () => {
+    const files = listTsFiles(RUNTIME_V2);
+    const allowed = new Set([
+      "src/runtime-v2/create-element-registry.ts",
+      "src/runtime-v2/create-editor-runtime.ts",
+      "src/runtime-v2/create-overlay-coordinator.ts",
+      "src/runtime-v2/create-operation-executor.ts",
+      "src/runtime-v2/create-placement-engine.ts",
+      "src/runtime-v2/pointer-hit.ts",
+      "src/runtime-v2/geometry.ts",
+      "src/runtime-v2/element-registry.ts",
+      "src/runtime-v2/placement-engine.ts",
+      "src/runtime-v2/editor-runtime.ts",
+    ]);
+    const violations: string[] = [];
+    for (const file of files) {
+      const rel = srcRelative(file);
+      const source = readFileSync(file, "utf8");
+      if (!source.includes("HTMLElement")) {
+        continue;
+      }
+      if (!allowed.has(rel)) {
+        violations.push(`${rel} references HTMLElement`);
+      }
+    }
     expect(violations).toEqual([]);
   });
 });

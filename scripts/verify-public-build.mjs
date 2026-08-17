@@ -97,6 +97,9 @@ function verifyBuildFlags(files) {
     if (/diagnosticsEnabled:\s*true/.test(source)) {
       fail(`${relativePath} has diagnosticsEnabled:true`);
     }
+    if (relativePath === "content/content-script.js" && source.includes("OTF_RUNTIME_V2_ACTIVE")) {
+      fail("public content script must not activate Runtime V2");
+    }
   }
 
   void files;

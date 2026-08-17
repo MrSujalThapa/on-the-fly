@@ -16,7 +16,10 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:e2e": "npm run build && playwright test",
-    "test:e2e:harness": "npm run build && playwright test tests/e2e/harness.spec.ts"
+    "test:e2e:harness": "npm run build && playwright test tests/e2e/harness.spec.ts",
+    "build:runtime-v2": "cross-env OTF_RUNTIME_V2=true LOCAL_DEV_AGENT_ENABLED=true LOCAL_AGENT_SERVER_URL=http://127.0.0.1:4317 node scripts/build.mjs",
+    "build:runtime-v2:diagnostics": "cross-env OTF_RUNTIME_V2=true OTF_DIAGNOSTICS=true LOCAL_DEV_AGENT_ENABLED=true LOCAL_AGENT_SERVER_URL=http://127.0.0.1:4317 node scripts/build.mjs",
+    "test:e2e:v2": "npm run build:runtime-v2 && cross-env E2E_RUNTIME_V2=true playwright test"
   },
   "devDependencies": {
     "@eslint/js": "^9.28.0",

@@ -15,6 +15,7 @@ const localDevAgentEnabled =
 const localAgentServerUrl = process.env.LOCAL_AGENT_SERVER_URL ?? "";
 // Opt-in only: every build is silent unless OTF_DIAGNOSTICS=true is passed.
 const diagnosticsEnabled = process.env.OTF_DIAGNOSTICS === "true";
+const runtimeV2Enabled = process.env.OTF_RUNTIME_V2 === "true";
 
 /** @type {import('esbuild').BuildOptions['define']} */
 const define = {
@@ -23,6 +24,7 @@ const define = {
   __LOCAL_DEV_AGENT_ENABLED__: String(localDevAgentEnabled),
   __LOCAL_AGENT_SERVER_URL__: JSON.stringify(localAgentServerUrl),
   __OTF_DIAGNOSTICS_ENABLED__: String(diagnosticsEnabled),
+  __OTF_RUNTIME_V2__: String(runtimeV2Enabled),
 };
 
 function ensureDir(path) {
@@ -51,10 +53,14 @@ function writeIcons() {
 async function build() {
   ensureDir(distDir);
 
+  const contentEntry = runtimeV2Enabled
+    ? join(srcDir, "runtime-v2/content-entry.ts")
+    : join(srcDir, "content/content-script.ts");
+
   await esbuild.build({
     entryPoints: {
       "background/service-worker": join(srcDir, "background/service-worker.ts"),
-      "content/content-script": join(srcDir, "content/content-script.ts"),
+      "content/content-script": contentEntry,
       "popup/popup": join(srcDir, "popup/popup.ts"),
       "options/options": join(srcDir, "options/options.ts"),
     },
@@ -84,7 +90,7 @@ async function build() {
   writeFileSync(join(distDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
   console.log(
-    `Build complete (agent=${publicAgentEnabled}, localDevAgent=${localDevAgentEnabled}, backend=${publicBackendEnabled}, diagnostics=${diagnosticsEnabled}, dist=${distDir})`,
+    `Build complete (agent=${publicAgentEnabled}, localDevAgent=${localDevAgentEnabled}, backend=${publicBackendEnabled}, diagnostics=${diagnosticsEnabled}, runtime=${runtimeV2Enabled ? "v2" : "legacy"}, dist=${distDir})`,
   );
 }
 

@@ -29,7 +29,12 @@ export interface EditorRuntime {
   readonly ledger: OperationLedger;
   readonly overlays: OverlayCoordinator;
   readonly lifecycle: RuntimeLifecycle;
+  start(): void;
+  stop(): void;
+  select(element: HTMLElement): ElementHandle;
   move(handle: ElementHandle, dx: number, dy: number): ExecutionResult;
+  undo(): ExecutionResult;
+  redo(): ExecutionResult;
   save(): Promise<PersistResult>;
   replay(): Promise<ReplayResult>;
 }
