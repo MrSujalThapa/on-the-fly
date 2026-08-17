@@ -163,6 +163,12 @@ export {
 } from "./dom/types.js";
 export { ElementSnapshotStore, captureElementSnapshot } from "./dom/element-snapshot.js";
 export { matchElementBySignature, getMatchViewport } from "./dom/signature-matcher.js";
+export {
+  ElementResolver,
+  getElementResolver,
+  resolveElementBySignature,
+  resolveElementBySignatureDetailed,
+} from "./dom/element-resolver.js";
 export { resolveTargetElement } from "./dom/resolve-target.js";
 export { DomRuntimeAdapter, createDomRuntimeAdapter } from "./dom/dom-runtime-adapter.js";
 export {

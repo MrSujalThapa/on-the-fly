@@ -41,35 +41,22 @@ const DX = 48;
 const DY = 36;
 
 /**
- * Invariants that fail on current HEAD. Classifications (Phase 2 A–H):
- * B — selected live node is correct, durable signature is not
- * D — move strategy produces wrong layout semantics / composition
- * F — replay/re-resolution binds a different logical element
- * G — host replacement leaves an orphaned live reference
- * H — stale overlay geometry
+ * Remaining known failures after ElementResolver (commit unit 2).
+ * Classifications (Phase 2 A–H):
+ * D — move strategy / composition geometry
+ * G — host replacement rebind of committed effects
+ * H — overlay invalidation (D.32)
  *
- * Remove an entry only when the invariant holds. A passing known-failure is a
- * test failure so we cannot silently “lose” a characterization.
+ * Identity (F) for repeated/ambiguous siblings is closed.
  */
 const KNOWN_FAILURES: Record<string, "B" | "D" | "F" | "G" | "H"> = {
-  "nested-flex:M1-signature": "F",
   "nested-flex:M3": "D",
-  "nested-flex:M6": "F",
-  "nested-grid:M1-signature": "F",
   "nested-grid:M3": "D",
-  "nested-grid:M6": "F",
-  "repeated-sibling-cards:M1-signature": "F",
   "repeated-sibling-cards:M3": "D",
-  "repeated-sibling-cards:M6": "F",
   "absolute-descendant:M2": "D",
   "absolute-descendant:M3": "D",
   "absolute-descendant:M5": "D",
   "framework-rerender:M3": "D",
-  "ambiguous-signature:M1-signature": "F",
-  "ambiguous-signature:M6": "F",
-  "repeated-siblings-dedicated:M6": "F",
-  "ambiguous-dedicated:M1-signature": "F",
-  "ambiguous-dedicated:M6": "F",
   "framework-rerender:M7": "G",
   "overlay:V12-scroll": "H",
 };

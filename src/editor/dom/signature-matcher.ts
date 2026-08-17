@@ -3,6 +3,8 @@ import { fingerprintSrcValue } from "../measurement/src-fingerprint.js";
 import { getMatchViewport } from "./match-viewport.js";
 import { isDangerousCssPath, isDangerousTagName } from "../validation/dangerous-selectors.js";
 import type { MatchViewport } from "./types.js";
+import { OTF_DETACH_ATTR } from "./managed-detach.js";
+import { OTF_MANAGED_ATTR } from "./types.js";
 
 export interface SignatureMatchDiagnostics {
   resolved: boolean;
@@ -157,6 +159,15 @@ function scoreCandidate(
     score += parentText.includes(context) || context.includes(parentText.slice(0, 40)) ? -5 : 8;
   }
 
+  // Managed / detached nodes leave their original cssPath. Prefer them when
+  // fingerprints still match so re-resolution does not snap to an in-flow sibling.
+  if (
+    element instanceof HTMLElement &&
+    (element.hasAttribute(OTF_MANAGED_ATTR) || element.getAttribute(OTF_DETACH_ATTR) === "true")
+  ) {
+    score -= 6;
+  }
+
   return score;
 }
 
@@ -249,24 +260,45 @@ function pickBestCandidate(
   candidates: Element[],
   signature: ElementSignature,
   viewport: MatchViewport,
-): { element: HTMLElement | null; score: number } {
+): { element: HTMLElement | null; score: number; ambiguous: boolean; candidateCount: number } {
   let best: Element | null = null;
   let bestScore = Number.POSITIVE_INFINITY;
+  let secondScore = Number.POSITIVE_INFINITY;
 
   for (const candidate of candidates) {
     const score = scoreCandidate(candidate, signature, viewport);
     if (score < bestScore) {
+      secondScore = bestScore;
       best = candidate;
       bestScore = score;
+    } else if (score < secondScore) {
+      secondScore = score;
     }
   }
 
   const maxAcceptableScore = signature.tagName === "img" ? 28 : 22;
   if (!best || bestScore > maxAcceptableScore) {
-    return { element: null, score: bestScore };
+    return {
+      element: null,
+      score: bestScore,
+      ambiguous: false,
+      candidateCount: candidates.length,
+    };
   }
 
-  return { element: best instanceof HTMLElement ? best : null, score: bestScore };
+  // Near-tied top scores are not a trustworthy identity. Callers must not
+  // silently persist or replay against an arbitrary sibling.
+  const ambiguous =
+    candidates.length > 1 &&
+    Number.isFinite(secondScore) &&
+    secondScore - bestScore <= 1.5;
+
+  return {
+    element: ambiguous ? null : best instanceof HTMLElement ? best : null,
+    score: bestScore,
+    ambiguous,
+    candidateCount: candidates.length,
+  };
 }
 
 function unresolved(reason: string, candidateCount = 0): SignatureMatchResult {
@@ -310,6 +342,9 @@ export function matchElementBySignatureDetailed(
 
   if (cssPathCandidates.length > 1) {
     const picked = pickBestCandidate(cssPathCandidates, signature, viewport);
+    if (picked.ambiguous) {
+      return unresolved("ambiguous_candidates", picked.candidateCount);
+    }
     if (picked.element) {
       return {
         element: picked.element,
@@ -327,6 +362,9 @@ export function matchElementBySignatureDetailed(
 
   const fallbackCandidates = gatherFallbackCandidates(root, signature);
   const picked = pickBestCandidate(fallbackCandidates, signature, viewport);
+  if (picked.ambiguous) {
+    return unresolved("ambiguous_candidates", picked.candidateCount);
+  }
   if (picked.element) {
     return {
       element: picked.element,

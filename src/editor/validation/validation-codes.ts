@@ -14,6 +14,7 @@ export type DomErrorCode =
   | "validation_failed"
   | "unsupported_dom_operation"
   | "target_not_found"
+  | "target_signature_mismatch"
   | "operation_already_applied"
   | "operation_not_applied"
   | "dom_apply_failed"

@@ -63,6 +63,14 @@ function buildSegment(element: Element): string {
       .map((className) => `.${escapeCssIdentifier(className)}`)
       .join("");
     segment += classes;
+    // When siblings share the same tag + leading classes, a class-only segment
+    // is not a durable identity. Disambiguate with :nth-of-type.
+    if (hasAmbiguousClassSibling(element)) {
+      const nth = getNthOfTypeSegment(element);
+      if (nth) {
+        segment += nth;
+      }
+    }
     return segment;
   }
 
@@ -72,6 +80,33 @@ function buildSegment(element: Element): string {
   }
 
   return segment;
+}
+
+function hasAmbiguousClassSibling(element: Element): boolean {
+  const parent = element.parentElement;
+  if (!parent) {
+    return false;
+  }
+
+  const classes = Array.from(element.classList).slice(0, 3);
+  let matches = 0;
+  for (const child of Array.from(parent.children)) {
+    if (child.tagName !== element.tagName) {
+      continue;
+    }
+    const childClasses = Array.from(child.classList).slice(0, 3);
+    if (
+      childClasses.length === classes.length &&
+      classes.every((className, index) => childClasses[index] === className)
+    ) {
+      matches += 1;
+      if (matches > 1) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function getPathStopElement(root: ParentNode): Element | null {

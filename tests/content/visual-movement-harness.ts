@@ -3,7 +3,7 @@ import type { ElementSignature } from "../../src/editor/element-signature.js";
 import type { TransformTarget } from "../../src/editor/transform/transform-target.js";
 import { buildElementSignature } from "../../src/editor/measurement/signature-builder.js";
 import { extractBoundingBox } from "../../src/editor/measurement/bounding-box.js";
-import { matchElementBySignatureDetailed } from "../../src/editor/dom/signature-matcher.js";
+import { getElementResolver, type ElementResolveResult } from "../../src/editor/dom/element-resolver.js";
 import { resolveTargetElementDetailed } from "../../src/editor/dom/resolve-target.js";
 import {
   OTF_DETACH_ATTR,
@@ -353,18 +353,8 @@ export function selectAndMove(
 export function resolveSignature(
   document: Document,
   signature: ElementSignature | undefined,
-): ReturnType<typeof matchElementBySignatureDetailed> {
-  if (!signature) {
-    return {
-      element: null,
-      diagnostics: {
-        resolved: false,
-        matchStrategy: "unresolved",
-        failureReason: "missing_signature",
-      },
-    };
-  }
-  return matchElementBySignatureDetailed(document, signature);
+): ElementResolveResult {
+  return getElementResolver(document).resolveDetailed(signature);
 }
 
 export async function saveAndReplay(

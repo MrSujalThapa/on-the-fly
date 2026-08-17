@@ -44,6 +44,7 @@ import {
   resolveLayerPlan,
 } from "./layer-overlap-resolver.js";
 import { resolveTargetElementDetailed } from "./resolve-target.js";
+import { getElementResolver, type ElementResolveStrategy } from "./element-resolver.js";
 import {
   summarizeElementSignature,
   type SignatureMatchDiagnostics,
@@ -66,7 +67,7 @@ export interface ReplayOperationDiagnostic {
   operationType: string;
   signatureSummary: string;
   resolved: boolean;
-  matchStrategy?: SignatureMatchDiagnostics["matchStrategy"];
+  matchStrategy?: ElementResolveStrategy | SignatureMatchDiagnostics["matchStrategy"];
   resolvedTag?: string;
   resolvedClasses?: string[];
   failureReason?: string;
@@ -153,11 +154,26 @@ export class DomRuntimeAdapter {
 
       let element: HTMLElement | null = null;
       if (overrideElement && overrideElement.isConnected) {
+        const resolver = getElementResolver(this.root);
+        const signature = operation.target.signature;
+        if (signature && !resolver.verify(signature, overrideElement)) {
+          const result = createDomApplyFailure(
+            "target_signature_mismatch",
+            "target_signature_mismatch:override_element_does_not_match_signature",
+          );
+          diagnostic.failureReason = result.error;
+          diagnostic.code = result.code;
+          diagnostic.error = result.error;
+          return { result, diagnostic };
+        }
         element = overrideElement;
         diagnostic.resolved = true;
-        diagnostic.matchStrategy = "live-session";
+        diagnostic.matchStrategy = signature ? "verified-live" : "live-session";
         diagnostic.resolvedTag = element.tagName.toLowerCase();
         diagnostic.resolvedClasses = Array.from(element.classList);
+        if (signature) {
+          resolver.remember(resolver.signatureKey(signature), element);
+        }
       } else if (operation.type === "duplicate") {
         const document = resolveDocument(this.root);
         const existing = document.querySelector(

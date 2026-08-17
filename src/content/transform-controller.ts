@@ -1,7 +1,7 @@
 import type { PageKey, VisualNodeId } from "../editor/ids.js";
 import type { EditorOperation, MoveOperation } from "../editor/operations.js";
 import type { VisualNodeRect } from "../editor/visual-node.js";
-import { matchElementBySignature } from "../editor/dom/signature-matcher.js";
+import { getElementResolver } from "../editor/dom/element-resolver.js";
 import {
   describeZIndexOperation,
   layerCommandToSource,
@@ -22,7 +22,10 @@ import {
 } from "../editor/dom/managed-detach.js";
 import { computeInteractionPlacementCoords } from "../editor/dom/fixed-position-anchor.js";
 import { readStoredTransformState } from "../editor/dom/element-snapshot.js";
-import { buildElementSignature } from "../editor/measurement/signature-builder.js";
+import {
+  buildElementSignature,
+  buildPersistableElementSignature,
+} from "../editor/measurement/signature-builder.js";
 import { readStoredCropInsets } from "../editor/dom/handlers/crop-handler.js";
 import type { DomRuntimeAdapter } from "../editor/dom/dom-runtime-adapter.js";
 import { enrichOperationWithRects } from "../editor/dom/enrich-operation-metadata.js";
@@ -410,11 +413,14 @@ export class TransformController {
     }> = [];
 
     const resolveElementForTarget = (target: TransformTarget): HTMLElement | null => {
+      const resolver = getElementResolver(this.document);
       const override = target.nodeId ? this.elementRegistry.get(target.nodeId) ?? null : null;
-      const resolved =
-        override?.isConnected
-          ? override
-          : matchElementBySignature(this.document, target.signature);
+      const preferred =
+        (override?.isConnected ? override : null) ??
+        (target.element?.isConnected ? target.element : null);
+      const resolved = resolver.resolveDetailed(target.signature, {
+        preferredElement: preferred,
+      }).element;
       return resolved ? resolveInteractionMoveTarget(resolved) : null;
     };
 
@@ -493,7 +499,19 @@ export class TransformController {
         processedMoveElements.add(element);
       }
 
-      const base = buildMoveOperation(target, moveDx, moveDy, { pageKey });
+      // Durable identity must describe the live element we are about to mutate.
+      const durableSignature = buildPersistableElementSignature(element, {
+        root: this.document,
+      });
+      const durableTarget: TransformTarget = {
+        ...target,
+        signature: durableSignature,
+        element,
+      };
+      const resolver = getElementResolver(this.document);
+      resolver.remember(resolver.signatureKey(durableSignature), element);
+
+      const base = buildMoveOperation(durableTarget, moveDx, moveDy, { pageKey });
       const operation = freezeCommittedOperation({
         ...base,
         payload: { ...base.payload, ...payload },
@@ -1113,12 +1131,9 @@ export class TransformController {
       if (!element) {
         const nodeId = operation.target.nodeId;
         const override = nodeId ? this.elementRegistry.get(nodeId) ?? null : null;
-        element =
-          override?.isConnected
-            ? override
-            : operation.target.signature
-              ? matchElementBySignature(this.document, operation.target.signature)
-              : null;
+        element = getElementResolver(this.document).resolveDetailed(operation.target.signature, {
+          preferredElement: override?.isConnected ? override : null,
+        }).element;
       }
       const result = this.adapter.applyOperation(
         operation,
@@ -1150,16 +1165,13 @@ export class TransformController {
    * re-resolution when the reference is gone (e.g. SPA re-render).
    */
   private resolveElement(target: TransformTarget): HTMLElement | null {
-    if (target.element?.isConnected) {
-      return target.element;
-    }
-
-    const registered = this.elementRegistry.get(target.nodeId);
-    if (registered?.isConnected) {
-      return registered;
-    }
-
-    return matchElementBySignature(this.document, target.signature);
+    const resolver = getElementResolver(this.document);
+    const preferred =
+      (target.element?.isConnected ? target.element : null) ??
+      (this.elementRegistry.get(target.nodeId)?.isConnected
+        ? this.elementRegistry.get(target.nodeId) ?? null
+        : null);
+    return resolver.resolveDetailed(target.signature, { preferredElement: preferred }).element;
   }
 
   private rebuildElementRegistry(): void {
