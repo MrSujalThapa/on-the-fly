@@ -208,3 +208,91 @@ export async function waitForReplaySettle(page: Page): Promise<void> {
     });
   });
 }
+
+function parsePackedRect(value: string | null): GeometryRect | null {
+  if (!value) {
+    return null;
+  }
+  const parts = value.split(",").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) {
+    return null;
+  }
+  const [x, y, width, height] = parts as [number, number, number, number];
+  return {
+    x,
+    y,
+    width,
+    height,
+    top: y,
+    left: x,
+    right: x + width,
+    bottom: y + height,
+  };
+}
+
+export interface OverlayPipeline {
+  model: GeometryRect | null;
+  renderer: GeometryRect | null;
+  rendered: GeometryRect | null;
+  space: string | null;
+  outlineCount: number;
+}
+
+export async function getOverlayPipeline(page: Page): Promise<OverlayPipeline> {
+  const session = await page.context().newCDPSession(page);
+  try {
+    const document = await session.send("DOM.getDocument", { depth: -1, pierce: true });
+    const root: CdpNode = document.root;
+    const outlines: CdpNode[] = [];
+    const collect = (node: CdpNode): void => {
+      if (classListOf(node).includes("otf-selection-outline")) {
+        outlines.push(node);
+      }
+      for (const child of node.children ?? []) {
+        collect(child);
+      }
+      for (const shadow of node.shadowRoots ?? []) {
+        collect(shadow);
+      }
+      if (node.contentDocument) {
+        collect(node.contentDocument);
+      }
+    };
+    collect(root);
+    const outline = outlines[0] ?? null;
+    if (!outline) {
+      return { model: null, renderer: null, rendered: null, space: null, outlineCount: 0 };
+    }
+    const model = parsePackedRect(attrOf(outline, "data-otf-model"));
+    const renderer = parsePackedRect(attrOf(outline, "data-otf-renderer"));
+    const space = attrOf(outline, "data-otf-space");
+    const box = await session.send("DOM.getBoxModel", { nodeId: outline.nodeId });
+    const quad = box.model.border.length >= 8 ? box.model.border : box.model.content;
+    const xs = [quad[0], quad[2], quad[4], quad[6]].filter((value): value is number => value !== undefined);
+    const ys = [quad[1], quad[3], quad[5], quad[7]].filter((value): value is number => value !== undefined);
+    const left = Math.min(...xs);
+    const right = Math.max(...xs);
+    const top = Math.min(...ys);
+    const bottom = Math.max(...ys);
+    return {
+      model,
+      renderer,
+      rendered: {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+        top,
+        left,
+        right,
+        bottom,
+      },
+      space,
+      outlineCount: outlines.length,
+    };
+  } catch {
+    return { model: null, renderer: null, rendered: null, space: null, outlineCount: 0 };
+  } finally {
+    await session.detach();
+  }
+}

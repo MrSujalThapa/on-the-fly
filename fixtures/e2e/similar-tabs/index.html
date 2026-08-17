@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>E2E similar tabs</title>
+    <link rel="stylesheet" href="/_shared.css" />
+    <style>
+      .tab-list {
+        display: flex;
+        gap: 8px;
+        padding: 8px;
+        background: #fff;
+        border: 1px solid #d4d4d8;
+        border-radius: 12px;
+      }
+      .tab {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 96px;
+        padding: 10px 14px;
+        border: 1px solid #d4d4d8;
+        border-radius: 999px;
+        background: #fafafa;
+        font: 600 14px/1 system-ui, sans-serif;
+      }
+      .tab-label {
+        display: inline;
+      }
+      .tab-badge {
+        display: inline-flex;
+        min-width: 16px;
+        justify-content: center;
+        color: #52525b;
+        font-weight: 500;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Similar tabs</h1>
+      <nav class="tab-list" data-testid="tab-list"></nav>
+    </main>
+    <script>
+      const STATE_KEY = "otf-similar-tabs";
+
+      function defaultTabs() {
+        return [
+          { key: "all", label: "All", badge: 12 },
+          { key: "jobs", label: "Jobs", badge: 4 },
+          { key: "posts", label: "My posts", badge: 8 },
+          { key: "mentions", label: "Mentions", badge: 3 },
+        ];
+      }
+
+      function loadState() {
+        try {
+          const raw = sessionStorage.getItem(STATE_KEY);
+          if (!raw) {
+            return { tabs: defaultTabs(), generation: 0 };
+          }
+          const parsed = JSON.parse(raw);
+          return {
+            tabs: Array.isArray(parsed.tabs) ? parsed.tabs : defaultTabs(),
+            generation: typeof parsed.generation === "number" ? parsed.generation : 0,
+          };
+        } catch {
+          return { tabs: defaultTabs(), generation: 0 };
+        }
+      }
+
+      const restored = loadState();
+      let tabs = restored.tabs;
+      let generation = restored.generation;
+
+      function persist() {
+        sessionStorage.setItem(STATE_KEY, JSON.stringify({ tabs, generation }));
+      }
+
+      function render() {
+        persist();
+        const list = document.querySelector("[data-testid='tab-list']");
+        list.replaceChildren();
+        for (const tab of tabs) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "tab";
+          button.setAttribute("role", "tab");
+          const label = document.createElement("span");
+          label.className = "tab-label";
+          label.textContent = tab.label;
+          const badge = document.createElement("span");
+          badge.className = "tab-badge";
+          badge.textContent = String(tab.badge + generation);
+          button.append(label, badge);
+          list.append(button);
+        }
+      }
+
+      window.__otfSimilarTabs = {
+        reorder() {
+          tabs = [tabs[2], tabs[0], tabs[3], tabs[1]];
+          render();
+        },
+        insertBeforeMentions() {
+          const index = tabs.findIndex((tab) => tab.key === "mentions");
+          tabs.splice(index < 0 ? tabs.length : index, 0, {
+            key: "activity",
+            label: "Activity",
+            badge: 1,
+          });
+          render();
+        },
+        bumpBadges() {
+          generation += 5;
+          render();
+        },
+        rerender() {
+          generation += 1;
+          render();
+        },
+      };
+
+      render();
+    </script>
+  </body>
+</html>

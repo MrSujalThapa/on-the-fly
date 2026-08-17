@@ -1,0 +1,322 @@
+import {
+  drag,
+  enableEditMode,
+  loadPersistedOperations,
+  openFixture,
+  reloadAndWaitForReplay,
+  save,
+  selectAndDrag,
+  selectParent,
+  selectTarget,
+} from "./helpers/actions.js";
+import type { Locator, Page } from "@playwright/test";
+import { expect, test } from "./helpers/extension.js";
+import {
+  expectRectNear,
+  getOverlayPipeline,
+  rect,
+  type GeometryRect,
+  type OverlayPipeline,
+} from "./helpers/geometry.js";
+
+async function openSimilarTabs(page: Page): Promise<void> {
+  await openFixture(page, "similar-tabs");
+  await page.evaluate(() => {
+    sessionStorage.removeItem("otf-similar-tabs");
+  });
+  await page.reload({ waitUntil: "domcontentloaded" });
+}
+
+function tab(page: Page, name: string) {
+  return page.getByRole("tab", { name: new RegExp(name, "u") });
+}
+
+async function hasEditorTransform(target: Locator): Promise<boolean> {
+  const style = await target.evaluate((element) => {
+    return {
+      attr: element.getAttribute("data-otf-transform"),
+      style: element.getAttribute("style") ?? "",
+    };
+  });
+  return Boolean(style.attr) || /translate/u.test(style.style);
+}
+
+function classifyOverlay(
+  label: string,
+  pipeline: OverlayPipeline,
+  target: GeometryRect,
+): string {
+  const parts = [
+    `${label} outlines=${String(pipeline.outlineCount)} space=${pipeline.space ?? "none"}`,
+    `model=${JSON.stringify(pipeline.model)}`,
+    `renderer=${JSON.stringify(pipeline.renderer)}`,
+    `rendered=${JSON.stringify(pipeline.rendered)}`,
+    `target=${JSON.stringify({ x: target.x, y: target.y, width: target.width, height: target.height })}`,
+  ];
+  const a = pipeline.model;
+  const b = pipeline.renderer;
+  const c = pipeline.rendered;
+  if (!a || !b || !c) {
+    parts.push("class=missing-stage");
+    return parts.join(" | ");
+  }
+  const near = (left: GeometryRect, right: GeometryRect, tolerance: number): boolean =>
+    Math.abs(left.x - right.x) <= tolerance &&
+    Math.abs(left.y - right.y) <= tolerance &&
+    Math.abs(left.width - right.width) <= tolerance &&
+    Math.abs(left.height - right.height) <= tolerance;
+  const aTarget = near(a, target, 6);
+  const ab = near(a, b, 1);
+  const bc = near(b, c, 2);
+  if (!aTarget) {
+    parts.push("class=A-wrong VisualModel measurement/binding");
+  } else if (!ab) {
+    parts.push("class=B-wrong OverlayCoordinator input/scheduling");
+  } else if (!bc) {
+    parts.push("class=C-wrong overlay rendering/coordinate-space");
+  } else {
+    parts.push("class=aligned");
+  }
+  return parts.join(" | ");
+}
+
+async function expectPipelineAligned(page: Page, target: Locator, label: string): Promise<void> {
+  await expect.poll(async () => {
+    const pipeline = await getOverlayPipeline(page);
+    const box = await rect(target);
+    if (!pipeline.model || !pipeline.renderer || !pipeline.rendered) {
+      return classifyOverlay(label, pipeline, box);
+    }
+    const report = classifyOverlay(label, pipeline, box);
+    return report.includes("class=aligned") ? "aligned" : report;
+  }, { timeout: 8_000 }).toBe("aligned");
+  const pipeline = await getOverlayPipeline(page);
+  const box = await rect(target);
+  expect(pipeline.outlineCount, `${label} single outline`).toBe(1);
+  expect(pipeline.space, `${label} coordinate space`).toBe("viewport");
+  expect(pipeline.model, `${label} model`).not.toBeNull();
+  expect(pipeline.renderer, `${label} renderer`).not.toBeNull();
+  expect(pipeline.rendered, `${label} rendered`).not.toBeNull();
+  if (!pipeline.model || !pipeline.renderer || !pipeline.rendered) {
+    return;
+  }
+  expectRectNear(pipeline.model, box, 6, `${label} A vs target`);
+  expectRectNear(pipeline.renderer, pipeline.model, 1, `${label} A vs B`);
+  expectRectNear(pipeline.rendered, pipeline.renderer, 2, `${label} B vs C`);
+}
+
+test.describe("B3 characterization identity persistence overlay", () => {
+  test.skip(!process.env.E2E_RUNTIME_V2, "Runtime V2 B3 characterization");
+
+  test("B3.1 similar sibling Mentions never retargets My posts", async ({ page, context }) => {
+    test.setTimeout(45_000);
+    await openSimilarTabs(page);
+    await enableEditMode(context, page);
+
+    const mentions = tab(page, "Mentions");
+    await mentions.scrollIntoViewIfNeeded();
+    const originMentions = await rect(mentions);
+    const moved = await selectAndDrag(page, mentions, 80, 40);
+    expect(
+      Math.abs(moved.after.x - originMentions.x) + Math.abs(moved.after.y - originMentions.y),
+      "Mentions must actually move before save",
+    ).toBeGreaterThan(20);
+    const selected = await getOverlayPipeline(page);
+    expect(selected.rendered, "tab chrome after Mentions select").not.toBeNull();
+    if (selected.rendered) {
+      expect(selected.rendered.width).toBeLessThan((await rect(page.getByTestId("tab-list"))).width * 0.7);
+    }
+    await save(page);
+    await page.evaluate(() => {
+      const raw = sessionStorage.getItem("otf-similar-tabs");
+      const parsed = raw ? JSON.parse(raw) as {
+        tabs?: Array<{ key: string; label: string; badge: number }>;
+        generation?: number;
+      } : {};
+      const tabs = parsed.tabs ?? [];
+      const mentions = tabs.find((tab) => tab.key === "mentions");
+      const rest = tabs.filter((tab) => tab.key !== "mentions");
+      const next = [rest[1], rest[0], { key: "activity", label: "Activity", badge: 1 }, mentions, rest[2]].filter(
+        (tab): tab is { key: string; label: string; badge: number } => Boolean(tab),
+      );
+      sessionStorage.setItem(
+        "otf-similar-tabs",
+        JSON.stringify({ tabs: next, generation: (parsed.generation ?? 0) + 5 }),
+      );
+    });
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 20_000 });
+    await expect(tab(page, "Mentions")).toBeVisible({ timeout: 10_000 });
+    await expect(tab(page, "My posts")).toBeVisible({ timeout: 10_000 });
+
+    const mentionsAfter = tab(page, "Mentions");
+    const postsAfter = tab(page, "My posts");
+    expect(await hasEditorTransform(postsAfter), "My posts must never receive Mentions' state").toBe(false);
+
+    const mentionsHasTransform = await hasEditorTransform(mentionsAfter);
+    if (!mentionsHasTransform) {
+      expect(
+        (await hasEditorTransform(tab(page, "All"))) ||
+          (await hasEditorTransform(tab(page, "Jobs"))) ||
+          (await hasEditorTransform(tab(page, "Activity"))),
+        "unresolved Mentions must not mutate a neighbor",
+      ).toBe(false);
+    }
+  });
+
+  test("B3.1 live host reorder does not apply Mentions' transform to My posts", async ({
+    page,
+    context,
+  }) => {
+    test.setTimeout(30_000);
+    await openSimilarTabs(page);
+    await enableEditMode(context, page);
+    await selectAndDrag(page, tab(page, "Mentions"), 80, 40);
+    await save(page);
+    await page.evaluate(() => {
+      const api = (window as unknown as { __otfSimilarTabs?: Record<string, () => void> }).__otfSimilarTabs;
+      api?.insertBeforeMentions?.();
+      api?.reorder?.();
+      api?.bumpBadges?.();
+    });
+    expect(await hasEditorTransform(tab(page, "My posts")), "live My posts").toBe(false);
+  });
+
+  test("B3.2 many moves and saves restore the final committed geometry", async ({
+    page,
+    context,
+  }) => {
+    test.setTimeout(120_000);
+    await openFixture(page, "simple");
+    await enableEditMode(context, page);
+    const target = page.getByTestId("target");
+    await selectTarget(page, target);
+    for (let index = 0; index < 30; index += 1) {
+      await drag(page, target, 6, index % 2 === 0 ? 4 : -2);
+      if (index === 9 || index === 19 || index === 29) {
+        await save(page);
+      }
+    }
+    const committed = await rect(target);
+    const persisted = await loadPersistedOperations(context, page);
+    const moveCount = persisted.filter((operation) => operation.type === "move").length;
+    expect.soft(
+      moveCount,
+      `persisted MOVE count should be canonical, not historical; got ${String(moveCount)}`,
+    ).toBeLessThanOrEqual(2);
+    await reloadAndWaitForReplay(page);
+    expectRectNear(await rect(page.getByTestId("target")), committed, 4, "30-move checkpoint");
+  });
+
+  test("B3.3 child selection does not render collection chrome", async ({ page, context }) => {
+    await openFixture(page, "collection-section");
+    await enableEditMode(context, page);
+    const card = page.getByTestId("card-b");
+    await selectAndDrag(page, card, 70, 30);
+    const pipeline = await getOverlayPipeline(page);
+    const cardBox = await rect(card);
+    const collection = await rect(page.getByTestId("collection"));
+    expect(pipeline.outlineCount, "one outline").toBe(1);
+    expect(pipeline.rendered).not.toBeNull();
+    if (!pipeline.rendered) {
+      return;
+    }
+    expectRectNear(pipeline.rendered, cardBox, 8, "B chrome after move");
+    expect(
+      Math.abs(pipeline.rendered.width - collection.width) +
+        Math.abs(pipeline.rendered.height - collection.height),
+      "collection chrome must not render because B belongs to it",
+    ).toBeGreaterThan(40);
+
+    await selectParent(page);
+    const parentPipeline = await getOverlayPipeline(page);
+    expect(parentPipeline.rendered).not.toBeNull();
+    if (!parentPipeline.rendered) {
+      return;
+    }
+    expectRectNear(parentPipeline.rendered, await rect(page.getByTestId("collection")), 8, "explicit collection chrome");
+  });
+
+  test("B3.4 overlay pipeline A/B/C — initial scroll resize", async ({ page, context }) => {
+    await openFixture(page, "simple");
+    await enableEditMode(context, page);
+    const target = page.getByTestId("target");
+    await selectTarget(page, target);
+    await expectPipelineAligned(page, target, "initial");
+    await page.evaluate(() => {
+      window.scrollBy(0, 140);
+    });
+    await expectPipelineAligned(page, target, "scroll");
+    await page.setViewportSize({ width: 980, height: 620 });
+    await expectPipelineAligned(page, target, "resize");
+  });
+
+  test("B3.4 overlay pipeline A/B/C — nested scroll", async ({ page, context }) => {
+    await openFixture(page, "nested-scroll");
+    await enableEditMode(context, page);
+    const nested = page.getByTestId("nested-target");
+    await nested.scrollIntoViewIfNeeded();
+    await selectTarget(page, nested);
+    await page.getByTestId("scroller").evaluate((element) => {
+      element.scrollTop += 80;
+    });
+    await expectPipelineAligned(page, nested, "nested-scroll");
+  });
+
+  test("B3.4 overlay pipeline A/B/C — host layout shift", async ({ page, context }) => {
+    await openFixture(page, "layout-shift");
+    await enableEditMode(context, page);
+    const shifted = page.getByTestId("target");
+    await selectTarget(page, shifted);
+    await page.evaluate(() => {
+      const spacer = document.getElementById("spacer");
+      if (spacer) {
+        spacer.style.height = "140px";
+      }
+    });
+    await expectPipelineAligned(page, shifted, "host-layout-shift");
+  });
+
+  test("B3.4 overlay pipeline A/B/C — transformed ancestor", async ({ page, context }) => {
+    await openFixture(page, "transformed-ancestor");
+    await enableEditMode(context, page);
+    const nestedCard = page.getByTestId("nested-card");
+    await selectTarget(page, nestedCard);
+    await expectPipelineAligned(page, nestedCard, "css-transform-ancestor");
+  });
+
+  test("B3.4 overlay pipeline A/B/C — html containing block", async ({ page, context }) => {
+    await openFixture(page, "html-transform");
+    await enableEditMode(context, page);
+    const htmlTarget = page.getByTestId("target");
+    await selectTarget(page, htmlTarget);
+    await expectPipelineAligned(page, htmlTarget, "html-containing-block");
+  });
+
+  test("B3.4 overlay pipeline A/B/C — animated layout", async ({ page, context }) => {
+    await openFixture(page, "animated-layout");
+    await enableEditMode(context, page);
+    const animated = page.getByTestId("target");
+    await selectTarget(page, animated);
+    await page.evaluate(() => {
+      const spacer = document.getElementById("spacer");
+      if (spacer) {
+        spacer.style.height = "120px";
+      }
+    });
+    for (let frame = 0; frame < 6; frame += 1) {
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+      await expectPipelineAligned(page, animated, `animation-frame-${String(frame)}`);
+    }
+  });
+
+  test("B3.4 overlay pipeline A/B/C — css zoom", async ({ page, context }) => {
+    await openFixture(page, "simple");
+    await enableEditMode(context, page);
+    const zoomTarget = page.getByTestId("target");
+    await selectTarget(page, zoomTarget);
+    await page.evaluate(() => {
+      document.documentElement.style.zoom = "1.25";
+    });
+    await expectPipelineAligned(page, zoomTarget, "css-zoom");
+  });
+});

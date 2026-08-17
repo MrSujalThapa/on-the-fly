@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>E2E collection section</title>
+    <link rel="stylesheet" href="/_shared.css" />
+    <style>
+      .gallery-section {
+        padding: 24px;
+        background: #e4e4e7;
+        border-radius: 20px;
+      }
+      .gallery {
+        display: flex;
+        gap: 16px;
+      }
+      .card {
+        width: 180px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Collection section</h1>
+      <section class="gallery-section" data-testid="section">
+        <div class="gallery" data-testid="collection">
+          <article class="card" data-testid="card-a">Card A</article>
+          <article class="card" data-testid="card-b">Card B</article>
+          <article class="card" data-testid="card-c">Card C</article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

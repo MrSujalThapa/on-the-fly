@@ -18,6 +18,10 @@ export interface OverlayCoordinatorDeps {
 const SAVE_BUTTON_CLASS = "otf-save-button";
 const OUTLINE_CLASS = "otf-selection-outline";
 
+function serializeRect(rect: IntendedRect): string {
+  return `${String(rect.x)},${String(rect.y)},${String(rect.width)},${String(rect.height)}`;
+}
+
 function overlayStyles(doc: Document): HTMLStyleElement {
   const style = doc.createElement("style");
   style.textContent = `
@@ -119,6 +123,10 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     outline.style.top = `${String(rect.y)}px`;
     outline.style.width = `${String(rect.width)}px`;
     outline.style.height = `${String(rect.height)}px`;
+    const model = measureSelected();
+    outline.dataset.otfModel = serializeRect(model ?? rect);
+    outline.dataset.otfRenderer = serializeRect(rect);
+    outline.dataset.otfSpace = "viewport";
     painted = rect;
   };
 

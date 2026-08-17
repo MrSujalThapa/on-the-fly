@@ -105,3 +105,40 @@ export async function enableInteractMode(page: Page): Promise<void> {
   await page.keyboard.press("i");
   await expect.poll(async () => getIndicatorMode(page), { timeout: 8_000 }).toBe("interact");
 }
+
+export async function loadPersistedOperations(
+  context: BrowserContext,
+  page: Page,
+): Promise<Array<Record<string, unknown>>> {
+  const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
+  const pageKey = await page.evaluate(() => `${location.origin}${location.pathname}`);
+  return worker.evaluate(async (key) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("on_the_fly_v1");
+      request.onsuccess = () => {
+        resolve(request.result);
+      };
+      request.onerror = () => {
+        reject(request.error ?? new Error("indexeddb_open_failed"));
+      };
+    });
+    try {
+      if (!db.objectStoreNames.contains("operations")) {
+        return [];
+      }
+      const rows = await new Promise<Array<Record<string, unknown>>>((resolve, reject) => {
+        const tx = db.transaction("operations", "readonly");
+        const request = tx.objectStore("operations").index("pageKey").getAll(key);
+        request.onsuccess = () => {
+          resolve((request.result ?? []) as Array<Record<string, unknown>>);
+        };
+        request.onerror = () => {
+          reject(request.error ?? new Error("indexeddb_get_failed"));
+        };
+      });
+      return rows;
+    } finally {
+      db.close();
+    }
+  }, pageKey);
+}
