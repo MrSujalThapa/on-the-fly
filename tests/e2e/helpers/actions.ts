@@ -49,11 +49,13 @@ export async function drag(page: Page, target: Locator, dx: number, dy: number):
   if (!box) {
     return;
   }
-  const startX = box.x + box.width / 2;
-  const startY = box.y + box.height / 2;
-  await page.mouse.move(startX, startY);
+  await dragFrom(page, box.x + box.width / 2, box.y + box.height / 2, dx, dy);
+}
+
+export async function dragFrom(page: Page, x: number, y: number, dx: number, dy: number): Promise<void> {
+  await page.mouse.move(x, y);
   await page.mouse.down();
-  await page.mouse.move(startX + dx, startY + dy, { steps: 16 });
+  await page.mouse.move(x + dx, y + dy, { steps: 16 });
   await page.mouse.up();
 }
 
@@ -130,7 +132,7 @@ export async function loadPersistedOperations(
         const tx = db.transaction("operations", "readonly");
         const request = tx.objectStore("operations").index("pageKey").getAll(key);
         request.onsuccess = () => {
-          resolve((request.result ?? []) as Array<Record<string, unknown>>);
+          resolve(request.result as Array<Record<string, unknown>>);
         };
         request.onerror = () => {
           reject(request.error ?? new Error("indexeddb_get_failed"));

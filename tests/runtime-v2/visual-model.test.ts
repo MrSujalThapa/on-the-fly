@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createTestDocument } from "../editor/dom/test-document.js";
 import { createVisualModel } from "../../src/runtime-v2/create-visual-model.js";
 import { isResolvedVisual, isUnresolvedVisual } from "../../src/runtime-v2/visual-model.js";
-import { buildDurableIdentity, resolveDurableIdentity } from "../../src/runtime-v2/visual-identity.js";
+import { buildDurableIdentity, identifyingContent, resolveDurableIdentity } from "../../src/runtime-v2/visual-identity.js";
 import { discoverFromElement } from "../../src/runtime-v2/visual-hierarchy.js";
 
 function stubRect(
@@ -256,5 +256,64 @@ describe("VisualModel hierarchy", () => {
     }
     expect(model.get(parentId)?.role).toBe("collection");
     expect(model.bind(id)).toBe(middle);
+  });
+});
+
+describe("logical identity vs positional locators", () => {
+  it("resolves Mentions after reorder instead of the sibling now occupying the old path", () => {
+    const { document, root } = createTestDocument(`
+      <nav class="tabs">
+        <button class="tab">All</button>
+        <button class="tab">Jobs</button>
+        <button class="tab">My posts</button>
+        <button class="tab">Mentions</button>
+      </nav>
+    `);
+    const tabs = layoutCards(root, "button", 40);
+    const mentions = tabs[3];
+    if (!mentions) {
+      return;
+    }
+    const identity = buildDurableIdentity(mentions, document);
+    const nav = root.querySelector("nav");
+    if (!(nav instanceof HTMLElement) || !tabs[0] || !tabs[1] || !tabs[2]) {
+      return;
+    }
+    nav.append(tabs[2], tabs[0], mentions, tabs[1]);
+    layoutCards(root, "button", 40);
+    const resolved = resolveDurableIdentity(document, identity);
+    expect(isResolvedVisual(resolved)).toBe(true);
+    if (isResolvedVisual(resolved)) {
+      expect(identifyingContent(resolved.element.textContent || "")).toBe("mentions");
+      expect(identifyingContent(resolved.element.textContent || "")).not.toBe("my posts");
+    }
+  });
+
+  it("does not accept a unique css path whose identifying content contradicts the saved target", () => {
+    const { document, root } = createTestDocument(`
+      <div>
+        <button class="tab">A</button>
+        <button class="tab">B</button>
+        <button class="tab">C</button>
+        <button class="tab">D</button>
+      </div>
+    `);
+    const tabs = layoutCards(root, "button", 40);
+    const c = tabs[2];
+    if (!c) {
+      return;
+    }
+    const identity = buildDurableIdentity(c, document);
+    const host = root.querySelector("div");
+    if (!(host instanceof HTMLElement) || !tabs[0] || !tabs[1] || !tabs[3]) {
+      return;
+    }
+    host.append(tabs[3], tabs[0], tabs[1], c);
+    layoutCards(root, "button", 40);
+    const resolved = resolveDurableIdentity(document, identity);
+    expect(isResolvedVisual(resolved)).toBe(true);
+    if (isResolvedVisual(resolved)) {
+      expect(identifyingContent(resolved.element.textContent || "")).toBe("c");
+    }
   });
 });

@@ -1,5 +1,5 @@
 import {
-  drag,
+  dragFrom,
   enableEditMode,
   enableInteractMode,
   openFixture,
@@ -119,7 +119,12 @@ test.describe("visual model VM1–VM8 VM12", () => {
     };
     await selectAndDrag(page, page.getByTestId("card-b"), 200, 0);
     await selectParent(page);
-    await drag(page, page.getByTestId("collection"), 100, 0);
+    const box = await page.getByTestId("collection").boundingBox();
+    expect(box, "collection box").not.toBeNull();
+    if (!box) {
+      return;
+    }
+    await dragFrom(page, box.x + 24, box.y + 10, 100, 0);
     expectRectNear(await rect(page.getByTestId("card-a")), translated(origin.a, 100, 0), 8, "A +100");
     expectRectNear(await rect(page.getByTestId("card-b")), translated(origin.b, 300, 0), 8, "B +300");
     expectRectNear(await rect(page.getByTestId("card-c")), translated(origin.c, 100, 0), 8, "C +100");
