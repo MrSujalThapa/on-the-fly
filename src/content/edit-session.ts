@@ -77,10 +77,7 @@ import {
 } from "./session-operation-state.js";
 import { createStyleTextController, StyleTextController } from "./style-text-controller.js";
 import { FloatingToolbar } from "./floating-toolbar.js";
-import {
-  PageCustomizationController,
-  computePageKey as computeDocumentPageKey,
-} from "./page-customization-controller.js";
+import { PageCustomizationController } from "./page-customization-controller.js";
 import { isInsideEphemeralSurface } from "./ephemeral-surface.js";
 import {
   extractEditableText,
@@ -169,6 +166,7 @@ export class EditSession implements SessionCommandHost {
   private agentPreviewController: AgentPreviewController | null = null;
   private agentPanel: AgentPanel | null = null;
   private lastPersistedGroupId: string | null = null;
+  private beforeUnloadHandler: ((event: BeforeUnloadEvent) => void) | null = null;
 
   constructor(options: EditSessionOptions) {
     this.shell = options.shell;
@@ -203,6 +201,8 @@ export class EditSession implements SessionCommandHost {
     if (replay.failed > 0 || replay.unresolved > 0) {
       this.onDebug("page-replay-incomplete", replay);
     }
+    this.attachPageIdentityHooks();
+    this.attachBeforeUnloadGuard();
     this.adapter = this.pageCustomization.getAdapter();
     this.operationState = createSessionOperationState([
       ...this.pageCustomization.getPageOperations(),
@@ -575,6 +575,8 @@ export class EditSession implements SessionCommandHost {
     this.lastSelectionResult = null;
     this.agentPanel?.close();
     this.agentPreviewController?.rejectPreview();
+    this.detachPageIdentityHooks();
+    this.detachBeforeUnloadGuard();
     this.syncPageCustomizationOperations();
     this.operationState = createSessionOperationState();
     this.sessionHistory = createSessionHistory();
@@ -1140,7 +1142,66 @@ export class EditSession implements SessionCommandHost {
   }
 
   private computePageKey(): string {
-    return computeDocumentPageKey(this.root);
+    return this.pageCustomization.getPageKey();
+  }
+
+  private attachPageIdentityHooks(): void {
+    this.pageCustomization.setFlushBeforePageKeyChange(async () => {
+      if (!hasUnsavedChanges(this.operationState)) {
+        return;
+      }
+      const saved = await this.saveAll();
+      if (!saved) {
+        this.onDebug("page-identity-flush-failed", {
+          pageKey: this.pageCustomization.getPageKey(),
+        });
+      }
+    });
+    this.pageCustomization.setAfterPageKeyChange((next, previous) => {
+      this.operationState = createSessionOperationState([
+        ...this.pageCustomization.getPageOperations(),
+      ]);
+      this.sessionHistory = createSessionHistory();
+      this.lastClickTime = 0;
+      this.lastClickNodeId = null;
+      this.lastSelectionKey = null;
+      this.lastPersistedGroupId = null;
+      this.lastGroupedSelectionSnapshot = null;
+      this.clearAgentSelectionOverride();
+      this.clearSelection();
+      this.updateSaveButton();
+      this.onDebug("page-identity-session-reset", { previous, next });
+    });
+  }
+
+  private detachPageIdentityHooks(): void {
+    this.pageCustomization.setFlushBeforePageKeyChange(null);
+    this.pageCustomization.setAfterPageKeyChange(null);
+  }
+
+  private attachBeforeUnloadGuard(): void {
+    const view = this.root.defaultView;
+    if (!view || this.beforeUnloadHandler) {
+      return;
+    }
+    this.beforeUnloadHandler = (event: BeforeUnloadEvent) => {
+      if (!hasUnsavedChanges(this.operationState)) {
+        return;
+      }
+      event.preventDefault();
+      // Chrome still requires returnValue to show the leave-page prompt.
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- beforeunload dialog
+      event.returnValue = "";
+    };
+    view.addEventListener("beforeunload", this.beforeUnloadHandler);
+  }
+
+  private detachBeforeUnloadGuard(): void {
+    const view = this.root.defaultView;
+    if (view && this.beforeUnloadHandler) {
+      view.removeEventListener("beforeunload", this.beforeUnloadHandler);
+    }
+    this.beforeUnloadHandler = null;
   }
 
   groupSelection(): void {

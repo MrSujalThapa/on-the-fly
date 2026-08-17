@@ -7,6 +7,7 @@ export interface TestDocumentContext {
 
 export function createTestDocument(html: string): TestDocumentContext {
   const window = new Window({
+    url: "https://example.com/",
     innerWidth: 1024,
     innerHeight: 768,
   });

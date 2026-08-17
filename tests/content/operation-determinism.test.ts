@@ -288,7 +288,7 @@ describe("operation determinism", () => {
       shell,
       document,
       adapter,
-      getPageKey: () => "https://example.com/profile",
+      getPageKey: () => pageCustomization.getPageKey(),
       onApply: () => undefined,
     });
 

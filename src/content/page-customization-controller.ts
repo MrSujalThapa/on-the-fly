@@ -9,6 +9,11 @@ import {
   replacePageOperations,
   type SavePageOperationsResult,
 } from "./storage-client.js";
+import {
+  computeDocumentPageKey,
+  createPageIdentity,
+  type PageIdentity,
+} from "./page-identity.js";
 
 export interface PageCustomizationReplayResult {
   pageKey: PageKey;
@@ -24,7 +29,8 @@ export interface PageCustomizationReplayResult {
  */
 export class PageCustomizationController {
   private readonly adapter: DomRuntimeAdapter;
-  private readonly pageKey: PageKey;
+  private readonly identity: PageIdentity;
+  private pageKey: PageKey;
   private replayed = false;
   private pageOperations: EditorOperation[] = [];
   private replayPromise: Promise<PageCustomizationReplayResult> | null = null;
@@ -37,10 +43,29 @@ export class PageCustomizationController {
   private replayGeneration = 0;
   /** True while a clear is in progress; replay must not apply operations. */
   private clearing = false;
+  private replayDebug: ((message: string, data?: unknown) => void) | undefined;
+  private flushBeforePageKeyChange:
+    | ((previous: PageKey, next: PageKey) => Promise<void>)
+    | null = null;
+  private afterPageKeyChange: ((next: PageKey, previous: PageKey) => void) | null = null;
+  private pageKeyChangeQueue: Promise<void> = Promise.resolve();
+  private readonly unsubscribeIdentity: () => void;
 
   constructor(private readonly root: Document) {
     this.adapter = createDomRuntimeAdapter(root);
-    this.pageKey = computePageKey(root);
+    this.identity = createPageIdentity(root);
+    this.pageKey = this.identity.current();
+    this.unsubscribeIdentity = this.identity.subscribe((next, previous) => {
+      this.pageKeyChangeQueue = this.pageKeyChangeQueue
+        .then(() => this.applyPageKeyChange(next, previous))
+        .catch((error: unknown) => {
+          this.replayDebug?.("page-identity-change-failed", {
+            previous,
+            next,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    });
   }
 
   getAdapter(): DomRuntimeAdapter {
@@ -49,6 +74,29 @@ export class PageCustomizationController {
 
   getPageKey(): PageKey {
     return this.pageKey;
+  }
+
+  setFlushBeforePageKeyChange(
+    flush: ((previous: PageKey, next: PageKey) => Promise<void>) | null,
+  ): void {
+    this.flushBeforePageKeyChange = flush;
+  }
+
+  setAfterPageKeyChange(
+    listener: ((next: PageKey, previous: PageKey) => void) | null,
+  ): void {
+    this.afterPageKeyChange = listener;
+  }
+
+  dispose(): void {
+    this.unsubscribeIdentity();
+    this.identity.dispose();
+    this.flushBeforePageKeyChange = null;
+    this.afterPageKeyChange = null;
+  }
+
+  whenPageKeySettled(): Promise<void> {
+    return this.pageKeyChangeQueue;
   }
 
   isReplayed(): boolean {
@@ -66,8 +114,39 @@ export class PageCustomizationController {
   ensureReplayed(
     onDebug?: (message: string, data?: unknown) => void,
   ): Promise<PageCustomizationReplayResult> {
-    this.replayPromise ??= this.replay(onDebug);
+    if (onDebug) {
+      this.replayDebug = onDebug;
+    }
+    this.replayPromise ??= this.replay(onDebug ?? this.replayDebug);
     return this.replayPromise;
+  }
+
+  private async applyPageKeyChange(next: PageKey, previous: PageKey): Promise<void> {
+    if (next === this.pageKey) {
+      return;
+    }
+
+    this.replayDebug?.("page-identity-changed", { previous, next });
+    await this.flushBeforePageKeyChange?.(previous, next);
+
+    if (this.pageOperations.length > 0 && this.pageKey === previous) {
+      const persist = await replacePageOperations(previous, this.pageOperations);
+      if (!persist.ok) {
+        this.replayDebug?.("page-identity-persist-failed", {
+          pageKey: previous,
+          error: persist.error,
+        });
+      }
+    }
+
+    this.pageKey = next;
+    this.replayed = false;
+    this.replayPromise = null;
+    this.replayGeneration += 1;
+    this.pageOperations = [];
+    this.adapter.clearAppliedEffects();
+    await this.ensureReplayed(this.replayDebug);
+    this.afterPageKeyChange?.(next, previous);
   }
 
   private async replay(
@@ -207,14 +286,18 @@ export class PageCustomizationController {
   }
 
   async syncOperationsToStorage(): Promise<SavePageOperationsResult> {
+    const mismatch = this.pageOperations.some((operation) => operation.pageKey !== this.pageKey);
+    if (mismatch) {
+      this.replayDebug?.("page-key-mismatch", {
+        pageKey: this.pageKey,
+        operationKeys: [...new Set(this.pageOperations.map((operation) => operation.pageKey))],
+      });
+      return { ok: false, error: "page_key_mismatch" };
+    }
     return replacePageOperations(this.pageKey, this.pageOperations);
   }
 }
 
 export function computePageKey(root: Document): PageKey {
-  const location = root.defaultView?.location;
-  if (location) {
-    return `${location.origin}${location.pathname}`;
-  }
-  return "otf://unknown";
+  return computeDocumentPageKey(root);
 }
