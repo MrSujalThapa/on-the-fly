@@ -38,7 +38,7 @@ export async function selectTarget(page: Page, target: Locator): Promise<void> {
   if (!box) {
     return;
   }
-  await page.mouse.click(box.x + Math.min(24, box.width / 2), box.y + Math.min(24, box.height / 2));
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await expect.poll(async () => getOverlayRect(page), { timeout: 8_000 }).not.toBeNull();
 }
 
@@ -48,8 +48,8 @@ export async function drag(page: Page, target: Locator, dx: number, dy: number):
   if (!box) {
     return;
   }
-  const startX = box.x + Math.min(40, box.width / 2);
-  const startY = box.y + Math.min(40, box.height / 2);
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
   await page.mouse.move(startX, startY);
   await page.mouse.down();
   await page.mouse.move(startX + dx, startY + dy, { steps: 16 });

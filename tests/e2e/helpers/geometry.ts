@@ -157,6 +157,8 @@ export async function getOverlayRect(page: Page): Promise<GeometryRect | null> {
       right,
       bottom,
     };
+  } catch {
+    return null;
   } finally {
     await session.detach();
   }

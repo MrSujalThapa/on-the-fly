@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>E2E replace mid-gesture</title>
+    <link rel="stylesheet" href="/_shared.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Replace mid-gesture</h1>
+      <div id="host" class="row">
+        <article class="card" data-testid="logical-x">Target</article>
+        <article class="card" data-testid="sibling">Sibling</article>
+      </div>
+    </main>
+    <script>
+      window.__otfReplaceLogicalX = function replaceLogicalX() {
+        const host = document.getElementById("host");
+        const next = document.createElement("article");
+        next.className = "card";
+        next.dataset.testid = "logical-x";
+        next.textContent = "Replaced";
+        const sibling = host.querySelector('[data-testid="sibling"]');
+        host.replaceChildren(next, sibling);
+      };
+    </script>
+  </body>
+</html>

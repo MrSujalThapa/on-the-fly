@@ -281,3 +281,67 @@ test.describe("product contract E1–E12", () => {
     }
   });
 });
+
+test.describe("product contract E13–E14", () => {
+  test.skip(!process.env.E2E_RUNTIME_V2, "Runtime V2 verification-only contract");
+
+  test("E13 failed geometry verification rolls back and leaves the ledger clean", async ({
+    page,
+    context,
+  }) => {
+    await openFixture(page, "hostile-transform");
+    await enableEditMode(context, page);
+
+    const target = page.getByTestId("locked");
+    const before = await rect(target);
+    await selectAndDrag(page, target, 90, 50);
+    const after = await rect(target);
+    expectRectNear(after, before, 4, "locked remains unmoved");
+
+    await save(page);
+    await reloadAndWaitForReplay(page);
+    expectRectNear(await rect(page.getByTestId("locked")), before, 4, "no persisted failed move");
+  });
+
+  test("E14 target replaced mid-gesture does not commit an uncertain identity", async ({
+    page,
+    context,
+  }) => {
+    await openFixture(page, "replace-mid-gesture");
+    await enableEditMode(context, page);
+
+    const target = page.getByTestId("logical-x");
+    const sibling = page.getByTestId("sibling");
+    const beforeTarget = await rect(target);
+    const beforeSibling = await rect(sibling);
+    const box = await target.boundingBox();
+    expect(box).not.toBeNull();
+    if (!box) {
+      return;
+    }
+
+    const startX = box.x + box.width / 2;
+    const startY = box.y + box.height / 2;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.evaluate(() => {
+      const replace = (window as unknown as { __otfReplaceLogicalX?: () => void }).__otfReplaceLogicalX;
+      replace?.();
+    });
+    await page.mouse.move(startX + 80, startY + 40, { steps: 12 });
+    await page.mouse.up();
+
+    const replacement = page.getByTestId("logical-x");
+    await expect(replacement).toHaveCount(1);
+    expect(await replacement.evaluate((element) => element.isConnected)).toBe(true);
+    expectRectNear(await rect(page.getByTestId("sibling")), beforeSibling, 4, "sibling untouched");
+
+    const next = await rect(replacement);
+    const delta = Math.abs(next.x - beforeTarget.x) + Math.abs(next.y - beforeTarget.y);
+    if (delta > 20) {
+      expectRectNear(next, translated(beforeTarget, 80, 40), 8, "rebound logical-x");
+    } else {
+      expectRectNear(next, beforeTarget, 8, "cancelled logical-x");
+    }
+  });
+});
