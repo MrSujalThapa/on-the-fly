@@ -18,6 +18,7 @@ import { resolveLayerPlan } from "../editor/dom/layer-overlap-resolver.js";
 import {
   findCounterTransformDescendants,
   markTransformOnlyMove,
+  OTF_DETACH_ATTR,
   shouldDetachForPredictedRect,
 } from "../editor/dom/managed-detach.js";
 import { computeInteractionPlacementCoords } from "../editor/dom/fixed-position-anchor.js";
@@ -480,7 +481,10 @@ export class TransformController {
           interactionSafeFixed: false,
           detached: false,
         };
-      } else if (shouldDetachForPredictedRect(element, coMoved, intendedRect)) {
+      } else if (
+        element.getAttribute(OTF_DETACH_ATTR) === "true" ||
+        shouldDetachForPredictedRect(element, coMoved, intendedRect)
+      ) {
         strategy = "detached";
         const view = this.document.defaultView;
         const zIndex = element.style.zIndex || this.document.defaultView?.getComputedStyle(element).zIndex || "";

@@ -1,5 +1,5 @@
 import type { EditorOperation } from "../operations.js";
-import { matchElementBySignature } from "./signature-matcher.js";
+import { resolveElementBySignature } from "./element-resolver.js";
 
 const DEFAULT_MAX_FRAMES = 120;
 
@@ -20,7 +20,7 @@ export function canResolveOperationTarget(
     return false;
   }
 
-  return matchElementBySignature(root, signature) !== null;
+  return resolveElementBySignature(root, signature) !== null;
 }
 
 export function countResolvableOperationTargets(

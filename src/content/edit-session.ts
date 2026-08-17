@@ -35,7 +35,7 @@ import {
   findCommandForKeyboardEvent,
 } from "../editor/commands/command-registry.js";
 import type { DomRuntimeAdapter } from "../editor/dom/dom-runtime-adapter.js";
-import { matchElementBySignature } from "../editor/dom/signature-matcher.js";
+import { resolveElementBySignature } from "../editor/dom/element-resolver.js";
 import type { VisualNodeRect, VisualNode } from "../editor/visual-node.js";
 import type { VisualNodeId } from "../editor/ids.js";
 import {
@@ -194,6 +194,9 @@ export class EditSession implements SessionCommandHost {
       listeners: {
         window: this.root.defaultView as Window,
         root: this.root,
+      },
+      onInvalidated: () => {
+        this.refreshVisualSurfacesFromLiveTargets();
       },
     });
 
@@ -470,7 +473,7 @@ export class EditSession implements SessionCommandHost {
     return targets.some((target) => {
       const element = target.element?.isConnected
         ? target.element
-        : matchElementBySignature(this.root, target.signature);
+        : resolveElementBySignature(this.root, target.signature);
       return element ? isInsideEphemeralSurface(element, this.root) : false;
     });
   }
@@ -854,7 +857,7 @@ export class EditSession implements SessionCommandHost {
     for (const target of orderedTargets) {
       const selectedElement = target.element?.isConnected
         ? target.element
-        : matchElementBySignature(this.root, target.signature);
+        : resolveElementBySignature(this.root, target.signature);
       const resolution =
         clientX !== undefined && clientY !== undefined
           ? resolveTextEditTargetAtPoint(this.root, clientX, clientY, selectedElement, target)
@@ -940,6 +943,15 @@ export class EditSession implements SessionCommandHost {
     if (this.toolbar.isStylePanelOpen()) {
       this.toolbar.setStylePanelValues(this.readStylePanelValues());
     }
+  }
+
+  /** Geometry invalidation fan-out: re-measure live targets then refresh overlays. */
+  private refreshVisualSurfacesFromLiveTargets(): void {
+    if (this.cacheController?.scheduler.isSuspended()) {
+      return;
+    }
+    this.transformController?.refreshSelectionOutline();
+    this.updateToolbar();
   }
 
   private toggleToolbar(): void {
@@ -1356,7 +1368,7 @@ export class EditSession implements SessionCommandHost {
     if (target.element?.isConnected) {
       return target.element;
     }
-    return matchElementBySignature(this.root, target.signature);
+    return resolveElementBySignature(this.root, target.signature);
   }
 
   private shouldIgnoreClipboardShortcut(event: KeyboardEvent): boolean {
@@ -1990,13 +2002,13 @@ export class EditSession implements SessionCommandHost {
     const clickedNode = result.resolvedNodes[0];
     const clickedElement =
       clickedNode?.element ??
-      (clickedNode ? matchElementBySignature(this.root, clickedNode.signature) : null);
+      (clickedNode ? resolveElementBySignature(this.root, clickedNode.signature) : null);
     if (clickedElement) {
       for (const node of snapshot.resolvedNodes) {
         const memberElement =
           node.element?.isConnected === true
             ? node.element
-            : matchElementBySignature(this.root, node.signature);
+            : resolveElementBySignature(this.root, node.signature);
         if (memberElement?.contains(clickedElement)) {
           return true;
         }

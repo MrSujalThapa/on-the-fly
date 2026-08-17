@@ -35,12 +35,14 @@ export interface GeometryCacheBundle {
 export function createGeometryCacheBundle(
   cacheOptions: GeometryCacheOptions,
   schedulerOptions: Omit<InvalidationSchedulerOptions, "onFlush"> = {},
+  onInvalidated?: (reasons: import("./types.js").InvalidationReason[]) => void,
 ): GeometryCacheBundle {
   const cache = createGeometryCache(cacheOptions);
   const scheduler = createInvalidationScheduler({
     ...schedulerOptions,
     onFlush: (reasons) => {
       cache.invalidate(resolvePrimaryInvalidationReason(reasons));
+      onInvalidated?.(reasons);
     },
   });
 
@@ -88,10 +90,12 @@ export function createGeometryCacheController(options: {
   cacheOptions: GeometryCacheOptions;
   schedulerOptions?: Omit<InvalidationSchedulerOptions, "onFlush">;
   listeners?: Omit<DomInvalidationListenerOptions, "scheduler">;
+  onInvalidated?: (reasons: import("./types.js").InvalidationReason[]) => void;
 }): GeometryCacheController {
   const { cache, scheduler } = createGeometryCacheBundle(
     options.cacheOptions,
     options.schedulerOptions ?? {},
+    options.onInvalidated,
   );
 
   const disposers: Array<() => void> = [];

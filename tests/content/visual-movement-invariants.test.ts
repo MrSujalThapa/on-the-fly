@@ -41,25 +41,10 @@ const DX = 48;
 const DY = 36;
 
 /**
- * Remaining known failures after ElementResolver (commit unit 2).
- * Classifications (Phase 2 A–H):
- * D — move strategy / composition geometry
- * G — host replacement rebind of committed effects
- * H — overlay invalidation (D.32)
- *
- * Identity (F) for repeated/ambiguous siblings is closed.
+ * Remaining known failures after ElementResolver + detach rebind + overlay fan-out.
+ * Keep empty when Phase 2 acceptance is green; entries here must still fail.
  */
-const KNOWN_FAILURES: Record<string, "B" | "D" | "F" | "G" | "H"> = {
-  "nested-flex:M3": "D",
-  "nested-grid:M3": "D",
-  "repeated-sibling-cards:M3": "D",
-  "absolute-descendant:M2": "D",
-  "absolute-descendant:M3": "D",
-  "absolute-descendant:M5": "D",
-  "framework-rerender:M3": "D",
-  "framework-rerender:M7": "G",
-  "overlay:V12-scroll": "H",
-};
+const KNOWN_FAILURES: Record<string, "B" | "D" | "F" | "G" | "H"> = {};
 
 function expectInvariant(id: string, held: boolean): void {
   const classification = KNOWN_FAILURES[id];
@@ -325,13 +310,25 @@ describe("visual movement and identity characterization", () => {
     const session = createMoveSession(fixture.document);
     const orphan = fixture.target;
 
-    selectAndMove(session, fixture.document, orphan, DX, DY);
+    const { operations: firstOps } = selectAndMove(
+      session,
+      fixture.document,
+      orphan,
+      DX,
+      DY,
+    );
     const committed = capturePlacement(orphan);
+    expect(firstOps).toHaveLength(1);
 
     const replacement = fixture.replaceTarget();
     expect(orphan.isConnected).toBe(false);
     expect(replacement.isConnected).toBe(true);
     expect(replacement).not.toBe(orphan);
+
+    const rebind = session.live.getAdapter().rebindDisconnectedEffects(firstOps);
+    expect(rebind.unresolved).toBe(0);
+    expect(rebind.rebound).toBe(1);
+    expect(rectsClose(extractBoundingBox(replacement), committed.rect)).toBe(true);
 
     const { operations } = selectAndMove(session, fixture.document, replacement, 16, 12);
     expect(operations).toHaveLength(1);
@@ -339,14 +336,11 @@ describe("visual movement and identity characterization", () => {
     expect(orphan.isConnected).toBe(false);
 
     const next = extractBoundingBox(replacement);
-    expectInvariant(
-      "framework-rerender:M7",
-      rectsClose(next, intendedRect(committed.rect, 16, 12)),
-    );
+    expect(rectsClose(next, intendedRect(committed.rect, 16, 12))).toBe(true);
 
     const undone = session.live.getAdapter().revertOperation(operations[0]!);
     expect(undone.ok).toBe(true);
-    expect(orphan.style.transform === committed.transform || !orphan.isConnected).toBe(true);
+    expect(orphan.isConnected).toBe(false);
     expect(replacement.isConnected).toBe(true);
 
     session.dispose();

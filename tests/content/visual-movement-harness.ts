@@ -190,10 +190,16 @@ export class VisualLayoutWorld {
     const height = element.style.height ? Number.parseFloat(element.style.height) : fallback.height;
     const left = element.style.left ? Number.parseFloat(element.style.left) : fallback.x;
     const top = element.style.top ? Number.parseFloat(element.style.top) : fallback.y;
+    const translated = applyTranslate(element, left, top, width, height);
     if (element.style.position === "fixed") {
-      return asRect(left, top, width, height);
+      return asRect(translated.x, translated.y, translated.width, translated.height);
     }
-    return asRect(left - this.scrollX, top - this.scrollY, width, height);
+    return asRect(
+      translated.x - this.scrollX,
+      translated.y - this.scrollY,
+      translated.width,
+      translated.height,
+    );
   }
 
   private toDomRect(rect: GeometryRect): DOMRect {

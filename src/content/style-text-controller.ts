@@ -1,4 +1,4 @@
-import { matchElementBySignature } from "../editor/dom/signature-matcher.js";
+import { resolveElementBySignature } from "../editor/dom/element-resolver.js";
 import type { DomRuntimeAdapter } from "../editor/dom/dom-runtime-adapter.js";
 import type { PageKey } from "../editor/ids.js";
 import type { EditorOperation, StyleProperty } from "../editor/operations.js";
@@ -305,7 +305,7 @@ export class StyleTextController {
     if (target.element?.isConnected) {
       return target.element;
     }
-    return matchElementBySignature(this.document, target.signature);
+    return resolveElementBySignature(this.document, target.signature);
   }
 
   private commitOperations(

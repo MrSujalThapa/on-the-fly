@@ -3,7 +3,7 @@ import { createEmptySelection } from "../editor-selection.js";
 import type { GroupState } from "../editor-state.js";
 import type { ElementSignature } from "../element-signature.js";
 import type { VisualNodeId } from "../ids.js";
-import { matchElementBySignature } from "../dom/signature-matcher.js";
+import { resolveElementBySignature } from "../dom/element-resolver.js";
 import { extractBoundingBox, rectToVisualNodeRect } from "../measurement/bounding-box.js";
 import type { MeasurementRect } from "../measurement/types.js";
 import type { VisualNode, VisualNodeRect } from "../visual-node.js";
@@ -422,7 +422,7 @@ export class SelectionController {
 
       const clickedElement =
         clicked.element ??
-        (document ? matchElementBySignature(document, clicked.signature) : null);
+        (document ? resolveElementBySignature(document, clicked.signature) : null);
       if (!clickedElement) {
         continue;
       }
@@ -432,7 +432,7 @@ export class SelectionController {
           member.element?.isConnected === true
             ? member.element
             : document
-              ? matchElementBySignature(document, member.signature)
+              ? resolveElementBySignature(document, member.signature)
               : null;
         if (memberElement?.contains(clickedElement)) {
           return true;
@@ -518,7 +518,7 @@ export class SelectionController {
       return null;
     }
 
-    const element = matchElementBySignature(document, signature);
+    const element = resolveElementBySignature(document, signature);
     if (!element) {
       return null;
     }
@@ -548,7 +548,7 @@ export class SelectionController {
       return null;
     }
 
-    const element = matchElementBySignature(document, member.signature);
+    const element = resolveElementBySignature(document, member.signature);
     return element ? rectToVisualNodeRect(extractBoundingBox(element)) : null;
   }
 

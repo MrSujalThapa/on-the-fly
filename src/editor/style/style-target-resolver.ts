@@ -1,4 +1,4 @@
-import { matchElementBySignature } from "../dom/signature-matcher.js";
+import { resolveElementBySignature } from "../dom/element-resolver.js";
 import { buildPersistableElementSignature } from "../measurement/signature-builder.js";
 import { isExtensionRoot } from "../measurement/scan-guards.js";
 import type { StyleProperty } from "../operations.js";
@@ -287,7 +287,7 @@ function resolveLiveElement(target: TransformTarget, document: Document): HTMLEl
   if (target.element?.isConnected) {
     return target.element;
   }
-  return matchElementBySignature(document, target.signature);
+  return resolveElementBySignature(document, target.signature);
 }
 
 function isSafeDirectTextElement(element: HTMLElement): boolean {

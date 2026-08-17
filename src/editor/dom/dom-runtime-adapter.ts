@@ -385,7 +385,23 @@ export class DomRuntimeAdapter {
         );
       }
 
-      restoreElementDomSnapshot(this.root, stored.beforeSnapshot, stored.element);
+      let element = stored.element;
+      if (!element.isConnected) {
+        const resolver = getElementResolver(this.root);
+        const rebound = resolver.resolveDetailed(operation.target.signature).element;
+        if (!rebound) {
+          return createDomApplyFailure(
+            "target_not_found",
+            "target_not_found:cannot_revert_disconnected_element",
+          );
+        }
+        element = rebound;
+        stored.element = rebound;
+        this.elementRefs.set(stored.elementKey, rebound);
+        resolver.remember(resolver.signatureKey(operation.target.signature), rebound);
+      }
+
+      restoreElementDomSnapshot(this.root, stored.beforeSnapshot, element);
       this.effects.delete(operation.id);
       this.elementRefs.delete(stored.elementKey);
       return createDomApplySuccess();
@@ -395,6 +411,43 @@ export class DomRuntimeAdapter {
         error instanceof Error ? error.message : "dom_revert_failed",
       );
     }
+  }
+
+  /**
+   * When the host replaces a tracked node, re-resolve each disconnected effect
+   * target and re-apply the operation against the replacement. Operations are
+   * the source of truth — this does not invent a parallel state store.
+   */
+  rebindDisconnectedEffects(operations: readonly EditorOperation[]): {
+    rebound: number;
+    unresolved: number;
+  } {
+    let rebound = 0;
+    let unresolved = 0;
+    const resolver = getElementResolver(this.root);
+
+    for (const operation of operations) {
+      const stored = this.effects.get(operation.id);
+      if (!stored) {
+        continue;
+      }
+      if (stored.element.isConnected) {
+        continue;
+      }
+
+      this.effects.delete(operation.id);
+      this.elementRefs.delete(stored.elementKey);
+      resolver.invalidate(resolver.signatureKey(operation.target.signature));
+
+      const applied = this.applyOperationDetailed(operation);
+      if (applied.result.ok && applied.diagnostic.resolved) {
+        rebound += 1;
+      } else {
+        unresolved += 1;
+      }
+    }
+
+    return { rebound, unresolved };
   }
 
   buildBatchSnapshot(operations: readonly EditorOperation[]): OperationBatchSnapshot {
