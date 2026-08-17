@@ -1,6 +1,7 @@
 import type { MoveOperation } from "../editor/operations.js";
+import type { PageKey } from "../editor/ids.js";
 import type { ElementHandle } from "./element-registry.js";
-import type { IntendedRect, MovePlacementPlan } from "./placement-engine.js";
+import type { IntendedRect } from "./placement-engine.js";
 
 export interface VisualVerification {
   readonly ok: boolean;
@@ -31,7 +32,13 @@ export type ExecutionResult = ExecutionSuccess | ExecutionFailure;
 export interface OperationExecutor {
   executeMove(input: {
     handle: ElementHandle;
-    plan: MovePlacementPlan;
-    operation: MoveOperation;
+    dx: number;
+    dy: number;
+    pageKey: PageKey;
   }): ExecutionResult;
+  replayMove(operation: MoveOperation): ExecutionResult;
+  revertCommitted(operation: MoveOperation): ExecutionResult;
+  reapplyCommitted(operation: MoveOperation): ExecutionResult;
 }
+
+export const MOVE_GEOMETRY_TOLERANCE_PX = 3;
