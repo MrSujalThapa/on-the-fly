@@ -13,6 +13,8 @@ const publicBackendEnabled = process.env.PUBLIC_BACKEND_ENABLED === "true";
 const localDevAgentEnabled =
   publicAgentEnabled ? false : process.env.LOCAL_DEV_AGENT_ENABLED !== "false";
 const localAgentServerUrl = process.env.LOCAL_AGENT_SERVER_URL ?? "";
+// Opt-in only: every build is silent unless OTF_DIAGNOSTICS=true is passed.
+const diagnosticsEnabled = process.env.OTF_DIAGNOSTICS === "true";
 
 /** @type {import('esbuild').BuildOptions['define']} */
 const define = {
@@ -20,6 +22,7 @@ const define = {
   __PUBLIC_BACKEND_ENABLED__: String(publicBackendEnabled),
   __LOCAL_DEV_AGENT_ENABLED__: String(localDevAgentEnabled),
   __LOCAL_AGENT_SERVER_URL__: JSON.stringify(localAgentServerUrl),
+  __OTF_DIAGNOSTICS_ENABLED__: String(diagnosticsEnabled),
 };
 
 function ensureDir(path) {
@@ -81,7 +84,7 @@ async function build() {
   writeFileSync(join(distDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
   console.log(
-    `Build complete (agent=${publicAgentEnabled}, localDevAgent=${localDevAgentEnabled}, backend=${publicBackendEnabled}, dist=${distDir})`,
+    `Build complete (agent=${publicAgentEnabled}, localDevAgent=${localDevAgentEnabled}, backend=${publicBackendEnabled}, diagnostics=${diagnosticsEnabled}, dist=${distDir})`,
   );
 }
 

@@ -5,6 +5,7 @@ import {
   OTF_MESSAGE,
   parseEditModeResponse,
 } from "../shared/messages.js";
+import { logSelectionDebug } from "../editor/selection/selection-debug.js";
 import { createEditSession, type EditSession } from "./edit-session.js";
 import { EditorShell } from "./editor-shell.js";
 import { PageCustomizationController } from "./page-customization-controller.js";
@@ -13,7 +14,9 @@ const shell = new EditorShell();
 const pageCustomization = new PageCustomizationController(document);
 let editSession: EditSession | null = null;
 
-void pageCustomization.ensureReplayed();
+// `ensureReplayed` memoizes on its first caller, so the logger has to be passed
+// here or replay diagnostics can never be produced.
+void pageCustomization.ensureReplayed(logSelectionDebug);
 
 async function requestEditModeDisable(): Promise<void> {
   const response = parseEditModeResponse(

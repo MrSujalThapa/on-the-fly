@@ -94,6 +94,9 @@ function verifyBuildFlags(files) {
     if (/publicBackendEnabled:\s*true/.test(source)) {
       fail(`${relativePath} has publicBackendEnabled:true`);
     }
+    if (/diagnosticsEnabled:\s*true/.test(source)) {
+      fail(`${relativePath} has diagnosticsEnabled:true`);
+    }
   }
 
   void files;

@@ -1,17 +1,9 @@
-/** Set to `true` locally when investigating pointer/rectangle selection. */
-export const SELECTION_POINTER_DEBUG = false;
+import { emitDiagnostic } from "../../shared/diagnostics.js";
 
+/**
+ * Default sink for every `onDebug` producer in the content layer. Enabled by the
+ * `OTF_DIAGNOSTICS=true` build; a no-op everywhere else.
+ */
 export function logSelectionDebug(message: string, data?: unknown): void {
-  /* eslint-disable @typescript-eslint/no-unnecessary-condition -- intentional dev toggle */
-  if (!SELECTION_POINTER_DEBUG) {
-    return;
-  }
-  /* eslint-enable @typescript-eslint/no-unnecessary-condition */
-
-  if (data === undefined) {
-    console.debug(`[OTF selection] ${message}`);
-    return;
-  }
-
-  console.debug(`[OTF selection] ${message}`, data);
+  emitDiagnostic(message, data);
 }

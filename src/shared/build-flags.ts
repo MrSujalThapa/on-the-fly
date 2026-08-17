@@ -3,6 +3,7 @@ export interface BuildFlags {
   readonly publicBackendEnabled: boolean;
   readonly localDevAgentEnabled: boolean;
   readonly localAgentServerUrl: string | undefined;
+  readonly diagnosticsEnabled: boolean;
 }
 
 export const buildFlags: BuildFlags = {
@@ -10,6 +11,7 @@ export const buildFlags: BuildFlags = {
   publicBackendEnabled: __PUBLIC_BACKEND_ENABLED__,
   localDevAgentEnabled: __LOCAL_DEV_AGENT_ENABLED__,
   localAgentServerUrl: __LOCAL_AGENT_SERVER_URL__ || undefined,
+  diagnosticsEnabled: __OTF_DIAGNOSTICS_ENABLED__,
 };
 
 export function isLocalAgentAvailable(): boolean {
