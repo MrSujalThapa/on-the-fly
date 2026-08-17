@@ -1,5 +1,6 @@
 # On the Fly local-only planning / coding-agent files
 docs/
+!docs/RUNTIME_V2_MIGRATION.md
 AGENTS.md
 .cursor/skills/
 
