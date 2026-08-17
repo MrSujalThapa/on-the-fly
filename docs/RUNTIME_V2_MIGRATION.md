@@ -67,3 +67,19 @@ No hostname, site class, or fixture-id selectors.
 ### Persistence
 
 Persisted MOVE still uses `EditorTarget.signature`. VisualModel writes `identityVersion: 2` plus sibling/stable-key evidence. Replay treats missing version as v1 and still **verifies logical identity** — a unique CSS path is not automatic resolution.
+
+### Ledger vs persistence (Phase B3)
+
+Session `OperationLedger` keeps the full MOVE history for undo/redo.
+
+Save writes a **canonical checkpoint**: one approved MOVE per durable target, with `originalRect` from the first active edit and `finalRect`/`dx`/`dy` from the last. Reload hydrates that checkpoint as the new baseline and does **not** reconstruct the historical pointer sequence.
+
+Wrong-target resolution is rejected (`unresolved` / `ambiguous`) instead of falling back to the sibling at the old CSS path.
+
+### Overlay coordinates
+
+`VisualModel.measure()` returns viewport CSS pixels from `getBoundingClientRect`.
+`OverlayCoordinator` paints `position: fixed` in that same space.
+The overlay host is `position: fixed; inset: 0` on `documentElement`.
+
+CSS `zoom` on `html` scales both the page and the overlay host together. CDP box models include zoom and must not be mixed with `getBoundingClientRect` values when classifying overlay drift.

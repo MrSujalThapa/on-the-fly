@@ -259,8 +259,16 @@ function textOf(element: HTMLElement): string {
   return normalize(element.textContent);
 }
 
-function isGenericText(value: string): boolean {
-  return value.length < 8;
+/**
+ * Stable identifying content vs volatile presentation (counts, timestamps, badges).
+ * Positional locators must not override this.
+ */
+export function identifyingContent(value: string | undefined): string {
+  return normalize(value)
+    .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, " ")
+    .replace(/\b\d+\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function evaluateCandidate(
@@ -313,29 +321,44 @@ function evaluateCandidate(
       contradicted = true;
     }
   }
+  if (signature.ariaLabel) {
+    const aria = element.getAttribute("aria-label")?.trim();
+    if (aria === signature.ariaLabel) {
+      matchedKeys.push("aria");
+    } else if (aria) {
+      contradicted = true;
+    }
+  }
 
-  const expectedText = normalize(signature.textFingerprint);
-  const actualText = textOf(element);
-  const distinctive = Boolean(expectedText) && !isGenericText(expectedText);
-  const textMatches =
-    Boolean(expectedText) &&
-    (actualText === expectedText || actualText.includes(expectedText) || expectedText.includes(actualText.slice(0, 40)));
-  if (distinctive && textMatches) {
+  const expectedIdent = identifyingContent(signature.textFingerprint);
+  const actualIdent = identifyingContent(textOf(element));
+  const contentMatches = Boolean(expectedIdent) && expectedIdent === actualIdent;
+  if (contentMatches) {
     matchedKeys.push("text");
   }
-  if (distinctive && !textMatches) {
-    const othersShareText = pool.some(
-      (candidate) => candidate !== element && textOf(candidate) === expectedText,
-    );
-    if (!othersShareText && matchedKeys.every((key) => !key.startsWith("data:") && key !== "id")) {
-      contradicted = true;
+  const hasSemantic = matchedKeys.some(
+    (key) => key === "id" || key.startsWith("data:") || key === "href" || key === "src" || key === "name" || key === "aria",
+  );
+  if (expectedIdent && actualIdent && expectedIdent !== actualIdent && !hasSemantic) {
+    contradicted = true;
+  }
+
+  if (signature.parentFingerprint) {
+    const parent = element.parentElement;
+    const parentPrint = parent
+      ? `${parent.tagName.toLowerCase()}${parent.id ? `#${parent.id}` : ""}${
+          parent.classList.length > 0 ? `.${Array.from(parent.classList).slice(0, 3).join(".")}` : ""
+        }`
+      : "";
+    if (parentPrint === signature.parentFingerprint) {
+      matchedKeys.push("parent");
     }
   }
 
   const cssPathMatched = pathMatches.has(element);
   const shifted = structureShifted(element, signature);
   const strongKey = matchedKeys.some(
-    (key) => key === "id" || key.startsWith("data:") || key === "href" || key === "src" || key === "name",
+    (key) => key === "id" || key.startsWith("data:") || key === "href" || key === "src" || key === "name" || key === "aria",
   );
   const sameStrong = (key: string, candidate: HTMLElement): boolean => {
     if (key === "id") {
@@ -354,20 +377,23 @@ function evaluateCandidate(
     if (key === "name") {
       return candidate.getAttribute("name") === signature.nameAttr;
     }
+    if (key === "aria") {
+      return candidate.getAttribute("aria-label")?.trim() === signature.ariaLabel;
+    }
     return false;
   };
   const strongUnique =
     strongKey &&
     matchedKeys.some((key) => {
-      if (key === "text") {
+      if (key === "text" || key === "parent") {
         return false;
       }
       return pool.filter((candidate) => sameStrong(key, candidate)).length === 1;
     });
   const distinctiveContent =
-    distinctive &&
-    textMatches &&
-    pool.filter((candidate) => textOf(candidate) === expectedText || textOf(candidate).includes(expectedText)).length === 1;
+    contentMatches &&
+    Boolean(expectedIdent) &&
+    pool.filter((candidate) => identifyingContent(textOf(candidate)) === expectedIdent).length === 1;
 
   return {
     element,

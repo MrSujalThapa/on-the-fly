@@ -22,6 +22,7 @@ import type { ExecutionResult } from "./operation-executor.js";
 import type { IntendedRect } from "./placement-engine.js";
 import { summarizeIdentity } from "./visual-identity.js";
 import { isResolvedVisual } from "./visual-model.js";
+import { projectCanonicalCheckpoint } from "./canonical-checkpoint.js";
 
 const MOVE_THRESHOLD_PX = 3;
 
@@ -205,6 +206,25 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     if (event.target instanceof Element && isExtensionRoot(event.target)) {
       return;
     }
+    const picked = visualModel.pick(event.clientX, event.clientY);
+    if (picked) {
+      const element = visualModel.bind(picked);
+      if (!element) {
+        selectNode(null);
+        return;
+      }
+      selectNode(picked);
+      gesture = {
+        nodeId: picked,
+        element,
+        startPointer: { x: event.clientX, y: event.clientY },
+        startRect: rectFromElement(element),
+        styleSnapshot: element.getAttribute("style"),
+        committedTransform: element.style.transform,
+      };
+      return;
+    }
+
     const selectedElement = selected ? visualModel.bind(selected) : null;
     const selectedNode = selected ? visualModel.get(selected) : null;
     if (
@@ -225,25 +245,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return;
     }
 
-    const nodeId = visualModel.pick(event.clientX, event.clientY);
-    if (!nodeId) {
-      selectNode(null);
-      return;
-    }
-    const element = visualModel.bind(nodeId);
-    if (!element) {
-      selectNode(null);
-      return;
-    }
-    selectNode(nodeId);
-    gesture = {
-      nodeId,
-      element,
-      startPointer: { x: event.clientX, y: event.clientY },
-      startRect: rectFromElement(element),
-      styleSnapshot: element.getAttribute("style"),
-      committedTransform: element.style.transform,
-    };
+    selectNode(null);
   };
 
   const onPointerMove = (event: NormalizedPointer): void => {
@@ -514,7 +516,22 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return result;
     },
     async save(): Promise<PersistResult> {
-      const projection = JSON.parse(JSON.stringify(ledger.activeOperations())) as EditorOperation[];
+      const active = ledger.activeOperations();
+      const checkpoint = projectCanonicalCheckpoint(active);
+      if (!checkpoint.ok) {
+        logV2("save", {
+          owner: "LEDGER",
+          pageKey: pageKey(),
+          ledgerRevision: ledger.cursor,
+          error: checkpoint.error,
+        });
+        return {
+          ok: false,
+          error: checkpoint.error,
+          failureKind: "IDENTITY",
+        };
+      }
+      const projection = JSON.parse(JSON.stringify(checkpoint.operations)) as EditorOperation[];
       const persistedRevisionBefore = ledger.persistedRevision;
       const identities = projection.map((operation) =>
         operation.target.signature
@@ -527,6 +544,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         pageKey: pageKey(),
         ledgerRevision: ledger.cursor,
         persistedRevisionBefore,
+        checkpointCount: projection.length,
         operationIds: projection.map((operation) => operation.id),
         identities,
         writeOk: persist.ok,
@@ -546,6 +564,8 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     async replay(): Promise<ReplayResult> {
       await waitForDocumentReady(root);
       const loaded = await loadPageOperations(pageKey());
+      const checkpoint = projectCanonicalCheckpoint(loaded);
+      const toApply = checkpoint.ok ? checkpoint.operations : loaded;
       let applied = 0;
       let unresolved = 0;
       let failed = 0;
@@ -556,8 +576,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         owner: "LEDGER",
         pageKey: pageKey(),
         loadedIds: loaded.map((operation) => operation.id),
+        checkpointCount: toApply.length,
+        compacted: checkpoint.ok,
       });
-      for (const operation of loaded) {
+      for (const operation of toApply) {
         if (!isMoveOperation(operation)) {
           continue;
         }
