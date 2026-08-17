@@ -243,17 +243,19 @@ describe("runtime-v2 import boundaries", () => {
     expect(storage).not.toContain("getBoundingClientRect");
   });
 
-  it("long-lived HTMLElement identity is limited to the registry cache and active gesture", () => {
+  it("durable HTMLElement identity is limited to VisualModel internals, mutation, and the active gesture", () => {
     const files = listTsFiles(RUNTIME_V2);
     const allowed = new Set([
-      "src/runtime-v2/create-element-registry.ts",
+      "src/runtime-v2/create-visual-model.ts",
+      "src/runtime-v2/visual-model.ts",
+      "src/runtime-v2/visual-hierarchy.ts",
+      "src/runtime-v2/visual-identity.ts",
       "src/runtime-v2/create-editor-runtime.ts",
       "src/runtime-v2/create-overlay-coordinator.ts",
       "src/runtime-v2/create-operation-executor.ts",
       "src/runtime-v2/create-placement-engine.ts",
-      "src/runtime-v2/pointer-hit.ts",
+      "src/runtime-v2/create-input-router.ts",
       "src/runtime-v2/geometry.ts",
-      "src/runtime-v2/element-registry.ts",
       "src/runtime-v2/placement-engine.ts",
       "src/runtime-v2/editor-runtime.ts",
     ]);
@@ -266,6 +268,153 @@ describe("runtime-v2 import boundaries", () => {
       }
       if (!allowed.has(rel)) {
         violations.push(`${rel} references HTMLElement`);
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("does not keep superseded identity or selection owners", () => {
+    const files = listTsFiles(RUNTIME_V2);
+    expect(files.some((file) => srcRelative(file).endsWith("element-registry.ts"))).toBe(false);
+    expect(files.some((file) => srcRelative(file).endsWith("create-element-registry.ts"))).toBe(false);
+    expect(files.some((file) => srcRelative(file).endsWith("pointer-hit.ts"))).toBe(false);
+
+    const index = readFileSync(join(RUNTIME_V2, "index.ts"), "utf8");
+    expect(index).not.toContain("ElementRegistry");
+    expect(index).not.toContain("createElementRegistry");
+    expect(index).not.toContain("ElementHandle");
+    expect(index).toContain("VisualModel");
+    expect(index).toContain("InputRouter");
+
+    const forbiddenOwners = [
+      "SelectionEngine",
+      "GeometryTracker",
+      "GroupManager",
+      "SaveCoordinator",
+      "CardDetector",
+      "CollectionManager",
+      "VisualGraph",
+      "createElementRegistry",
+    ];
+    const violations: string[] = [];
+    for (const file of files) {
+      const source = readFileSync(file, "utf8");
+      for (const token of forbiddenOwners) {
+        if (source.includes(token)) {
+          violations.push(`${srcRelative(file)} contains ${token}`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("external V2 modules cannot resolve signatures or implement selection promotion", () => {
+    const identityOwners = new Set([
+      "src/runtime-v2/visual-identity.ts",
+      "src/runtime-v2/create-visual-model.ts",
+    ]);
+    const hierarchyOwners = new Set([
+      "src/runtime-v2/visual-hierarchy.ts",
+      "src/runtime-v2/create-visual-model.ts",
+    ]);
+    const violations: string[] = [];
+    for (const file of listTsFiles(RUNTIME_V2)) {
+      const rel = srcRelative(file);
+      const source = readFileSync(file, "utf8");
+      if (
+        (source.includes("buildUniqueCssPath") ||
+          source.includes("matchElementBySignature") ||
+          source.includes("buildPersistableElementSignature")) &&
+        !identityOwners.has(rel)
+      ) {
+        violations.push(`${rel} resolves signatures directly`);
+      }
+      if (
+        (source.includes("discoverFromPath") ||
+          source.includes("discoverFromElement") ||
+          source.includes("isCollection(") ||
+          source.includes("promoteFromTextLeaf")) &&
+        !hierarchyOwners.has(rel)
+      ) {
+        violations.push(`${rel} implements selection promotion`);
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("OverlayCoordinator derives geometry from VisualModel and does not own target rects", () => {
+    const source = readFileSync(join(RUNTIME_V2, "create-overlay-coordinator.ts"), "utf8");
+    expect(source).toContain("visualModel.measure");
+    expect(source).not.toContain("getBoundingClientRect");
+    expect(source).not.toContain("rectFromElement");
+    expect(source).not.toContain("resolveDurableIdentity");
+    expect(source).not.toContain("discoverFromPath");
+  });
+
+  it("PlacementEngine cannot perform selection heuristics", () => {
+    const source = readFileSync(join(RUNTIME_V2, "create-placement-engine.ts"), "utf8");
+    expect(source).not.toContain("elementsFromPoint");
+    expect(source).not.toContain("discoverFromPath");
+    expect(source).not.toContain("isCollection");
+    expect(source).not.toContain("parentElement");
+    expect(source).not.toContain("pick(");
+  });
+
+  it("OperationLedger cannot inspect the DOM", () => {
+    const impl = readFileSync(join(RUNTIME_V2, "create-operation-ledger.ts"), "utf8");
+    const types = readFileSync(join(RUNTIME_V2, "operation-ledger.ts"), "utf8");
+    expect(impl).not.toContain("HTMLElement");
+    expect(impl).not.toContain("querySelector");
+    expect(impl).not.toContain("getBoundingClientRect");
+    expect(types).not.toContain("HTMLElement");
+  });
+
+  it("InputRouter cannot resolve visual hierarchy", () => {
+    const source = readFileSync(join(RUNTIME_V2, "create-input-router.ts"), "utf8");
+    expect(source).not.toContain("discoverFromPath");
+    expect(source).not.toContain("isCollection");
+    expect(source).not.toContain("parentElement");
+    expect(source).not.toContain("visualModel");
+    expect(source).not.toContain("planMove");
+    expect(source).not.toContain("replacePageOperations");
+  });
+
+  it("VisualModel cannot write the ledger or persistence", () => {
+    const files = [
+      "create-visual-model.ts",
+      "visual-model.ts",
+      "visual-hierarchy.ts",
+      "visual-identity.ts",
+    ];
+    for (const file of files) {
+      const source = readFileSync(join(RUNTIME_V2, file), "utf8");
+      expect(source, file).not.toContain("replacePageOperations");
+      expect(source, file).not.toContain("loadPageOperations");
+      expect(source, file).not.toContain("ledger");
+      expect(source, file).not.toContain("commit(");
+    }
+  });
+
+  it("has no site-specific runtime modules or selectors", () => {
+    const violations: string[] = [];
+    for (const file of listTsFiles(RUNTIME_V2)) {
+      const source = readFileSync(file, "utf8").toLowerCase();
+      for (const token of ["linkedin", "devpost", "hostname", "location.host"]) {
+        if (source.includes(token)) {
+          violations.push(`${srcRelative(file)} contains ${token}`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("does not import the legacy visual-graph", () => {
+    const violations: string[] = [];
+    for (const file of listTsFiles(RUNTIME_V2)) {
+      for (const specifier of collectImports(file)) {
+        if (specifier.includes("visual-graph")) {
+          violations.push(`${srcRelative(file)} → ${specifier}`);
+        }
       }
     }
     expect(violations).toEqual([]);

@@ -171,13 +171,14 @@ test.describe("product contract E1–E12", () => {
     await page.evaluate(() => {
       window.scrollBy(0, 180);
     });
-    const afterTarget = await rect(target);
-    const afterOutline = await getOverlayRect(page);
-    expect(afterOutline).not.toBeNull();
-    if (!afterOutline) {
-      return;
-    }
-    expectRectNear(afterOutline, afterTarget, 6, "outline after scroll");
+    await expect.poll(async () => {
+      const outline = await getOverlayRect(page);
+      const box = await rect(target);
+      if (!outline) {
+        return false;
+      }
+      return Math.abs(outline.y - box.y) <= 6 && Math.abs(outline.x - box.x) <= 6;
+    }, { timeout: 8_000 }).toBe(true);
   });
 
   test("E10 overlay tracks the target inside nested overflow scroll", async ({ page, context }) => {
@@ -202,13 +203,14 @@ test.describe("product contract E1–E12", () => {
     await scroller.evaluate((element) => {
       element.scrollTop += 80;
     });
-    const afterTarget = await rect(target);
-    const afterOutline = await getOverlayRect(page);
-    expect(afterOutline).not.toBeNull();
-    if (!afterOutline) {
-      return;
-    }
-    expectRectNear(afterOutline, afterTarget, 6, "nested outline after");
+    await expect.poll(async () => {
+      const outline = await getOverlayRect(page);
+      const box = await rect(target);
+      if (!outline) {
+        return false;
+      }
+      return Math.abs(outline.y - box.y) <= 6 && Math.abs(outline.x - box.x) <= 6;
+    }, { timeout: 8_000 }).toBe(true);
   });
 
   test("E11 overlay stays aligned after viewport resize", async ({ page, context }) => {

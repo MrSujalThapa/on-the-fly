@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>E2E anchor-wrapped cards</title>
+    <link rel="stylesheet" href="/_shared.css" />
+    <style>
+      .gallery {
+        display: flex;
+        gap: 16px;
+        padding: 48px 16px 16px;
+        background: #e4e4e7;
+        border-radius: 16px;
+      }
+      .item a {
+        display: block;
+        color: inherit;
+        text-decoration: none;
+      }
+      .card img {
+        display: block;
+        width: 100%;
+        height: 72px;
+        object-fit: cover;
+        background: #a1a1aa;
+        border-radius: 8px;
+      }
+      .card h2 {
+        margin: 12px 0 0;
+        font-size: 16px;
+      }
+      .card footer {
+        margin-top: 8px;
+        color: #52525b;
+        font-size: 12px;
+      }
+      .card button {
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Anchor-wrapped cards</h1>
+      <div class="gallery" data-testid="collection">
+        <div class="item" data-testid="card-a">
+          <a href="#should-not-navigate-a" data-testid="card-a-link">
+            <article class="card">
+              <img alt="Alpha" data-testid="card-a-image" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" />
+              <h2 data-testid="card-a-title">Alpha</h2>
+              <footer data-testid="card-a-footer">Footer A</footer>
+              <button type="button" data-testid="card-a-button">Nested</button>
+            </article>
+          </a>
+        </div>
+        <div class="item" data-testid="card-b">
+          <a href="#should-not-navigate-b" data-testid="card-b-link">
+            <article class="card">
+              <img alt="Bravo" data-testid="card-b-image" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" />
+              <h2 data-testid="card-b-title">Bravo</h2>
+              <footer data-testid="card-b-footer">Footer B</footer>
+              <button type="button" data-testid="card-b-button">Nested</button>
+            </article>
+          </a>
+        </div>
+        <div class="item" data-testid="card-c">
+          <a href="#should-not-navigate-c" data-testid="card-c-link">
+            <article class="card">
+              <img alt="Charlie" data-testid="card-c-image" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" />
+              <h2 data-testid="card-c-title">Charlie</h2>
+              <footer data-testid="card-c-footer">Footer C</footer>
+              <button type="button" data-testid="card-c-button">Nested</button>
+            </article>
+          </a>
+        </div>
+      </div>
+    </main>
+    <script>
+      window.__otfHostClicks = 0;
+      document.querySelectorAll("a").forEach((link) => {
+        link.addEventListener("click", () => {
+          window.__otfHostClicks += 1;
+        });
+      });
+    </script>
+  </body>
+</html>

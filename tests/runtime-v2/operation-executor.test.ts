@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createTestDocument } from "../editor/dom/test-document.js";
-import { createElementRegistry } from "../../src/runtime-v2/create-element-registry.js";
+import { createVisualModel } from "../../src/runtime-v2/create-visual-model.js";
 import { createOperationExecutor } from "../../src/runtime-v2/create-operation-executor.js";
 import { createOperationLedger } from "../../src/runtime-v2/create-operation-ledger.js";
 import { createPlacementEngine } from "../../src/runtime-v2/create-placement-engine.js";
@@ -15,18 +15,22 @@ describe("OperationExecutor", () => {
       return;
     }
 
-    const registry = createElementRegistry(document);
+    const visualModel = createVisualModel(document);
+    const nodeId = visualModel.adopt(element);
+    expect(nodeId).toBeTruthy();
+    if (!nodeId) {
+      return;
+    }
     const ledger = createOperationLedger();
     const executor = createOperationExecutor({
       document,
-      registry,
+      visualModel,
       ledger,
       placement: createPlacementEngine(),
     });
-    const handle = registry.register(element);
 
     const result = executor.executeMove({
-      handle,
+      nodeId,
       dx: 80,
       dy: 40,
       pageKey: "https://example.com/",
@@ -41,27 +45,31 @@ describe("OperationExecutor", () => {
     expect(element.getAttribute("data-otf-transform")).toBeNull();
   });
 
-  it("does not commit when the handle cannot be resolved uniquely", () => {
-    const { document, root } = createTestDocument(`<article class="card">Gone</article>`);
+  it("does not commit when the node cannot be resolved uniquely", () => {
+    const { document, root } = createTestDocument(`<article class="card" data-logical-id="gone">Gone</article>`);
     const element = root.querySelector("article");
     if (!(element instanceof HTMLElement)) {
       return;
     }
 
-    const registry = createElementRegistry(document);
+    const visualModel = createVisualModel(document);
+    const nodeId = visualModel.adopt(element);
+    expect(nodeId).toBeTruthy();
+    if (!nodeId) {
+      return;
+    }
     const ledger = createOperationLedger();
     const executor = createOperationExecutor({
       document,
-      registry,
+      visualModel,
       ledger,
       placement: createPlacementEngine(),
     });
-    const handle = registry.register(element);
     element.remove();
-    registry.invalidate(handle);
+    visualModel.invalidate(nodeId);
 
     const result = executor.executeMove({
-      handle,
+      nodeId,
       dx: 10,
       dy: 10,
       pageKey: "https://example.com/",

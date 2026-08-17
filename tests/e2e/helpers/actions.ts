@@ -2,6 +2,7 @@ import { expect, type BrowserContext, type Locator, type Page } from "@playwrigh
 import { FIXTURE_ORIGIN } from "./extension.js";
 import {
   getOverlayRect,
+  getIndicatorMode,
   rect,
   waitForReplaySettle,
   type GeometryRect,
@@ -94,4 +95,13 @@ export async function undo(page: Page): Promise<void> {
 
 export async function redo(page: Page): Promise<void> {
   await page.keyboard.press("Control+y");
+}
+
+export async function selectParent(page: Page): Promise<void> {
+  await page.keyboard.press("Alt+ArrowUp");
+}
+
+export async function enableInteractMode(page: Page): Promise<void> {
+  await page.keyboard.press("i");
+  await expect.poll(async () => getIndicatorMode(page), { timeout: 8_000 }).toBe("interact");
 }

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>E2E dynamic list</title>
+    <link rel="stylesheet" href="/_shared.css" />
+    <style>
+      .notice {
+        width: 280px;
+        min-height: 72px;
+        margin-bottom: 12px;
+        padding: 12px 16px;
+        background: #fff;
+        border: 1px solid #d4d4d8;
+        border-radius: 10px;
+      }
+      .toolbar {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Dynamic list</h1>
+      <div class="toolbar">
+        <button type="button" id="reorder">Reorder</button>
+        <button type="button" id="insert-before-b">Insert before B</button>
+        <button type="button" id="replace-b">Replace B</button>
+        <button type="button" id="remove-b">Remove B</button>
+      </div>
+      <div id="list" class="stack"></div>
+    </main>
+    <script>
+      const STATE_KEY = "otf-dynamic-list";
+
+      function defaultItems() {
+        return [
+          { id: "a", label: "Alpha notice" },
+          { id: "b", label: "Bravo notice" },
+          { id: "c", label: "Charlie notice" },
+        ];
+      }
+
+      function loadState() {
+        try {
+          const raw = sessionStorage.getItem(STATE_KEY);
+          if (!raw) {
+            return { items: defaultItems(), generation: 0 };
+          }
+          const parsed = JSON.parse(raw);
+          return {
+            items: Array.isArray(parsed.items) ? parsed.items : defaultItems(),
+            generation: typeof parsed.generation === "number" ? parsed.generation : 0,
+          };
+        } catch {
+          return { items: defaultItems(), generation: 0 };
+        }
+      }
+
+      const restored = loadState();
+      let items = restored.items;
+      let generation = restored.generation;
+
+      function persist() {
+        sessionStorage.setItem(STATE_KEY, JSON.stringify({ items, generation }));
+      }
+
+      function render() {
+        persist();
+        const list = document.getElementById("list");
+        list.replaceChildren();
+        for (const item of items) {
+          const node = document.createElement("article");
+          node.className = "notice";
+          node.dataset.testid = "item-" + item.id;
+          node.dataset.logicalId = item.id;
+          node.textContent = item.label + (item.id === "b" && generation ? " gen " + String(generation) : "");
+          list.append(node);
+        }
+      }
+
+      document.getElementById("reorder").addEventListener("click", () => {
+        items = [items[2], items[0], items[1]];
+        render();
+      });
+      document.getElementById("insert-before-b").addEventListener("click", () => {
+        const index = items.findIndex((item) => item.id === "b");
+        items.splice(index, 0, { id: "new", label: "New notice" });
+        render();
+      });
+      document.getElementById("replace-b").addEventListener("click", () => {
+        generation += 1;
+        render();
+      });
+      document.getElementById("remove-b").addEventListener("click", () => {
+        items = items.filter((item) => item.id !== "b");
+        render();
+      });
+
+      window.__otfDynamic = {
+        reorder() {
+          items = [items[2], items[0], items[1]];
+          render();
+        },
+        insertBeforeB() {
+          const index = items.findIndex((item) => item.id === "b");
+          items.splice(index < 0 ? items.length : index, 0, { id: "new", label: "New notice" });
+          render();
+        },
+        replaceB() {
+          generation += 1;
+          render();
+        },
+        removeB() {
+          items = items.filter((item) => item.id !== "b");
+          render();
+        },
+        rerender() {
+          generation += 1;
+          render();
+        },
+      };
+
+      render();
+    </script>
+  </body>
+</html>

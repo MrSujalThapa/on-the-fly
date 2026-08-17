@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>E2E animated layout</title>
+    <link rel="stylesheet" href="/_shared.css" />
+    <style>
+      #spacer {
+        height: 0;
+        transition: height 240ms linear;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Animated layout</h1>
+      <div id="spacer" data-testid="spacer"></div>
+      <article class="card" data-testid="target">Animated target</article>
+    </main>
+  </body>
+</html>

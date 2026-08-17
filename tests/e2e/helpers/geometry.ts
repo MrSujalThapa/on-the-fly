@@ -164,6 +164,33 @@ export async function getOverlayRect(page: Page): Promise<GeometryRect | null> {
   }
 }
 
+function attrOf(node: CdpNode, name: string): string | null {
+  const attributes = node.attributes ?? [];
+  for (let index = 0; index < attributes.length; index += 2) {
+    if (attributes[index] === name) {
+      return attributes[index + 1] ?? null;
+    }
+  }
+  return null;
+}
+
+export async function getIndicatorMode(page: Page): Promise<string | null> {
+  const session = await page.context().newCDPSession(page);
+  try {
+    const document = await session.send("DOM.getDocument", { depth: -1, pierce: true });
+    const root: CdpNode = document.root;
+    const indicator = findNodeByClass(root, "otf-indicator");
+    if (!indicator) {
+      return null;
+    }
+    return attrOf(indicator, "data-mode");
+  } catch {
+    return null;
+  } finally {
+    await session.detach();
+  }
+}
+
 export async function waitForReplaySettle(page: Page): Promise<void> {
   await page.waitForLoadState("load");
   await page.evaluate(async () => {

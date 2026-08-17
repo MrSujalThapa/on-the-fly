@@ -1,19 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createTestDocument } from "../editor/dom/test-document.js";
 import { createPlacementEngine } from "../../src/runtime-v2/create-placement-engine.js";
-import type { ElementHandle } from "../../src/runtime-v2/element-registry.js";
-
-function handle(): ElementHandle {
-  return {
-    id: "otf-el-test",
-    signature: {
-      cssPath: "article.card",
-      tagName: "article",
-      classList: ["card"],
-      boundingBoxHint: { xRatio: 0, yRatio: 0, widthRatio: 0, heightRatio: 0 },
-    },
-  };
-}
 
 describe("PlacementEngine", () => {
   it("prefers in-flow transform for ordinary elements and keeps the flow slot", () => {
@@ -24,7 +11,6 @@ describe("PlacementEngine", () => {
     }
 
     const plan = createPlacementEngine().planMove({
-      handle: handle(),
       element,
       currentRect: { x: 40, y: 80, width: 120, height: 60 },
       dx: 24,
@@ -47,7 +33,6 @@ describe("PlacementEngine", () => {
     }
 
     const plan = createPlacementEngine().planMove({
-      handle: handle(),
       element,
       currentRect: { x: 0, y: 0, width: 80, height: 20 },
       dx: 10,
@@ -67,7 +52,6 @@ describe("PlacementEngine", () => {
     }
 
     const plan = createPlacementEngine().planMove({
-      handle: handle(),
       element,
       currentRect: { x: 10, y: 20, width: 100, height: 40 },
       dx: 5,
@@ -92,7 +76,6 @@ describe("PlacementEngine", () => {
     }
 
     const plan = createPlacementEngine().planMove({
-      handle: handle(),
       element,
       currentRect: { x: 8, y: 16, width: 40, height: 24 },
       dx: 3,
