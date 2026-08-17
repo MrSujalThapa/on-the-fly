@@ -8,6 +8,7 @@ import {
   logMoveStrategyDiagnostic,
   logZIndexOperationDiagnostic,
 } from "../editor/diagnostics/editor-diagnostics.js";
+import { areDiagnosticsEnabled } from "../shared/diagnostics.js";
 import {
   requiresInteractionSafeFixedMove,
   requiresTransformOnlyMove,
@@ -287,7 +288,9 @@ export class TransformController {
     const elements = this.selection.targets
       .map((target) => {
         const element = this.resolveElement(target);
-        if (element) {
+        // Guarded because describing the target reads the DOM for every
+        // selected element at the start of every drag.
+        if (element && areDiagnosticsEnabled()) {
           this.onDebug("transform-target", {
             phase: "move",
             selected: describeSignature(target),

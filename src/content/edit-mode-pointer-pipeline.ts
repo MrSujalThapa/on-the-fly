@@ -6,6 +6,7 @@ import {
   shouldHandleEditModePointerEvent,
   suppressPageInteractionEvent,
 } from "../editor/selection/pointer-interaction.js";
+import { areDiagnosticsEnabled } from "../shared/diagnostics.js";
 
 export interface EditModeEventWindow {
   addEventListener(
@@ -97,11 +98,14 @@ export function attachEditModePointerPipeline(
       return;
     }
 
-    options.onDebug?.("pointerdown", {
-      x: event.clientX,
-      y: event.clientY,
-      pathLength: getEventComposedPath(event).length,
-    });
+    // Guarded because composing the event path allocates on every pointerdown.
+    if (areDiagnosticsEnabled()) {
+      options.onDebug?.("pointerdown", {
+        x: event.clientX,
+        y: event.clientY,
+        pathLength: getEventComposedPath(event).length,
+      });
+    }
     options.onPointerDown(event);
     suppressPageInteractionEvent(event);
   };

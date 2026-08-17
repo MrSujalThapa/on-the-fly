@@ -6,6 +6,7 @@ import {
 } from "../persistence/z-index-target-matching.js";
 import { operationTargetKey } from "../persistence/operation-target-key.js";
 import { isInteractiveElement } from "../dom/interactive-safety.js";
+import { areDiagnosticsEnabled } from "../../shared/diagnostics.js";
 
 export interface ZIndexOperationDiagnostic {
   phase: "created" | "saved" | "replayed" | "skipped";
@@ -64,6 +65,11 @@ export function logMoveStrategyDiagnostic(
   strategy: MoveStrategyDiagnostic["strategy"],
   detached: boolean,
 ): void {
+  // Guarded because the payload reads the DOM once per moved element per commit.
+  if (!areDiagnosticsEnabled()) {
+    return;
+  }
+
   const parent = element.parentElement;
   const root = element.ownerDocument.documentElement;
   onDebug?.("move-strategy", {
@@ -88,6 +94,11 @@ export function logZIndexBatchDiagnostics(
   operations: readonly EditorOperation[],
   reason?: string,
 ): void {
+  // Guarded because describing an operation rebuilds two target keys per op.
+  if (!areDiagnosticsEnabled()) {
+    return;
+  }
+
   for (const operation of operations) {
     if (operation.type !== "zIndex") {
       continue;

@@ -53,6 +53,7 @@ import {
   type AppliedDomEffect,
   type DomApplyResult,
 } from "./types.js";
+import { areDiagnosticsEnabled } from "../../shared/diagnostics.js";
 
 interface StoredDomEffect extends AppliedDomEffect {
   element: HTMLElement;
@@ -113,7 +114,12 @@ export class DomRuntimeAdapter {
     const diagnostic: ReplayOperationDiagnostic = {
       operationId: operation.id,
       operationType: operation.type,
-      signatureSummary: summarizeElementSignature(operation.target.signature),
+      // Summarised only when a sink will read it: this runs for every operation
+      // of every apply and every replay, and the resolve branch below overwrites
+      // it anyway.
+      signatureSummary: areDiagnosticsEnabled()
+        ? summarizeElementSignature(operation.target.signature)
+        : "",
       resolved: false,
     };
 
