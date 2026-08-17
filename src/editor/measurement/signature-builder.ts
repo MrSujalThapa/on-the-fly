@@ -63,14 +63,35 @@ function buildSegment(element: Element): string {
       .map((className) => `.${escapeCssIdentifier(className)}`)
       .join("");
     segment += classes;
-    return segment;
+  } else {
+    const nth = getNthOfTypeSegment(element);
+    if (nth) {
+      segment += nth;
+    }
+  }
+
+  return segment;
+}
+
+function buildUniqueSegment(element: Element): string {
+  const tagName = element.tagName.toLowerCase();
+  if (element.id) {
+    return `${tagName}#${escapeCssIdentifier(element.id)}`;
+  }
+
+  let segment = tagName;
+  if (element.classList.length > 0) {
+    const classes = Array.from(element.classList)
+      .slice(0, 3)
+      .map((className) => `.${escapeCssIdentifier(className)}`)
+      .join("");
+    segment += classes;
   }
 
   const nth = getNthOfTypeSegment(element);
-  if (nth) {
+  if (nth && !segment.includes(":nth-of-type")) {
     segment += nth;
   }
-
   return segment;
 }
 
@@ -97,6 +118,27 @@ export function buildCssPath(element: Element, root: ParentNode = element.ownerD
     }
 
     segments.unshift(buildSegment(current));
+    current = current.parentElement;
+  }
+
+  return segments.join(" > ");
+}
+
+/**
+ * Like `buildCssPath`, but keeps `:nth-of-type` even when classes exist so
+ * repeated siblings with identical class lists remain uniquely addressable.
+ */
+export function buildUniqueCssPath(element: Element, root: ParentNode = element.ownerDocument): string {
+  const stopElement = getPathStopElement(root);
+  const segments: string[] = [];
+  let current: Element | null = element;
+
+  while (current && current !== stopElement) {
+    if (isDangerousTagName(current.tagName)) {
+      break;
+    }
+
+    segments.unshift(buildUniqueSegment(current));
     current = current.parentElement;
   }
 

@@ -58,7 +58,9 @@ export {
 export {
   buildBoundingBoxHint,
   buildCssPath,
+  buildUniqueCssPath,
   buildElementSignature,
+  buildPersistableElementSignature,
   buildParentFingerprint,
   buildTextFingerprint,
 } from "./signature-builder.js";

@@ -12,16 +12,32 @@ export interface UnresolvedTarget {
   readonly reason: string;
 }
 
+export interface AmbiguousTarget {
+  readonly kind: "ambiguous";
+  readonly handle: ElementHandle;
+  readonly candidateCount: number;
+  readonly reason: string;
+}
+
 /** HTMLElement is a cache, never the source of truth. */
 export interface ResolvedElement {
+  readonly kind: "resolved";
   readonly handle: ElementHandle;
   readonly element: HTMLElement;
 }
 
-export type ResolveResult = ResolvedElement | UnresolvedTarget;
+export type ResolveResult = ResolvedElement | UnresolvedTarget | AmbiguousTarget;
 
 export function isUnresolvedTarget(value: ResolveResult): value is UnresolvedTarget {
-  return "kind" in value;
+  return value.kind === "unresolved";
+}
+
+export function isAmbiguousTarget(value: ResolveResult): value is AmbiguousTarget {
+  return value.kind === "ambiguous";
+}
+
+export function isResolvedElement(value: ResolveResult): value is ResolvedElement {
+  return value.kind === "resolved";
 }
 
 export interface ElementRegistry {
