@@ -16,7 +16,11 @@ let editSession: EditSession | null = null;
 
 // `ensureReplayed` memoizes on its first caller, so the logger has to be passed
 // here or replay diagnostics can never be produced.
-void pageCustomization.ensureReplayed(logSelectionDebug);
+void pageCustomization.ensureReplayed(logSelectionDebug).then((result) => {
+  if (result.failed > 0 || result.unresolved > 0) {
+    logSelectionDebug("page-replay-incomplete", result);
+  }
+});
 
 async function requestEditModeDisable(): Promise<void> {
   const response = parseEditModeResponse(
@@ -70,7 +74,11 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
 
   if (isClearPageRequestMessage(message)) {
     void pageCustomization.clearPage().then(
-      () => {
+      (cleared) => {
+        if (!cleared) {
+          sendResponse({ ok: false, error: "clear_persist_failed" });
+          return;
+        }
         editSession?.afterExternalClearPage();
         sendResponse({ ok: true });
       },

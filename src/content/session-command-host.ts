@@ -10,7 +10,7 @@ export interface SessionCommandHost {
   canCropSelection(): boolean;
   canEditTextSelection(): boolean;
   clearSelection(): void;
-  clearPage(): Promise<void>;
+  clearPage(): Promise<boolean>;
   startSaveWindow(): boolean;
   isSaveWindowActive(): boolean;
   canStartSaveWindow(): boolean;

@@ -13,6 +13,7 @@ import {
   buildBatchSnapshotFromEffects,
   restoreBatchSnapshot,
   type OperationBatchSnapshot,
+  type RestoreBatchResult,
 } from "./operation-batch-snapshot.js";
 import {
   applyDuplicateOperation,
@@ -384,8 +385,19 @@ export class DomRuntimeAdapter {
     return buildBatchSnapshotFromEffects(this.root, operations, this.effects);
   }
 
-  restoreBatchSnapshot(snapshot: OperationBatchSnapshot, mode: "before" | "after"): void {
-    restoreBatchSnapshot(this.root, snapshot, mode, (elementKey) => this.elementRefs.get(elementKey) ?? null);
+  restoreBatchSnapshot(
+    snapshot: OperationBatchSnapshot,
+    mode: "before" | "after",
+  ): RestoreBatchResult {
+    const restore = restoreBatchSnapshot(
+      this.root,
+      snapshot,
+      mode,
+      (elementKey) => this.elementRefs.get(elementKey) ?? null,
+    );
+    if (restore.restored === 0 && restore.failed > 0) {
+      return restore;
+    }
     if (mode === "before") {
       for (const entry of snapshot.elements) {
         for (const operationId of entry.operationIds) {
@@ -395,7 +407,7 @@ export class DomRuntimeAdapter {
           this.elementRefs.delete(entry.elementKey);
         }
       }
-      return;
+      return restore;
     }
 
     for (const entry of snapshot.elements) {
@@ -418,6 +430,7 @@ export class DomRuntimeAdapter {
         }
       }
     }
+    return restore;
   }
 
   removeEffectsByOperationIds(ids: ReadonlySet<string>): void {

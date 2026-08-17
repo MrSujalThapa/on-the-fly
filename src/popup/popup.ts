@@ -275,9 +275,17 @@ async function clearCurrentPage(): Promise<void> {
   renderUi();
 
   try {
-    await chrome.tabs.sendMessage(activeTabId, {
+    const response: unknown = await chrome.tabs.sendMessage(activeTabId, {
       type: OTF_MESSAGE.CLEAR_PAGE_REQUEST,
     });
+    if (
+      typeof response !== "object" ||
+      response === null ||
+      !("ok" in response) ||
+      response.ok !== true
+    ) {
+      return;
+    }
     pageOperationCount = await loadPageOperationCount();
     unsavedChangeCount = 0;
     void loadSettingsSummary();

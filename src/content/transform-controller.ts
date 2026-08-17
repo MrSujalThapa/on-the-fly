@@ -443,6 +443,7 @@ export class TransformController {
     const originalRects = operationElements.map((element) =>
       measurementRectToAffectedRect(extractBoundingBox(element)),
     );
+    const appliedIds = new Set<string>();
     for (let index = 0; index < operations.length; index += 1) {
       const operation = operations[index];
       const element = operationElements[index];
@@ -452,7 +453,9 @@ export class TransformController {
       const result = this.adapter.applyOperation(operation, element);
       if (!result.ok) {
         this.onDebug("transform-apply-failed", { code: result.code, error: result.error });
+        continue;
       }
+      appliedIds.add(operation.id);
     }
 
     // Capture every moved element's final geometry now, while all elements are
@@ -474,7 +477,7 @@ export class TransformController {
     for (let index = 0; index < primaryCount; index += 1) {
       const entry = drag.elements[index];
       const operation = operations[index];
-      if (!entry || operation?.type !== "move") {
+      if (!entry || operation?.type !== "move" || !appliedIds.has(operation.id)) {
         continue;
       }
       if (processedMoveElements.has(entry.element)) {
@@ -555,7 +558,7 @@ export class TransformController {
     for (let index = 0; index < operations.length; index += 1) {
       const operation = operations[index];
       const element = operationElements[index];
-      if (!operation || !element) {
+      if (!operation || !element || !appliedIds.has(operation.id)) {
         continue;
       }
       const originalRect = originalRectByElement.get(element);
@@ -566,13 +569,14 @@ export class TransformController {
       operations[index] = enrichOperationWithRects(operation, originalRect, finalRect);
     }
 
-    if (operations.length > 0) {
-      this.onApply?.(operations);
+    const applied = operations.filter((operation) => appliedIds.has(operation.id));
+    if (applied.length > 0) {
+      this.onApply?.(applied);
     }
     this.refreshOutlineFromDom();
     this.onGeometryChanged?.();
-    this.onDebug("transform-move-commit", { dx, dy, count: operations.length });
-    return operations;
+    this.onDebug("transform-move-commit", { dx, dy, count: applied.length });
+    return applied;
   }
 
   cancelMove(): void {
@@ -725,14 +729,14 @@ export class TransformController {
       return [];
     }
 
-    this.applyOperations(operations);
+    const applied = this.applyOperations(operations);
     if (hidden) {
       this.shell.clearOverlays();
     } else {
       this.refreshOutlineFromDom();
     }
-    this.onDebug("transform-hide", { hidden, count: operations.length });
-    return operations;
+    this.onDebug("transform-hide", { hidden, count: applied.length });
+    return applied;
   }
 
   // --- Crop (5C) ---

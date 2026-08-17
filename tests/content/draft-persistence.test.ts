@@ -467,7 +467,7 @@ describe("draft persistence", () => {
       setOperationState: (state) => {
         operationState = state;
       },
-      syncSavedOperationsToStorage: () => Promise.resolve(),
+      syncSavedOperationsToStorage: () => Promise.resolve({ ok: true }),
       getSessionHistory: () => createSessionHistory(),
       setSessionHistory: () => undefined,
     });

@@ -5,6 +5,7 @@ import {
   captureMissingElementDomSnapshot,
   elementSnapshotKey,
   restoreElementDomSnapshot,
+  resolveSnapshotElement,
   type ElementDomSnapshot,
 } from "./dom-placement-snapshot.js";
 
@@ -92,15 +93,38 @@ export function captureAfterSnapshots(
   return snapshots;
 }
 
+export interface RestoreBatchResult {
+  restored: number;
+  failed: number;
+}
+
 export function restoreBatchSnapshot(
   root: ParentNode,
   snapshot: OperationBatchSnapshot,
   mode: "before" | "after",
   resolveElement?: (elementKey: string) => HTMLElement | null,
-): void {
+): RestoreBatchResult {
+  let restored = 0;
+  let failed = 0;
   for (const entry of snapshot.elements) {
     const targetSnapshot = mode === "before" ? entry.before : entry.after;
-    const element = resolveElement?.(entry.elementKey) ?? null;
-    restoreElementDomSnapshot(root, targetSnapshot, element);
+    try {
+      const hinted = resolveElement?.(entry.elementKey) ?? null;
+      if (targetSnapshot.existed) {
+        const target = hinted ?? resolveSnapshotElement(root, targetSnapshot);
+        if (!target) {
+          failed += 1;
+          continue;
+        }
+        restoreElementDomSnapshot(root, targetSnapshot, target);
+        restored += 1;
+        continue;
+      }
+      restoreElementDomSnapshot(root, targetSnapshot, hinted);
+      restored += 1;
+    } catch {
+      failed += 1;
+    }
   }
+  return { restored, failed };
 }

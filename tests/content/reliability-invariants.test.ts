@@ -1,9 +1,5 @@
 /**
  * V.2–V.5 characterization of data-integrity invariants (ARCHITECTURE_AUDIT §V).
- *
- * These currently fail: the product reports success when a lower layer failed.
- * Marked `it.fails` until P0.1 consumes those results. Flip each to `it` when
- * the matching fix lands.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEditSession } from "../../src/content/edit-session.js";
@@ -149,7 +145,7 @@ describe("reliability invariants V.2–V.5", () => {
     vi.restoreAllMocks();
   });
 
-  it.fails("V.2 failed save keeps drafts dirty and reports failure", async () => {
+  it("V.2 failed save keeps drafts dirty and reports failure", async () => {
     vi.spyOn(storageClient, "replacePageOperations").mockResolvedValue({
       ok: false,
       error: "quota_exceeded",
@@ -175,7 +171,7 @@ describe("reliability invariants V.2–V.5", () => {
     shell.unmount();
   });
 
-  it.fails("V.3 cap trim is consumed and surfaced instead of silent success", async () => {
+  it("V.3 cap trim is consumed and surfaced instead of silent success", async () => {
     vi.spyOn(storageClient, "replacePageOperations").mockResolvedValue({
       ok: true,
       capReached: true,
@@ -209,7 +205,7 @@ describe("reliability invariants V.2–V.5", () => {
     shell.unmount();
   });
 
-  it.fails("V.4 clear reports failure and does not pretend the page was wiped", async () => {
+  it("V.4 clear reports failure and does not pretend the page was wiped", async () => {
     vi.spyOn(storageClient, "replacePageOperations").mockResolvedValue({ ok: true });
     vi.spyOn(storageClient, "clearPageOperations").mockResolvedValue(false);
 
@@ -231,7 +227,7 @@ describe("reliability invariants V.2–V.5", () => {
     shell.unmount();
   });
 
-  it.fails("V.5 only successfully applied operations enter drafts and history", () => {
+  it("V.5 only successfully applied operations enter drafts and history", () => {
     const { document } = createTestDocument(
       `<main>
         <div class="box-a">A</div>

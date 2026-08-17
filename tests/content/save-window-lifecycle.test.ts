@@ -145,7 +145,7 @@ describe("save window lifecycle", () => {
         pageCustomization.setPageOperations(state.savedOperations);
       },
       syncSavedOperationsToStorage: async () => {
-        await pageCustomization.syncOperationsToStorage();
+        return pageCustomization.syncOperationsToStorage();
       },
       getSessionHistory: () => createSessionHistory(),
       setSessionHistory: () => undefined,
@@ -187,7 +187,7 @@ describe("save window lifecycle", () => {
       setOperationState: (state) => {
         operationState = state;
       },
-      syncSavedOperationsToStorage: () => Promise.resolve(),
+      syncSavedOperationsToStorage: () => Promise.resolve({ ok: true }),
       getSessionHistory: () => createSessionHistory(),
       setSessionHistory: () => undefined,
     });

@@ -199,7 +199,10 @@ export class EditSession implements SessionCommandHost {
       },
     });
 
-    await this.pageCustomization.ensureReplayed(this.onDebug);
+    const replay = await this.pageCustomization.ensureReplayed(this.onDebug);
+    if (replay.failed > 0 || replay.unresolved > 0) {
+      this.onDebug("page-replay-incomplete", replay);
+    }
     this.adapter = this.pageCustomization.getAdapter();
     this.operationState = createSessionOperationState([
       ...this.pageCustomization.getPageOperations(),
@@ -479,29 +482,52 @@ export class EditSession implements SessionCommandHost {
 
     const draftCount = unsavedChangeCount(this.operationState);
     const nextState = promoteAllDraftToSaved(this.operationState);
-    this.operationState = nextState;
     this.pageCustomization.setPageOperations(nextState.savedOperations);
 
-    await this.pageCustomization.syncOperationsToStorage();
+    const persist = await this.pageCustomization.syncOperationsToStorage();
+    if (!persist.ok) {
+      this.syncPageCustomizationOperations();
+      this.onDebug("explicit-save-failed", {
+        pageKey: this.computePageKey(),
+        error: persist.error,
+        draftCount,
+      });
+      return false;
+    }
+
+    this.operationState = nextState;
     this.updateSaveButton();
     const savedZIndex = nextState.savedOperations.filter(
       (operation): operation is ZIndexOperation => operation.type === "zIndex",
     );
     logZIndexBatchDiagnostics(this.onDebug, "saved", savedZIndex);
+    if (persist.capReached) {
+      this.onDebug("save-cap-reached", {
+        pageKey: this.computePageKey(),
+        trimmed: persist.trimmed ?? 0,
+        capReached: true,
+        operationCount: persist.operationCount,
+      });
+    }
     this.onDebug("explicit-save", {
       pageKey: this.computePageKey(),
       savedCount: nextState.savedOperations.length,
       draftPromoted: draftCount,
+      capReached: persist.capReached === true,
     });
     return true;
   }
 
-  async clearPage(): Promise<void> {
+  async clearPage(): Promise<boolean> {
     this.saveWindowController?.cancel();
     this.cancelStylePreview();
-    await this.pageCustomization.clearPage((operationId, error) => {
+    const cleared = await this.pageCustomization.clearPage((operationId, error) => {
       this.onDebug("clear-page-revert-failed", { operationId, error });
     });
+    if (!cleared) {
+      this.onDebug("clear-page-failed", { pageKey: this.computePageKey() });
+      return false;
+    }
     this.operationState = clearAllOperations();
     this.sessionHistory = createSessionHistory();
     this.transformController?.setCropMode(false);
@@ -516,6 +542,7 @@ export class EditSession implements SessionCommandHost {
     this.lastPersistedGroupId = null;
     this.clearAgentSelectionOverride();
     this.onDebug("clear-page", { pageKey: this.computePageKey() });
+    return true;
   }
 
   stop(): void {
@@ -693,8 +720,17 @@ export class EditSession implements SessionCommandHost {
       return false;
     }
 
+    const restore = this.adapter.restoreBatchSnapshot(batch.snapshot, "before");
+    if (restore.restored === 0 && batch.snapshot.elements.length > 0) {
+      this.onDebug("undo-restore-failed", {
+        count: batch.operations.length,
+        restored: restore.restored,
+        failed: restore.failed,
+      });
+      return false;
+    }
+
     this.sessionHistory = popped.history;
-    this.adapter.restoreBatchSnapshot(batch.snapshot, "before");
 
     const ids = new Set(batch.operations.map((operation) => operation.id));
     this.operationState = removeDraftOperationsById(this.operationState, ids);
@@ -712,8 +748,17 @@ export class EditSession implements SessionCommandHost {
       return false;
     }
 
+    const restore = this.adapter.restoreBatchSnapshot(batch.snapshot, "after");
+    if (restore.restored === 0 && batch.snapshot.elements.length > 0) {
+      this.onDebug("redo-restore-failed", {
+        count: batch.operations.length,
+        restored: restore.restored,
+        failed: restore.failed,
+      });
+      return false;
+    }
+
     this.sessionHistory = popped.history;
-    this.adapter.restoreBatchSnapshot(batch.snapshot, "after");
 
     this.operationState = appendDraftOperations(this.operationState, batch.operations);
     this.transformController?.refreshSelectionOutline();

@@ -23,6 +23,7 @@ import {
   promoteDraftOperationsToSaved,
   type SessionOperationState,
 } from "./session-operation-state.js";
+import type { SavePageOperationsResult } from "./storage-client.js";
 
 export type SaveWindowPhase = "idle" | "drawing" | "confirming";
 
@@ -32,7 +33,7 @@ export interface SaveWindowControllerOptions {
   adapter: DomRuntimeAdapter;
   getOperationState: () => SessionOperationState;
   setOperationState: (state: SessionOperationState) => void;
-  syncSavedOperationsToStorage: () => Promise<void>;
+  syncSavedOperationsToStorage: () => Promise<SavePageOperationsResult>;
   getSessionHistory: () => SessionHistory;
   setSessionHistory: (history: SessionHistory) => void;
   onDebug?: (message: string, data?: unknown) => void;
@@ -44,7 +45,7 @@ export class SaveWindowController {
   private readonly adapter: DomRuntimeAdapter;
   private readonly getOperationState: () => SessionOperationState;
   private readonly setOperationState: (state: SessionOperationState) => void;
-  private readonly syncSavedOperationsToStorage: () => Promise<void>;
+  private readonly syncSavedOperationsToStorage: () => Promise<SavePageOperationsResult>;
   private readonly getSessionHistory: () => SessionHistory;
   private readonly setSessionHistory: (history: SessionHistory) => void;
   private readonly onDebug: (message: string, data?: unknown) => void;
@@ -134,11 +135,25 @@ export class SaveWindowController {
     this.adapter.removeEffectsByOperationIds(revertIds);
 
     const nextState = promoteDraftOperationsToSaved(this.getOperationState(), toKeep);
+    const previousState = this.getOperationState();
     this.setOperationState({
       ...nextState,
       draftOperations: [],
     });
-    await this.syncSavedOperationsToStorage();
+    const persist = await this.syncSavedOperationsToStorage();
+    if (!persist.ok) {
+      this.adapter.restoreBatchSnapshot(revertSnapshot, "after");
+      this.setOperationState(previousState);
+      this.onDebug("save-window-persist-failed", { error: persist.error });
+      return false;
+    }
+    if (persist.capReached) {
+      this.onDebug("save-cap-reached", {
+        trimmed: persist.trimmed ?? 0,
+        capReached: true,
+        source: "save-window",
+      });
+    }
 
     const prunedHistory = pruneSessionHistory(this.getSessionHistory(), revertIds);
     this.setSessionHistory(prunedHistory);

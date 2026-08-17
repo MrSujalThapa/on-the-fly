@@ -7,6 +7,7 @@ import {
   clearPageOperations,
   loadPageOperations,
   replacePageOperations,
+  type SavePageOperationsResult,
 } from "./storage-client.js";
 
 export interface PageCustomizationReplayResult {
@@ -175,24 +176,23 @@ export class PageCustomizationController {
     this.clearing = true;
     this.replayGeneration += 1;
     this.replayPromise = null;
-    this.replayed = true;
-    this.pageOperations = [];
 
     const deleted = await clearPageOperations(this.pageKey);
 
-    // Always drop in-memory effect/operation state so live state is clean even
-    // in degraded contexts and stale replay can never reuse old effects.
-    this.adapter.clearAppliedEffects(onRevertFailure);
-    this.clearing = false;
-
     if (!deleted) {
-      // Persisted operations are still on disk; reloading now would just replay
-      // them again. Surface the failure and leave the page as-is.
+      this.clearing = false;
+      // Persisted operations are still on disk. Leave live DOM, in-memory
+      // operations, and replay state untouched so the session can retry.
       console.error(
         "[on-the-fly] clear page failed: persisted operations were not deleted; skipping reload",
       );
       return false;
     }
+
+    this.replayed = true;
+    this.pageOperations = [];
+    this.adapter.clearAppliedEffects(onRevertFailure);
+    this.clearing = false;
 
     this.reloadPage();
     return true;
@@ -206,8 +206,8 @@ export class PageCustomizationController {
     }
   }
 
-  async syncOperationsToStorage(): Promise<void> {
-    await replacePageOperations(this.pageKey, this.pageOperations);
+  async syncOperationsToStorage(): Promise<SavePageOperationsResult> {
+    return replacePageOperations(this.pageKey, this.pageOperations);
   }
 }
 
