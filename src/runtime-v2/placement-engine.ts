@@ -1,3 +1,5 @@
+import type { ElementHandle } from "./element-registry.js";
+
 export interface IntendedRect {
   x: number;
   y: number;
@@ -11,11 +13,21 @@ export type MovePlacementStrategy =
   | "interaction-safe-fixed"
   | "transform-only";
 
+export type PlacementCoordinateSpace = "viewport" | "page";
+
+export interface ExistingPlacementState {
+  detached: boolean;
+  interactionSafeFixed: boolean;
+  transformOnly: boolean;
+}
+
 export interface MovePlacementRequest {
+  handle: ElementHandle;
+  element: HTMLElement;
+  currentRect: IntendedRect;
   dx: number;
   dy: number;
-  element: HTMLElement;
-  originalRect: IntendedRect;
+  existing?: ExistingPlacementState;
 }
 
 export interface MovePlacementPlan {
@@ -23,6 +35,10 @@ export interface MovePlacementPlan {
   readonly dx: number;
   readonly dy: number;
   readonly intendedRect: IntendedRect;
+  readonly expectedRect: IntendedRect;
+  readonly coordinateSpace: PlacementCoordinateSpace;
+  readonly flowSlotRemains: boolean;
+  readonly rollback: "restore-dom-snapshot";
   readonly payload: {
     dx: number;
     dy: number;
@@ -43,7 +59,7 @@ export interface MovePlacementPlan {
   };
 }
 
-/** Computes a plan. Must not write history, persistence, or overlay state. */
+/** Computes a plan. Must not write history, persistence, overlay, or mutate DOM. */
 export interface PlacementEngine {
   planMove(request: MovePlacementRequest): MovePlacementPlan;
 }
