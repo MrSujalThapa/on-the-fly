@@ -142,8 +142,8 @@ function applyMoveToFinalRect(
   const dx = finalRect.x - current.x;
   const dy = finalRect.y - current.y;
   const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
-  state.dx = dx;
-  state.dy = dy;
+  state.dx += dx;
+  state.dy += dy;
   return commitTransformState(element, state, previousSerialized);
 }
 

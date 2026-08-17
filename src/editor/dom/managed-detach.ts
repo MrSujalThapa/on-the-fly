@@ -123,6 +123,43 @@ export function shouldDetachAfterMove(
   return isVisuallyOutsideParent(element, containerParent);
 }
 
+/**
+ * Predict whether a move to `predicted` should detach, without requiring the
+ * element to already have a managed transform (that is created by the move).
+ */
+export function shouldDetachForPredictedRect(
+  element: HTMLElement,
+  coMovedElements: readonly HTMLElement[],
+  predicted: { x: number; y: number; width: number; height: number },
+): boolean {
+  if (requiresTransformOnlyMove(element)) {
+    return false;
+  }
+
+  for (const other of coMovedElements) {
+    if (other !== element && other.contains(element)) {
+      return false;
+    }
+  }
+
+  if (element.getAttribute(OTF_DETACH_ATTR) === "true") {
+    return false;
+  }
+
+  const containerParent = findDetachContainerParent(element);
+  if (!containerParent) {
+    return false;
+  }
+
+  const parentRect = containerParent.getBoundingClientRect();
+  return (
+    predicted.x < parentRect.left - OUTSIDE_PARENT_TOLERANCE_PX ||
+    predicted.y < parentRect.top - OUTSIDE_PARENT_TOLERANCE_PX ||
+    predicted.x + predicted.width > parentRect.right + OUTSIDE_PARENT_TOLERANCE_PX ||
+    predicted.y + predicted.height > parentRect.bottom + OUTSIDE_PARENT_TOLERANCE_PX
+  );
+}
+
 export interface DetachRectOverride {
   x: number;
   y: number;

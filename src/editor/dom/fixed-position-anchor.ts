@@ -76,7 +76,7 @@ export interface InteractionPlacementCoords {
 }
 
 /** Maps a viewport rect to inline left/top for interaction-safe placement. */
-export function viewportRectToInteractionPlacement(
+export function computeInteractionPlacementCoords(
   element: HTMLElement,
   rect: MeasurementRect,
 ): InteractionPlacementCoords {
@@ -84,9 +84,6 @@ export function viewportRectToInteractionPlacement(
   const mode: InteractionPlacementMode = anchor ? "containing-block-absolute" : "viewport-fixed";
   const position = mode === "viewport-fixed" ? "fixed" : "absolute";
   const anchorCssPath = resolveInteractionAnchorCssPath(element, anchor);
-
-  element.style.position = position;
-  element.style.transform = "";
 
   let left = rect.x;
   let top = rect.y;
@@ -96,18 +93,29 @@ export function viewportRectToInteractionPlacement(
     top = rect.y - anchorRect.top;
   }
 
-  element.style.left = `${String(left)}px`;
-  element.style.top = `${String(top)}px`;
+  return { mode, position, left, top, anchorCssPath };
+}
+
+export function viewportRectToInteractionPlacement(
+  element: HTMLElement,
+  rect: MeasurementRect,
+): InteractionPlacementCoords {
+  const placement = computeInteractionPlacementCoords(element, rect);
+  element.style.position = placement.position;
+  element.style.transform = "";
+  element.style.left = `${String(placement.left)}px`;
+  element.style.top = `${String(placement.top)}px`;
 
   const placed = extractBoundingBox(element);
   const errX = rect.x - placed.x;
   const errY = rect.y - placed.y;
   if (Math.abs(errX) > 0.5 || Math.abs(errY) > 0.5) {
-    left += errX;
-    top += errY;
+    const left = placement.left + errX;
+    const top = placement.top + errY;
     element.style.left = `${String(left)}px`;
     element.style.top = `${String(top)}px`;
+    return { ...placement, left, top };
   }
 
-  return { mode, position, left, top, anchorCssPath };
+  return placement;
 }

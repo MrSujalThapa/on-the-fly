@@ -1,5 +1,5 @@
 import type { PageKey, VisualNodeId } from "../editor/ids.js";
-import type { EditorOperation } from "../editor/operations.js";
+import type { EditorOperation, MoveOperation } from "../editor/operations.js";
 import type { VisualNodeRect } from "../editor/visual-node.js";
 import { matchElementBySignature } from "../editor/dom/signature-matcher.js";
 import {
@@ -16,14 +16,11 @@ import {
 } from "../editor/dom/interactive-safety.js";
 import { resolveLayerPlan } from "../editor/dom/layer-overlap-resolver.js";
 import {
-  applyInteractionSafeFixedPlacement,
-  buildInteractionSafeFixedPayload,
-} from "../editor/dom/interactive-fixed-placement.js";
-import {
   findCounterTransformDescendants,
   markTransformOnlyMove,
-  tryDetachMovedElement,
+  shouldDetachForPredictedRect,
 } from "../editor/dom/managed-detach.js";
+import { computeInteractionPlacementCoords } from "../editor/dom/fixed-position-anchor.js";
 import { readStoredTransformState } from "../editor/dom/element-snapshot.js";
 import { buildElementSignature } from "../editor/measurement/signature-builder.js";
 import { readStoredCropInsets } from "../editor/dom/handlers/crop-handler.js";
@@ -403,173 +400,151 @@ export class TransformController {
     }
 
     const pageKey = this.getPageKey();
-    const operations: EditorOperation[] = (this.selection?.targets ?? []).map((target) =>
-      buildMoveOperation(target, dx, dy, { pageKey }),
-    );
-
-    const excluded = new Set(drag.elements.map((entry) => entry.element));
-    const compensated = new Set<HTMLElement>();
-    for (const entry of drag.elements) {
-      for (const descendant of findCounterTransformDescendants(entry.element, excluded)) {
-        if (compensated.has(descendant)) {
-          continue;
-        }
-        compensated.add(descendant);
-        operations.push(
-          buildMoveOperation(targetFromLiveElement(descendant, this.document), -dx, -dy, {
-            pageKey,
-          }),
-        );
-      }
-    }
-
     const coMoved = [...new Set(drag.elements.map((entry) => entry.element))];
-    const operationElements: HTMLElement[] = [];
-    for (const operation of operations) {
-      const nodeId = operation.target.nodeId;
-      const override = nodeId ? this.elementRegistry.get(nodeId) ?? null : null;
+    const excluded = new Set(coMoved);
+    const processedMoveElements = new Set<HTMLElement>();
+    const planned: Array<{
+      operation: EditorOperation;
+      element: HTMLElement;
+      strategy: "detached" | "interaction-safe-fixed" | "transform-only" | "in-flow";
+    }> = [];
+
+    const resolveElementForTarget = (target: TransformTarget): HTMLElement | null => {
+      const override = target.nodeId ? this.elementRegistry.get(target.nodeId) ?? null : null;
       const resolved =
         override?.isConnected
           ? override
-          : operation.target.signature
-            ? matchElementBySignature(this.document, operation.target.signature)
-            : null;
-      const element = resolved ? resolveInteractionMoveTarget(resolved) : null;
-      if (element) {
-        operationElements.push(element);
+          : matchElementBySignature(this.document, target.signature);
+      return resolved ? resolveInteractionMoveTarget(resolved) : null;
+    };
+
+    const planMove = (
+      target: TransformTarget,
+      element: HTMLElement,
+      moveDx: number,
+      moveDy: number,
+      allowStrategy: boolean,
+    ): void => {
+      const originalRect = measurementRectToAffectedRect(extractBoundingBox(element));
+      const intendedRect = {
+        x: originalRect.x + moveDx,
+        y: originalRect.y + moveDy,
+        width: originalRect.width,
+        height: originalRect.height,
+      };
+
+      let strategy: "detached" | "interaction-safe-fixed" | "transform-only" | "in-flow" = "in-flow";
+      let payload: MoveOperation["payload"] = { dx: moveDx, dy: moveDy };
+
+      if (!allowStrategy) {
+        strategy = "in-flow";
+      } else if (processedMoveElements.has(element)) {
+        strategy = "transform-only";
+        payload = {
+          dx: moveDx,
+          dy: moveDy,
+          transformOnly: true,
+          interactionSafeFixed: false,
+          detached: false,
+        };
+      } else if (requiresInteractionSafeFixedMove(element)) {
+        strategy = "interaction-safe-fixed";
+        const placement = computeInteractionPlacementCoords(element, intendedRect);
+        payload = {
+          dx: moveDx,
+          dy: moveDy,
+          interactionSafeFixed: true,
+          transformOnly: false,
+          detached: false,
+          fixedViewportLeft: intendedRect.x,
+          fixedViewportTop: intendedRect.y,
+          fixedWidth: intendedRect.width,
+          fixedHeight: intendedRect.height,
+          interactionPlacementMode: placement.mode,
+          interactionPlacementLeft: placement.left,
+          interactionPlacementTop: placement.top,
+          interactionAnchorCssPath: placement.anchorCssPath,
+        };
+      } else if (requiresTransformOnlyMove(element)) {
+        strategy = "transform-only";
+        payload = {
+          dx: moveDx,
+          dy: moveDy,
+          transformOnly: true,
+          interactionSafeFixed: false,
+          detached: false,
+        };
+      } else if (shouldDetachForPredictedRect(element, coMoved, intendedRect)) {
+        strategy = "detached";
+        const view = this.document.defaultView;
+        const zIndex = element.style.zIndex || this.document.defaultView?.getComputedStyle(element).zIndex || "";
+        payload = {
+          dx: moveDx,
+          dy: moveDy,
+          detached: true,
+          transformOnly: false,
+          detachedLeft: intendedRect.x + (view?.scrollX ?? 0),
+          detachedTop: intendedRect.y + (view?.scrollY ?? 0),
+          ...(zIndex && zIndex !== "auto" ? { detachedZIndex: zIndex } : {}),
+        };
+      }
+
+      if (allowStrategy) {
+        processedMoveElements.add(element);
+      }
+
+      const base = buildMoveOperation(target, moveDx, moveDy, { pageKey });
+      const operation = freezeCommittedOperation({
+        ...base,
+        payload: { ...base.payload, ...payload },
+        metadata: {
+          ...base.metadata,
+          originalRect,
+          finalRect: intendedRect,
+          affectedRect: intendedRect,
+        },
+      });
+      planned.push({ operation, element, strategy });
+    };
+
+    for (const target of this.selection?.targets ?? []) {
+      const element = resolveElementForTarget(target);
+      if (!element) {
+        continue;
+      }
+      planMove(target, element, dx, dy, true);
+    }
+
+    for (const entry of drag.elements) {
+      for (const descendant of findCounterTransformDescendants(entry.element, excluded)) {
+        if (excluded.has(descendant)) {
+          continue;
+        }
+        excluded.add(descendant);
+        planMove(targetFromLiveElement(descendant, this.document), descendant, -dx, -dy, false);
       }
     }
 
-    const originalRects = operationElements.map((element) =>
-      measurementRectToAffectedRect(extractBoundingBox(element)),
-    );
-    const appliedIds = new Set<string>();
-    for (let index = 0; index < operations.length; index += 1) {
-      const operation = operations[index];
-      const element = operationElements[index];
-      if (!operation || !element) {
-        continue;
-      }
-      const result = this.adapter.applyOperation(operation, element);
+    const applied: EditorOperation[] = [];
+    for (const item of planned) {
+      const result = this.adapter.applyOperation(item.operation, item.element);
       if (!result.ok) {
         this.onDebug("transform-apply-failed", { code: result.code, error: result.error });
         continue;
       }
-      appliedIds.add(operation.id);
+      if (item.strategy === "transform-only") {
+        markTransformOnlyMove(item.element);
+      }
+      logMoveStrategyDiagnostic(
+        this.onDebug,
+        item.element,
+        item.operation.id,
+        item.strategy,
+        item.strategy === "detached",
+      );
+      applied.push(item.operation);
     }
 
-    // Capture every moved element's final geometry now, while all elements are
-    // still in flow with their transforms applied. Detaching one element below
-    // reparents it to <body> and reflows its siblings, so measuring afterwards
-    // would record reflowed (wrong) positions and make grouped elements overlap.
-    const finalRects = operationElements.map((element) =>
-      measurementRectToAffectedRect(extractBoundingBox(element)),
-    );
-    const finalRectByElement = new Map(
-      operationElements.map((element, index) => [element, finalRects[index]] as const),
-    );
-    const originalRectByElement = new Map(
-      operationElements.map((element, index) => [element, originalRects[index]] as const),
-    );
-
-    const primaryCount = this.selection?.targets.length ?? 0;
-    const processedMoveElements = new Set<HTMLElement>();
-    for (let index = 0; index < primaryCount; index += 1) {
-      const entry = drag.elements[index];
-      const operation = operations[index];
-      if (!entry || operation?.type !== "move" || !appliedIds.has(operation.id)) {
-        continue;
-      }
-      if (processedMoveElements.has(entry.element)) {
-        operation.payload = {
-          ...operation.payload,
-          transformOnly: true,
-          interactionSafeFixed: false,
-          detached: false,
-        };
-        continue;
-      }
-      processedMoveElements.add(entry.element);
-
-      const finalRect = finalRectByElement.get(entry.element);
-
-      if (requiresInteractionSafeFixedMove(entry.element)) {
-        if (finalRect) {
-          applyInteractionSafeFixedPlacement(
-            entry.element,
-            finalRect,
-            this.adapter.getSnapshotStore(),
-          );
-          operation.payload = buildInteractionSafeFixedPayload(operation, finalRect, entry.element);
-        }
-        logMoveStrategyDiagnostic(
-          this.onDebug,
-          entry.element,
-          operation.id,
-          "interaction-safe-fixed",
-          false,
-        );
-        continue;
-      }
-
-      if (requiresTransformOnlyMove(entry.element)) {
-        markTransformOnlyMove(entry.element);
-        operation.payload = {
-          ...operation.payload,
-          transformOnly: true,
-          interactionSafeFixed: false,
-          detached: false,
-        };
-        logMoveStrategyDiagnostic(
-          this.onDebug,
-          entry.element,
-          operation.id,
-          "transform-only",
-          false,
-        );
-        continue;
-      }
-
-      const placement = tryDetachMovedElement(entry.element, coMoved, finalRectByElement.get(entry.element));
-      if (!placement) {
-        logMoveStrategyDiagnostic(
-          this.onDebug,
-          entry.element,
-          operation.id,
-          "in-flow",
-          false,
-        );
-        continue;
-      }
-
-      operation.payload = {
-        ...operation.payload,
-        detached: true,
-        transformOnly: false,
-        detachedLeft: placement.left,
-        detachedTop: placement.top,
-        ...(placement.zIndex && placement.zIndex !== "auto"
-          ? { detachedZIndex: placement.zIndex }
-          : {}),
-      };
-      logMoveStrategyDiagnostic(this.onDebug, entry.element, operation.id, "detached", true);
-    }
-
-    for (let index = 0; index < operations.length; index += 1) {
-      const operation = operations[index];
-      const element = operationElements[index];
-      if (!operation || !element || !appliedIds.has(operation.id)) {
-        continue;
-      }
-      const originalRect = originalRectByElement.get(element);
-      const finalRect = finalRectByElement.get(element);
-      if (!originalRect || !finalRect) {
-        continue;
-      }
-      operations[index] = enrichOperationWithRects(operation, originalRect, finalRect);
-    }
-
-    const applied = operations.filter((operation) => appliedIds.has(operation.id));
     if (applied.length > 0) {
       this.onApply?.(applied);
     }
@@ -1507,4 +1482,12 @@ function describeStackingRisk(element: HTMLElement): string {
   }
 
   return "ok";
+}
+
+function freezeCommittedOperation<T extends EditorOperation>(operation: T): T {
+  Object.freeze(operation.payload);
+  if (operation.metadata) {
+    Object.freeze(operation.metadata);
+  }
+  return Object.freeze(operation);
 }
