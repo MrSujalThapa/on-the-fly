@@ -1,6 +1,6 @@
 import type { EditorSelection } from "../editor-selection.js";
 import { createEmptySelection } from "../editor-selection.js";
-import type { GroupState } from "../editor-state.js";
+import type { GroupState } from "../group-state.js";
 import type { ElementSignature } from "../element-signature.js";
 import type { VisualNodeId } from "../ids.js";
 import { matchElementBySignature } from "../dom/signature-matcher.js";

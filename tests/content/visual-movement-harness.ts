@@ -197,17 +197,7 @@ export class VisualLayoutWorld {
   }
 
   private toDomRect(rect: GeometryRect): DOMRect {
-    return {
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      height: rect.height,
-      top: rect.y,
-      left: rect.x,
-      right: rect.x + rect.width,
-      bottom: rect.y + rect.height,
-      toJSON: () => ({}),
-    } as DOMRect;
+    return new DOMRect(rect.x, rect.y, rect.width, rect.height);
   }
 }
 
@@ -249,6 +239,7 @@ export function readMoveStrategy(operation: EditorOperation | undefined): MoveSt
   return {
     detached: operation.payload.detached === true,
     interactionSafeFixed: operation.payload.interactionSafeFixed === true,
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- characterization of persisted legacy payloads
     transformOnly: operation.payload.transformOnly === true,
     placementMode: operation.payload.interactionPlacementMode,
   };

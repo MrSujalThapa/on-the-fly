@@ -1,4 +1,4 @@
-import type { GroupState } from "../editor-state.js";
+import type { GroupState } from "../group-state.js";
 import type { GroupId, PageKey } from "../ids.js";
 import type { GroupOperation, EditorOperation, UngroupOperation } from "../operations.js";
 import type { BuildOperationOptions } from "../transform/operation-factory.js";

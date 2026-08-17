@@ -63,8 +63,7 @@ export { isEditorOperationType, OPERATION_TYPES } from "./operations.js";
 export type { OperationBatch } from "./operation-batch.js";
 export { createOperationBatch } from "./operation-batch.js";
 
-export type { EditorState, GroupState } from "./editor-state.js";
-export { cloneEditorState, createInitialEditorState } from "./editor-state.js";
+export type { GroupState } from "./group-state.js";
 
 export { isDangerousCssPath, isDangerousTagName } from "./validation/dangerous-selectors.js";
 export type { ValidationResult } from "./validation/validate-signature.js";
@@ -118,33 +117,6 @@ export {
   type ResolvedCommand,
 } from "./commands/index.js";
 
-export {
-  approveDraftOperations,
-  applyOperation,
-  clearDraftAndPreview,
-  getApprovedOperations,
-  getGroupState,
-  OperationApplyError,
-  replayOperations,
-  revertOperation,
-} from "./engine/apply-operation.js";
-
-export type {
-  EditorHistory,
-  HistoryApplyResult,
-  HistoryRedoResult,
-  HistoryUndoResult,
-} from "./history/history-manager.js";
-export {
-  applyBatchToState,
-  commitBatch,
-  createBatchFromOperations,
-  createEditorHistory,
-  recordAppliedBatch,
-  redo,
-  undo,
-} from "./history/history-manager.js";
-
 export type {
   AppliedDomEffect,
   DomApplyFailure,
@@ -165,10 +137,6 @@ export { ElementSnapshotStore, captureElementSnapshot } from "./dom/element-snap
 export { matchElementBySignature, getMatchViewport } from "./dom/signature-matcher.js";
 export { resolveTargetElement } from "./dom/resolve-target.js";
 export { DomRuntimeAdapter, createDomRuntimeAdapter } from "./dom/dom-runtime-adapter.js";
-export {
-  DomOperationPipeline,
-  createDomOperationPipeline,
-} from "./dom/dom-operation-pipeline.js";
 
 export type {
   AlignmentEdge,

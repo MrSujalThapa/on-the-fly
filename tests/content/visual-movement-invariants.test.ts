@@ -357,7 +357,12 @@ describe("visual movement and identity characterization", () => {
       rectsClose(next, intendedRect(committed.rect, 16, 12)),
     );
 
-    const undone = session.live.getAdapter().revertOperation(operations[0]!);
+    const applied = operations[0];
+    expect(applied).toBeDefined();
+    if (!applied) {
+      return;
+    }
+    const undone = session.live.getAdapter().revertOperation(applied);
     expect(undone.ok).toBe(true);
     expect(orphan.style.transform === committed.transform || !orphan.isConnected).toBe(true);
     expect(replacement.isConnected).toBe(true);
