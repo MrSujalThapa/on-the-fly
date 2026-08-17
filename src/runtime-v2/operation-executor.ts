@@ -1,6 +1,5 @@
 import type { MoveOperation } from "../editor/operations.js";
-import type { PageKey } from "../editor/ids.js";
-import type { ElementHandle } from "./element-registry.js";
+import type { PageKey, VisualNodeId } from "../editor/ids.js";
 import type { IntendedRect } from "./placement-engine.js";
 
 export interface VisualVerification {
@@ -31,7 +30,7 @@ export type ExecutionResult = ExecutionSuccess | ExecutionFailure;
  */
 export interface OperationExecutor {
   executeMove(input: {
-    handle: ElementHandle;
+    nodeId: VisualNodeId;
     dx: number;
     dy: number;
     pageKey: PageKey;

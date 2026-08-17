@@ -3,15 +3,16 @@ import {
   OTF_ROOT_HOST_ID,
   OTF_ROOT_HOST_VALUE,
 } from "../editor/measurement/constants.js";
-import type { ElementHandle } from "./element-registry.js";
-import { isResolvedElement, type ElementRegistry } from "./element-registry.js";
-import { rectFromElement } from "./geometry.js";
+import type { VisualNodeId } from "../editor/ids.js";
+import { rectsNear } from "./geometry.js";
+import type { InputMode } from "./input-router.js";
 import type { OverlayCoordinator } from "./overlay-coordinator.js";
 import type { IntendedRect } from "./placement-engine.js";
+import type { VisualModel } from "./visual-model.js";
 
 export interface OverlayCoordinatorDeps {
   document: Document;
-  registry: ElementRegistry;
+  visualModel: VisualModel;
 }
 
 const SAVE_BUTTON_CLASS = "otf-save-button";
@@ -41,6 +42,9 @@ function overlayStyles(doc: Document): HTMLStyleElement {
       height: 8px;
       border-radius: 50%;
       background: #34d399;
+    }
+    .otf-indicator[data-mode="interact"] .otf-indicator-dot {
+      background: #fbbf24;
     }
     .${SAVE_BUTTON_CLASS} {
       position: fixed;
@@ -79,31 +83,33 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
   let shadow: ShadowRoot | null = null;
   let layer: HTMLElement | null = null;
   let saveButton: HTMLButtonElement | null = null;
-  let selected: readonly ElementHandle[] = [];
-  let lastRect: IntendedRect | null = null;
+  let indicatorLabel: HTMLElement | null = null;
+  let selected: readonly VisualNodeId[] = [];
+  let painted: IntendedRect | null = null;
   let saveHandler: (() => void) | null = null;
   let outline: HTMLElement | null = null;
+  let rafId = 0;
+  let mode: InputMode = "edit";
+  const scrollCleanups: Array<() => void> = [];
+  const nestedScrollCleanups: Array<() => void> = [];
 
-  const render = (): void => {
+  const cancelLoop = (): void => {
+    if (rafId !== 0) {
+      deps.document.defaultView?.cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+  };
+
+  const paint = (rect: IntendedRect | null): void => {
     if (!layer) {
       return;
     }
-    const handle = selected[0];
-    if (!handle) {
+    if (!rect) {
       outline?.remove();
       outline = null;
-      lastRect = null;
+      painted = null;
       return;
     }
-    const resolved = deps.registry.resolve(handle);
-    if (!isResolvedElement(resolved)) {
-      outline?.remove();
-      outline = null;
-      lastRect = null;
-      return;
-    }
-    const rect = rectFromElement(resolved.element);
-    lastRect = rect;
     if (!outline) {
       outline = deps.document.createElement("div");
       outline.className = OUTLINE_CLASS;
@@ -113,6 +119,94 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     outline.style.top = `${String(rect.y)}px`;
     outline.style.width = `${String(rect.width)}px`;
     outline.style.height = `${String(rect.height)}px`;
+    painted = rect;
+  };
+
+  const measureSelected = (): IntendedRect | null => {
+    const id = selected[0];
+    if (!id) {
+      return null;
+    }
+    return deps.visualModel.measure([id]).get(id) ?? null;
+  };
+
+  const render = (force = false): void => {
+    const rect = measureSelected();
+    if (!rect) {
+      paint(null);
+      return;
+    }
+    if (!force && painted && rectsNear(rect, painted, 0.5)) {
+      return;
+    }
+    paint(rect);
+  };
+
+  const loop = (): void => {
+    rafId = 0;
+    if (selected.length === 0) {
+      return;
+    }
+    render(true);
+    const view = deps.document.defaultView;
+    if (view) {
+      rafId = view.requestAnimationFrame(loop);
+    }
+  };
+
+  const attachNestedScroll = (): void => {
+    while (nestedScrollCleanups.length > 0) {
+      nestedScrollCleanups.pop()?.();
+    }
+    const id = selected[0];
+    if (!id) {
+      return;
+    }
+    const element = deps.visualModel.bind(id);
+    if (!element) {
+      return;
+    }
+    const onNestedScroll = (): void => {
+      render(true);
+    };
+    let current: HTMLElement | null = element;
+    while (current) {
+      current.addEventListener("scroll", onNestedScroll, { passive: true });
+      const node = current;
+      nestedScrollCleanups.push(() => {
+        node.removeEventListener("scroll", onNestedScroll);
+      });
+      current = current.parentElement;
+    }
+  };
+
+  const startLoop = (): void => {
+    if (rafId !== 0 || selected.length === 0) {
+      return;
+    }
+    const view = deps.document.defaultView;
+    if (!view) {
+      render(true);
+      return;
+    }
+    rafId = view.requestAnimationFrame(loop);
+  };
+
+  const applyMode = (): void => {
+    if (!host || !indicatorLabel) {
+      return;
+    }
+    const indicator = indicatorLabel.parentElement;
+    if (mode === "interact") {
+      indicatorLabel.textContent = "Interact mode — site clicks enabled";
+      indicator?.setAttribute("data-mode", "interact");
+      selected = [];
+      cancelLoop();
+      paint(null);
+      return;
+    }
+    indicatorLabel.textContent = "Edit mode — press I to interact";
+    indicator?.setAttribute("data-mode", "edit");
   };
 
   return {
@@ -131,8 +225,12 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       shadow = host.attachShadow({ mode: "closed" });
       const indicator = deps.document.createElement("div");
       indicator.className = "otf-indicator";
-      indicator.innerHTML =
-        `<span class="otf-indicator-dot"></span><span>Edit mode</span>`;
+      indicator.dataset.mode = mode;
+      const dot = deps.document.createElement("span");
+      dot.className = "otf-indicator-dot";
+      indicatorLabel = deps.document.createElement("span");
+      indicatorLabel.textContent = "Edit mode — press I to interact";
+      indicator.append(dot, indicatorLabel);
       saveButton = deps.document.createElement("button");
       saveButton.type = "button";
       saveButton.className = SAVE_BUTTON_CLASS;
@@ -147,36 +245,74 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       layer.className = "otf-overlay-layer";
       shadow.append(overlayStyles(deps.document), indicator, saveButton, layer);
       deps.document.documentElement.append(host);
+      const view = deps.document.defaultView;
+      const onScrollOrResize = (): void => {
+        render(true);
+      };
+      if (view) {
+        view.addEventListener("scroll", onScrollOrResize, true);
+        view.addEventListener("resize", onScrollOrResize);
+        scrollCleanups.push(() => {
+          view.removeEventListener("scroll", onScrollOrResize, true);
+          view.removeEventListener("resize", onScrollOrResize);
+        });
+      }
+      deps.document.addEventListener("scroll", onScrollOrResize, true);
+      scrollCleanups.push(() => {
+        deps.document.removeEventListener("scroll", onScrollOrResize, true);
+      });
+      applyMode();
+      startLoop();
     },
     unmount() {
+      cancelLoop();
+      while (scrollCleanups.length > 0) {
+        scrollCleanups.pop()?.();
+      }
+      while (nestedScrollCleanups.length > 0) {
+        nestedScrollCleanups.pop()?.();
+      }
       host?.remove();
       host = null;
       shadow = null;
       layer = null;
       outline = null;
       saveButton = null;
+      indicatorLabel = null;
       selected = [];
-      lastRect = null;
+      painted = null;
       saveHandler = null;
     },
-    showSelection(handles: readonly ElementHandle[]) {
-      selected = handles;
-      render();
+    showSelection(nodeIds: readonly VisualNodeId[]) {
+      selected = nodeIds;
+      attachNestedScroll();
+      render(true);
+      if (nodeIds.length > 0) {
+        startLoop();
+        return;
+      }
+      cancelLoop();
     },
     refreshFromLiveGeometry() {
-      render();
+      render(true);
     },
     clear() {
       selected = [];
-      render();
+      attachNestedScroll();
+      cancelLoop();
+      paint(null);
     },
     selectionOutlineRect() {
-      return lastRect;
+      return measureSelected();
+    },
+    setMode(next: InputMode) {
+      mode = next;
+      applyMode();
     },
     setSave(state) {
       saveHandler = state.onSave ?? null;
       if (saveButton) {
-        saveButton.hidden = !state.visible;
+        saveButton.hidden = !state.visible || mode === "interact";
       }
     },
   };

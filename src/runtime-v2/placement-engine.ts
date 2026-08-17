@@ -1,5 +1,3 @@
-import type { ElementHandle } from "./element-registry.js";
-
 export interface IntendedRect {
   x: number;
   y: number;
@@ -22,7 +20,6 @@ export interface ExistingPlacementState {
 }
 
 export interface MovePlacementRequest {
-  handle: ElementHandle;
   element: HTMLElement;
   currentRect: IntendedRect;
   dx: number;

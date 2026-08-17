@@ -10,11 +10,7 @@ import {
 } from "../editor/dom/dom-placement-snapshot.js";
 import { buildMoveOperation } from "../editor/transform/operation-factory.js";
 import type { TransformTarget } from "../editor/transform/transform-target.js";
-import type { ElementHandle } from "./element-registry.js";
-import {
-  isResolvedElement,
-  type ElementRegistry,
-} from "./element-registry.js";
+import type { VisualNodeId } from "../editor/ids.js";
 import { freezeCommittedOperation } from "./freeze-operation.js";
 import { rectFromElement, rectsNear } from "./geometry.js";
 import type { OperationLedger } from "./operation-ledger.js";
@@ -25,16 +21,18 @@ import type {
   VisualVerification,
 } from "./operation-executor.js";
 import type { IntendedRect, PlacementEngine } from "./placement-engine.js";
+import type { DurableVisualIdentity, VisualModel } from "./visual-model.js";
+import { isResolvedVisual } from "./visual-model.js";
 
 export interface OperationExecutorDeps {
   document: Document;
-  registry: ElementRegistry;
+  visualModel: VisualModel;
   ledger: OperationLedger;
   placement: PlacementEngine;
 }
 
 interface CapturedEffect {
-  handle: ElementHandle;
+  nodeId: VisualNodeId;
   snapshot: ElementDomSnapshot;
   originalRect: IntendedRect;
 }
@@ -46,29 +44,31 @@ function failure(error: string, rolledBack: boolean, verification?: VisualVerifi
   return { ok: false, error, rolledBack };
 }
 
-function handleFromMove(operation: MoveOperation): ElementHandle | null {
+/** Persistence-boundary compatibility reader. Does not live in VisualModel. */
+export function identityFromMove(operation: MoveOperation): DurableVisualIdentity | null {
   const signature = operation.target.signature;
   if (!signature) {
     return null;
   }
-  return { id: operation.id, signature };
+  return { signature };
 }
 
-function toTarget(handle: ElementHandle, rect: IntendedRect): TransformTarget {
+function toTarget(nodeId: VisualNodeId, identity: DurableVisualIdentity, rect: IntendedRect): TransformTarget {
   return {
-    nodeId: handle.id,
-    signature: handle.signature,
+    nodeId,
+    signature: identity.signature,
     rect,
   };
 }
 
 function buildVerifiedMove(
-  handle: ElementHandle,
+  nodeId: VisualNodeId,
+  identity: DurableVisualIdentity,
   plan: { dx: number; dy: number; payload: MoveOperation["payload"]; expectedRect: IntendedRect },
   currentRect: IntendedRect,
   pageKey: PageKey,
 ): MoveOperation | ExecutionFailure {
-  const drafted = buildMoveOperation(toTarget(handle, currentRect), plan.dx, plan.dy, {
+  const drafted = buildMoveOperation(toTarget(nodeId, identity, currentRect), plan.dx, plan.dy, {
     pageKey,
     sourceCommand: "move",
   });
@@ -97,15 +97,20 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
   const snapshotStore = new ElementSnapshotStore();
   const effects = new Map<string, CapturedEffect>();
 
-  const resolveOrFail = (handle: ElementHandle): { element: HTMLElement } | ExecutionFailure => {
-    const resolved = deps.registry.resolve(handle);
-    if (!isResolvedElement(resolved)) {
+  const resolveOrFail = (
+    nodeId: VisualNodeId | null,
+    identity: DurableVisualIdentity,
+  ): { nodeId: VisualNodeId | null; element: HTMLElement } | ExecutionFailure => {
+    const resolved = nodeId
+      ? deps.visualModel.resolveNode(nodeId)
+      : deps.visualModel.resolveIdentity(identity);
+    if (!isResolvedVisual(resolved)) {
       return failure(
         resolved.kind === "ambiguous" ? "ambiguous_target" : "unresolved_target",
         false,
       );
     }
-    return { element: resolved.element };
+    return { nodeId: resolved.nodeId, element: resolved.element };
   };
 
   const rollback = (element: HTMLElement, snapshot: ElementDomSnapshot): boolean => {
@@ -117,16 +122,19 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     }
   };
 
-  const verifyIdentity = (handle: ElementHandle, element: HTMLElement): boolean => {
+  const verifyIdentity = (nodeId: VisualNodeId | null, identity: DurableVisualIdentity, element: HTMLElement): boolean => {
     if (!element.isConnected) {
       return false;
     }
-    const resolved = deps.registry.resolve(handle);
-    return isResolvedElement(resolved) && resolved.element === element;
+    const resolved = nodeId
+      ? deps.visualModel.resolveNode(nodeId)
+      : deps.visualModel.resolveIdentity(identity);
+    return isResolvedVisual(resolved) && resolved.element === element;
   };
 
   const applyAndVerify = (input: {
-    handle: ElementHandle;
+    nodeId: VisualNodeId | null;
+    identity: DurableVisualIdentity;
     element: HTMLElement;
     operation: MoveOperation;
     expected: IntendedRect;
@@ -155,16 +163,18 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       return failure("geometry_mismatch", rolledBack, verification);
     }
 
-    if (!verifyIdentity(input.handle, input.element)) {
+    if (!verifyIdentity(input.nodeId, input.identity, input.element)) {
       const rolledBack = rollback(input.element, snapshot);
       return failure("identity_uncertain", rolledBack, verification);
     }
 
-    deps.registry.cache(input.handle, input.element);
+    if (input.nodeId) {
+      deps.visualModel.cache(input.nodeId, input.element);
+    }
 
-    if (input.captureEffect) {
+    if (input.captureEffect && input.nodeId) {
       effects.set(input.operation.id, {
-        handle: input.handle,
+        nodeId: input.nodeId,
         snapshot,
         originalRect,
       });
@@ -179,26 +189,30 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
 
   return {
     executeMove(input) {
-      const resolved = resolveOrFail(input.handle);
+      const identity = deps.visualModel.durableIdentityOf(input.nodeId);
+      if (!identity) {
+        return failure("missing_identity", false);
+      }
+      const resolved = resolveOrFail(input.nodeId, identity);
       if ("error" in resolved) {
         return resolved;
       }
 
       const currentRect = rectFromElement(resolved.element);
       const plan = deps.placement.planMove({
-        handle: input.handle,
         element: resolved.element,
         currentRect,
         dx: input.dx,
         dy: input.dy,
       });
-      const operation = buildVerifiedMove(input.handle, plan, currentRect, input.pageKey);
+      const operation = buildVerifiedMove(input.nodeId, identity, plan, currentRect, input.pageKey);
       if ("error" in operation) {
         return operation;
       }
 
       return applyAndVerify({
-        handle: input.handle,
+        nodeId: input.nodeId,
+        identity,
         element: resolved.element,
         operation,
         expected: plan.expectedRect,
@@ -208,27 +222,44 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     },
 
     replayMove(operation) {
-      const handle = handleFromMove(operation);
-      if (!handle) {
+      const identity = identityFromMove(operation);
+      if (!identity) {
         return failure("missing_signature", false);
       }
-      deps.registry.invalidate(handle);
-      const resolved = resolveOrFail(handle);
+      if (operation.target.nodeId) {
+        deps.visualModel.invalidate(operation.target.nodeId);
+      }
+      const resolved = resolveOrFail(null, identity);
       if ("error" in resolved) {
         return resolved;
       }
 
-      const expected = operation.metadata?.finalRect ?? {
-        x: rectFromElement(resolved.element).x + operation.payload.dx,
-        y: rectFromElement(resolved.element).y + operation.payload.dy,
-        width: rectFromElement(resolved.element).width,
-        height: rectFromElement(resolved.element).height,
+      const current = rectFromElement(resolved.element);
+      const composed = {
+        x: current.x + operation.payload.dx,
+        y: current.y + operation.payload.dy,
+        width: current.width,
+        height: current.height,
       };
+      const stored = operation.metadata?.finalRect;
+      const expected = stored && rectsNear(composed, stored, 24) ? stored : composed;
+      const replayOperation: MoveOperation =
+        expected === stored
+          ? operation
+          : {
+              ...operation,
+              metadata: {
+                ...operation.metadata,
+                finalRect: expected,
+                affectedRect: expected,
+              },
+            };
 
       return applyAndVerify({
-        handle,
+        nodeId: resolved.nodeId,
+        identity,
         element: resolved.element,
-        operation,
+        operation: replayOperation,
         expected,
         commit: false,
         captureEffect: true,
@@ -236,16 +267,16 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     },
 
     revertCommitted(operation) {
-      const handle = handleFromMove(operation) ?? effects.get(operation.id)?.handle;
-      if (!handle) {
+      const identity = identityFromMove(operation);
+      const effect = effects.get(operation.id);
+      if (!identity) {
         return failure("missing_signature", false);
       }
-      const resolved = resolveOrFail(handle);
+      const resolved = resolveOrFail(effect?.nodeId ?? null, identity);
       if ("error" in resolved) {
         return resolved;
       }
 
-      const effect = effects.get(operation.id);
       const original = effect?.originalRect ?? operation.metadata?.originalRect;
       if (!original) {
         return failure("missing_original_rect", false);
@@ -259,13 +290,18 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       } else {
         const current = rectFromElement(resolved.element);
         const plan = deps.placement.planMove({
-          handle,
           element: resolved.element,
           currentRect: current,
           dx: original.x - current.x,
           dy: original.y - current.y,
         });
-        const inverse = buildVerifiedMove(handle, plan, current, operation.pageKey);
+        const inverse = buildVerifiedMove(
+          resolved.nodeId ?? operation.id,
+          identity,
+          plan,
+          current,
+          operation.pageKey,
+        );
         if ("error" in inverse) {
           return inverse;
         }
@@ -285,7 +321,7 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       if (!verification.ok) {
         return failure("undo_geometry_mismatch", false, verification);
       }
-      if (!verifyIdentity(handle, resolved.element)) {
+      if (!verifyIdentity(resolved.nodeId, identity, resolved.element)) {
         return failure("identity_uncertain", false, verification);
       }
       return { ok: true, operation, verification };

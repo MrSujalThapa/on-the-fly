@@ -20,6 +20,13 @@ export interface ElementSignature {
   parentCssPath?: string;
   ancestorTextContext?: string;
   boundingBoxHint: BoundingBoxHint;
+  /** 2 = VisualModel logical identity. Missing/1 = Phase B locator-era signatures. */
+  identityVersion?: number;
+  siblingOrdinal?: number;
+  siblingCount?: number;
+  datasetFingerprint?: string;
+  hrefAttr?: string;
+  nameAttr?: string;
 }
 
 export function createEmptyBoundingBoxHint(): BoundingBoxHint {

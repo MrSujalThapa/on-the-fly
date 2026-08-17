@@ -88,6 +88,24 @@ function parseElementSignature(value: unknown): ElementSignature | null {
   if (typeof value.ancestorTextContext === "string") {
     signature.ancestorTextContext = value.ancestorTextContext;
   }
+  if (typeof value.identityVersion === "number") {
+    signature.identityVersion = value.identityVersion;
+  }
+  if (typeof value.siblingOrdinal === "number") {
+    signature.siblingOrdinal = value.siblingOrdinal;
+  }
+  if (typeof value.siblingCount === "number") {
+    signature.siblingCount = value.siblingCount;
+  }
+  if (typeof value.datasetFingerprint === "string") {
+    signature.datasetFingerprint = value.datasetFingerprint;
+  }
+  if (typeof value.hrefAttr === "string") {
+    signature.hrefAttr = value.hrefAttr;
+  }
+  if (typeof value.nameAttr === "string") {
+    signature.nameAttr = value.nameAttr;
+  }
 
   return signature;
 }

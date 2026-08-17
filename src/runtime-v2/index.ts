@@ -1,15 +1,23 @@
 export type { EditorRuntime, PersistResult, ReplayResult } from "./editor-runtime.js";
 export { createEditorRuntime } from "./create-editor-runtime.js";
 export type {
-  AmbiguousTarget,
-  ElementHandle,
-  ElementRegistry,
-  ResolvedElement,
-  ResolveResult,
-  UnresolvedTarget,
-} from "./element-registry.js";
-export { isAmbiguousTarget, isResolvedElement, isUnresolvedTarget } from "./element-registry.js";
-export { createElementRegistry } from "./create-element-registry.js";
+  AmbiguousVisual,
+  DurableVisualIdentity,
+  ResolvedVisual,
+  UnresolvedVisual,
+  VisualModel,
+  VisualNode,
+  VisualResolveResult,
+  VisualRole,
+} from "./visual-model.js";
+export {
+  isAmbiguousVisual,
+  isResolvedVisual,
+  isUnresolvedVisual,
+} from "./visual-model.js";
+export { createVisualModel } from "./create-visual-model.js";
+export type { InputMode, InputRouter } from "./input-router.js";
+export { createInputRouter } from "./create-input-router.js";
 export type {
   ExecutionResult,
   ExecutionFailure,
