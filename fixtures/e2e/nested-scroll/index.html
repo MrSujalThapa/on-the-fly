@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>E2E nested scroll</title>
+    <link rel="stylesheet" href="/_shared.css" />
+    <style>
+      .scroller {
+        height: 260px;
+        width: 420px;
+        overflow: auto;
+        border: 1px solid #d4d4d8;
+        background: #fff;
+      }
+      .inner {
+        height: 900px;
+        padding: 24px;
+      }
+      .card { margin-top: 280px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Nested scroll</h1>
+      <div class="scroller" data-testid="scroller">
+        <div class="inner">
+          <article class="card" data-testid="nested-target">Inside overflow</article>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

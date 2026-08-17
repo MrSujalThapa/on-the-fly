@@ -14,10 +14,13 @@
     "dev:agent": "tsc -p agent-server/tsconfig.json && node agent-server/dist/agent-server/src/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "npm run build && playwright test",
+    "test:e2e:harness": "npm run build && playwright test tests/e2e/harness.spec.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.28.0",
+    "@playwright/test": "^1.62.1",
     "@types/chrome": "^0.0.323",
     "@types/node": "^26.0.0",
     "cross-env": "^7.0.3",

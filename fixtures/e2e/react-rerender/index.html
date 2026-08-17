@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>E2E React rerender</title>
+    <link rel="stylesheet" href="/_shared.css" />
+  </head>
+  <body>
+    <main>
+      <h1>React rerender</h1>
+      <p>Models React replacing a fiber host node while keeping the same logical item.</p>
+      <button type="button" id="replace-dom">Replace DOM</button>
+      <div id="root"></div>
+    </main>
+    <script>
+      let generation = 0;
+
+      function render() {
+        const root = document.getElementById("root");
+        const next = document.createElement("article");
+        next.className = "card";
+        next.dataset.testid = "logical-a";
+        next.dataset.logicalId = "item-a";
+        next.textContent = "Item A gen " + String(generation);
+        root.replaceChildren(next);
+      }
+
+      document.getElementById("replace-dom").addEventListener("click", () => {
+        generation += 1;
+        render();
+      });
+
+      render();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>E2E sticky</title>
+    <link rel="stylesheet" href="/_shared.css" />
+    <style>
+      body { min-height: 2400px; }
+      .sticky {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: #fff;
+        padding: 16px;
+        border-bottom: 1px solid #d4d4d8;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="sticky" data-testid="sticky-header">Sticky header</header>
+    <main>
+      <h1>Sticky</h1>
+      <article class="card" data-testid="target">Scroll past me</article>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>E2E absolute relative</title>
+    <link rel="stylesheet" href="/_shared.css" />
+    <style>
+      .stage {
+        position: relative;
+        height: 360px;
+        background: #e4e4e7;
+        border-radius: 12px;
+      }
+      .abs {
+        position: absolute;
+        left: 48px;
+        top: 48px;
+      }
+      .rel {
+        position: relative;
+        left: 280px;
+        top: 96px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Absolute / relative</h1>
+      <div class="stage" data-testid="stage">
+        <article class="card abs" data-testid="absolute-card">Absolute</article>
+        <article class="card rel" data-testid="relative-card">Relative</article>
+      </div>
+    </main>
+  </body>
+</html>

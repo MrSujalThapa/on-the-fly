@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>E2E section layout</title>
+    <link rel="stylesheet" href="/_shared.css" />
+    <style>
+      .page {
+        display: grid;
+        grid-template-columns: 1fr 240px;
+        grid-template-rows: auto 1fr auto;
+        gap: 16px;
+        min-height: 640px;
+      }
+      header, aside, footer {
+        background: #e4e4e7;
+        padding: 16px;
+        border-radius: 8px;
+      }
+      header { grid-column: 1 / -1; }
+      footer { grid-column: 1 / -1; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Section layout</h1>
+      <div class="page">
+        <header data-testid="header">Header</header>
+        <article class="card" data-testid="section-card">Leaf card</article>
+        <aside data-testid="aside">Aside</aside>
+        <footer data-testid="footer">Footer</footer>
+      </div>
+    </main>
+  </body>
+</html>

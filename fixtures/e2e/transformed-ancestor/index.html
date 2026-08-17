@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>E2E transformed ancestor</title>
+    <link rel="stylesheet" href="/_shared.css" />
+    <style>
+      .rotated {
+        transform: rotate(12deg) translate(32px, 24px);
+        transform-origin: top left;
+        width: 320px;
+        padding: 24px;
+        background: #e4e4e7;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Transformed ancestor</h1>
+      <div class="rotated" data-testid="ancestor">
+        <article class="card" data-testid="nested-card">Inside transform</article>
+      </div>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>E2E flex</title>
+    <link rel="stylesheet" href="/_shared.css" />
+    <style>
+      .flex-row {
+        display: flex;
+        gap: 16px;
+        align-items: stretch;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Flex</h1>
+      <section class="flex-row" data-testid="flex-row">
+        <article class="card" data-testid="flex-1">One</article>
+        <article class="card" data-testid="flex-2">Two</article>
+        <article class="card" data-testid="flex-3">Three</article>
+      </section>
+    </main>
+  </body>
+</html>

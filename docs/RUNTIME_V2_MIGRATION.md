@@ -219,4 +219,7 @@ Do **not** call: `EditSession`, `TransformController`, `session-operation-state`
 | `content/agent/*` | out of scope (do not touch) |
 | `editor/index.ts` barrel | DELETE LATER (not a runtime dep) |
 
-Deleted this phase: `editor/engine/apply-operation.ts`, `editor/history/history-manager.ts`, `editor/dom/dom-operation-pipeline.ts`, `EditorState` in `editor-state.ts`. Live `GroupState` moved to `editor/group-state.ts`.
+## Product contract baseline (legacy)
+
+See `tests/e2e/BASELINE.md`. Failures are product gaps for Runtime V2, not harness setup failures.
+
