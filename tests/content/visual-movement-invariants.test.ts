@@ -338,7 +338,12 @@ describe("visual movement and identity characterization", () => {
     const next = extractBoundingBox(replacement);
     expect(rectsClose(next, intendedRect(committed.rect, 16, 12))).toBe(true);
 
-    const undone = session.live.getAdapter().revertOperation(operations[0]!);
+    const secondOp = operations[0];
+    expect(secondOp).toBeDefined();
+    if (!secondOp) {
+      return;
+    }
+    const undone = session.live.getAdapter().revertOperation(secondOp);
     expect(undone.ok).toBe(true);
     expect(orphan.isConnected).toBe(false);
     expect(replacement.isConnected).toBe(true);

@@ -414,14 +414,14 @@ export class TransformController {
     }> = [];
 
     const resolveElementForTarget = (target: TransformTarget): HTMLElement | null => {
-      const resolver = getElementResolver(this.document);
       const override = target.nodeId ? this.elementRegistry.get(target.nodeId) ?? null : null;
       const preferred =
         (override?.isConnected ? override : null) ??
         (target.element?.isConnected ? target.element : null);
-      const resolved = resolver.resolveDetailed(target.signature, {
-        preferredElement: preferred,
-      }).element;
+      if (preferred) {
+        return resolveInteractionMoveTarget(preferred);
+      }
+      const resolved = getElementResolver(this.document).resolve(target.signature);
       return resolved ? resolveInteractionMoveTarget(resolved) : null;
     };
 
@@ -1135,12 +1135,30 @@ export class TransformController {
       if (!element) {
         const nodeId = operation.target.nodeId;
         const override = nodeId ? this.elementRegistry.get(nodeId) ?? null : null;
-        element = getElementResolver(this.document).resolveDetailed(operation.target.signature, {
-          preferredElement: override?.isConnected ? override : null,
-        }).element;
+        if (override?.isConnected) {
+          element = override;
+        } else {
+          element = getElementResolver(this.document).resolve(operation.target.signature);
+        }
       }
+
+      let operationToApply = operation;
+      if (element?.isConnected) {
+        const resolver = getElementResolver(this.document);
+        if (!resolver.verify(operation.target.signature, element)) {
+          const signature = buildPersistableElementSignature(element, {
+            root: this.document,
+          });
+          operationToApply = freezeCommittedOperation({
+            ...operation,
+            target: { ...operation.target, signature },
+          });
+          resolver.remember(resolver.signatureKey(signature), element);
+        }
+      }
+
       const result = this.adapter.applyOperation(
-        operation,
+        operationToApply,
         element?.isConnected ? element : null,
       );
       if (!result.ok) {
@@ -1150,9 +1168,9 @@ export class TransformController {
 
       if (element) {
         const rect = measurementRectToAffectedRect(extractBoundingBox(element));
-        enriched.push(enrichOperationWithRects(operation, rect, rect));
+        enriched.push(enrichOperationWithRects(operationToApply, rect, rect));
       } else {
-        enriched.push(operation);
+        enriched.push(operationToApply);
       }
     }
 
@@ -1169,13 +1187,17 @@ export class TransformController {
    * re-resolution when the reference is gone (e.g. SPA re-render).
    */
   private resolveElement(target: TransformTarget): HTMLElement | null {
-    const resolver = getElementResolver(this.document);
-    const preferred =
-      (target.element?.isConnected ? target.element : null) ??
-      (this.elementRegistry.get(target.nodeId)?.isConnected
-        ? this.elementRegistry.get(target.nodeId) ?? null
-        : null);
-    return resolver.resolveDetailed(target.signature, { preferredElement: preferred }).element;
+    // Active selection is DOM-first: trust the live reference, then re-resolve.
+    if (target.element?.isConnected) {
+      return target.element;
+    }
+
+    const registered = this.elementRegistry.get(target.nodeId);
+    if (registered?.isConnected) {
+      return registered;
+    }
+
+    return getElementResolver(this.document).resolve(target.signature);
   }
 
   private rebuildElementRegistry(): void {

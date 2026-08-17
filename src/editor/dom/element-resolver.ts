@@ -234,7 +234,7 @@ export class ElementResolver {
 
     if (signature.textFingerprint) {
       const expected = normalize(signature.textFingerprint);
-      const actual = normalize(element.textContent ?? "");
+      const actual = normalize(element.textContent || "");
       if (expected && actual === expected) {
         return true;
       }

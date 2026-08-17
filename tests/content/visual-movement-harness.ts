@@ -213,7 +213,7 @@ export class VisualLayoutWorld {
       right: rect.x + rect.width,
       bottom: rect.y + rect.height,
       toJSON: () => ({}),
-    } as DOMRect;
+    };
   }
 }
 
@@ -255,6 +255,7 @@ export function readMoveStrategy(operation: EditorOperation | undefined): MoveSt
   return {
     detached: operation.payload.detached === true,
     interactionSafeFixed: operation.payload.interactionSafeFixed === true,
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- characterization of persisted move strategies
     transformOnly: operation.payload.transformOnly === true,
     placementMode: operation.payload.interactionPlacementMode,
   };
