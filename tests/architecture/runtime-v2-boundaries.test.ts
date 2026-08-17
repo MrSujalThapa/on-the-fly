@@ -419,4 +419,38 @@ describe("runtime-v2 import boundaries", () => {
     }
     expect(violations).toEqual([]);
   });
+
+  it("does not import authenticated real-site harness or scripts", () => {
+    const forbidden = ["tests/real", "real-site-browser", "playwright.real", ".playwright-real-profile"];
+    const violations: string[] = [];
+    for (const file of listTsFiles(SRC)) {
+      const source = readFileSync(file, "utf8");
+      for (const token of forbidden) {
+        if (source.includes(token)) {
+          violations.push(`${srcRelative(file)} contains ${token}`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
 });
+
+describe("authenticated real-site harness isolation", () => {
+  it("gitignores the persistent profile and auth artifacts", () => {
+    const gitignore = readFileSync(join(ROOT, ".gitignore"), "utf8");
+    expect(gitignore).toContain(".playwright-real-profile/");
+    expect(gitignore).toContain("*.auth.json");
+    expect(gitignore).toContain("test-results/");
+  });
+
+  it("keeps real-site tests out of the synthetic e2e config", () => {
+    const synthetic = readFileSync(join(ROOT, "playwright.config.ts"), "utf8");
+    const real = readFileSync(join(ROOT, "playwright.real.config.ts"), "utf8");
+    expect(synthetic).toContain('testDir: "./tests/e2e"');
+    expect(synthetic).not.toContain("tests/real");
+    expect(real).toContain('testDir: "./tests/real"');
+    expect(real).toContain("workers: 1");
+    expect(real).toContain("headless: false");
+  });
+});
+

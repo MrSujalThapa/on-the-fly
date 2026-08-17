@@ -23,3 +23,15 @@ test-results/
 playwright-report/
 blob-report/
 playwright/.cache/
+
+# Authenticated real-site Playwright profile (cookies, tokens, MFA session)
+.playwright-real-profile/
+
+# Real-site auth/session artifacts and private captures
+playwright/.auth/
+tests/real/.auth/
+tests/real/screenshots/
+tests/real/videos/
+tests/real/traces/
+*.auth.json
+storageState.json
