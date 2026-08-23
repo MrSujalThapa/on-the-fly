@@ -23,7 +23,6 @@ import type { IntendedRect } from "./placement-engine.js";
 import { summarizeIdentity } from "./visual-identity.js";
 import { isResolvedVisual } from "./visual-model.js";
 import { projectCanonicalCheckpoint } from "./canonical-checkpoint.js";
-import { viewportRectToInteractionPlacement } from "../editor/dom/fixed-position-anchor.js";
 
 const MOVE_THRESHOLD_PX = 3;
 
@@ -34,13 +33,6 @@ interface MovingGesture {
   startRect: IntendedRect;
   styleSnapshot: string | null;
   committedTransform: string;
-  detachedDescendants: Array<{
-    element: HTMLElement;
-    styleSnapshot: string | null;
-    committedTransform: string;
-    interactionFixed: boolean;
-    rect: IntendedRect;
-  }>;
 }
 
 function isMoveOperation(value: { type: string }): value is MoveOperation {
@@ -84,12 +76,17 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   let previousUserSelect = "";
   let resizeObserver: ResizeObserver | null = null;
   let saveInFlight: Promise<PersistResult> | null = null;
+  let saveStatus: "idle" | "saving" | "saved" | "failed" = "idle";
 
   const pageKey = (): string => computeDocumentPageKey(root);
 
   const refreshSave = (): void => {
+    if (ledger.isDirty() && saveStatus === "saved") {
+      saveStatus = "idle";
+    }
     overlays.setSave({
-      visible: ledger.isDirty(),
+      visible: ledger.isDirty() || saveStatus !== "idle",
+      status: saveStatus,
       onSave: () => {
         void runtime.save();
       },
@@ -146,10 +143,12 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         if (!identity) {
           continue;
         }
-        if (operation.target.nodeId) {
-          visualModel.invalidate(operation.target.nodeId);
-        }
-        const resolved = visualModel.resolveIdentity(identity);
+        const cached = operation.target.nodeId
+          ? visualModel.resolveNode(operation.target.nodeId)
+          : null;
+        const resolved = cached && isResolvedVisual(cached)
+          ? cached
+          : visualModel.resolveIdentity(identity);
         if (!isResolvedVisual(resolved)) {
           logV2("reapply-identity", {
             owner: "IDENTITY",
@@ -196,11 +195,6 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     if (!gesture || !gesture.element.isConnected) {
       return;
     }
-    for (const child of gesture.detachedDescendants) {
-      if (!child.element.isConnected) continue;
-      if (child.styleSnapshot) child.element.setAttribute("style", child.styleSnapshot);
-      else child.element.removeAttribute("style");
-    }
     if (gesture.styleSnapshot) {
       gesture.element.setAttribute("style", gesture.styleSnapshot);
       return;
@@ -217,17 +211,6 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     gesture.element.style.transform = gesture.committedTransform
       ? `${gesture.committedTransform} ${extra}`
       : extra;
-    const inverse = `translate(${String(-dx)}px, ${String(-dy)}px)`;
-    for (const child of gesture.detachedDescendants) {
-      if (!child.element.isConnected) continue;
-      if (child.interactionFixed) {
-        viewportRectToInteractionPlacement(child.element, child.rect);
-      } else {
-        child.element.style.transform = child.committedTransform
-          ? `${child.committedTransform} ${inverse}`
-          : inverse;
-      }
-    }
   };
 
   const cancelGesture = (): void => {
@@ -252,17 +235,6 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       startRect: rectFromElement(element),
       styleSnapshot: element.getAttribute("style"),
       committedTransform: element.style.transform,
-      detachedDescendants: Array.from(
-        element.querySelectorAll<HTMLElement>(
-          '[data-otf-detached="true"], [data-otf-interaction-fixed="true"]',
-        ),
-      ).map((child) => ({
-        element: child,
-        styleSnapshot: child.getAttribute("style"),
-        committedTransform: child.style.transform,
-        interactionFixed: child.getAttribute("data-otf-interaction-fixed") === "true",
-        rect: rectFromElement(child),
-      })),
     };
   };
 
@@ -343,6 +315,8 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       dy,
       nodeId: active.nodeId,
       error: result.ok ? undefined : result.error,
+      expected: result.verification?.expected,
+      actual: result.verification?.actual,
     });
     selectNode(active.nodeId);
     refreshSave();
@@ -598,6 +572,8 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       if (saveInFlight) {
         return saveInFlight;
       }
+      saveStatus = "saving";
+      refreshSave();
       const pending = (async (): Promise<PersistResult> => {
         const active = ledger.activeOperations();
         const checkpoint = projectCanonicalCheckpoint(active);
@@ -649,11 +625,26 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         }
         return { ok: true };
       })();
-      saveInFlight = pending;
+      const tracked = pending.catch((error: unknown): PersistResult => ({
+        ok: false,
+        error: error instanceof Error ? error.message : "save_failed",
+        failureKind: "PERSISTENCE",
+      }));
+      saveInFlight = tracked;
       try {
-        return await pending;
+        const result = await tracked;
+        saveStatus = result.ok ? "saved" : "failed";
+        if (result.ok) {
+          root.defaultView?.setTimeout(() => {
+            if (saveStatus === "saved") {
+              saveStatus = "idle";
+              refreshSave();
+            }
+          }, 900);
+        }
+        return result;
       } finally {
-        if (saveInFlight === pending) {
+        if (saveInFlight === tracked) {
           saveInFlight = null;
         }
         refreshSave();
@@ -664,9 +655,13 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const loaded = await loadPageOperations(pageKey());
       const checkpoint = projectCanonicalCheckpoint(loaded);
       const toApply = checkpoint.ok ? checkpoint.operations : loaded;
-      const moves = toApply.filter(isMoveOperation);
+      // Reconstruct ancestor-controlled layout before promoting independent
+      // children. This keeps parent identities resolvable against the pristine
+      // DOM and lets detached children establish their saved world rect last.
+      const moves = toApply.filter(isMoveOperation).sort((a, b) =>
+        Number(a.payload.detached) - Number(b.payload.detached));
       const layers = toApply.filter(isLayerOperation);
-      await waitForReplayTargets(root, moves, {
+      await waitForReplayTargets(root, toApply, {
         maxFrames: 240,
         canResolve: (operation) => Boolean(
           operation.target.signature &&
@@ -725,7 +720,23 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         }
       }
       for (const operation of layers) {
+        const identity = operation.target.signature
+          ? { signature: operation.target.signature }
+          : null;
+        const resolution = identity
+          ? visualModel.resolveIdentity(identity)
+          : { kind: "unresolved" as const, evidence: { reason: "missing_signature" } };
         const result = executor.replayLayer(operation);
+        logV2("replay-item", {
+          owner: resolution.kind === "resolved" ? "EXECUTION" : "IDENTITY",
+          id: operation.id,
+          identity: identity ? summarizeIdentity(identity) : "missing",
+          operationType: "zIndex",
+          resolution: resolution.kind,
+          evidence: "evidence" in resolution ? resolution.evidence : undefined,
+          applyOk: result.ok,
+          error: result.ok ? undefined : result.error,
+        });
         if (result.ok) applied += 1;
         else if (result.error === "unresolved_target" || result.error === "ambiguous_target") {
           unresolved += 1; failureKind = "IDENTITY";

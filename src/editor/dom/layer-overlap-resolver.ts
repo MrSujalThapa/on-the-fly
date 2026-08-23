@@ -179,101 +179,43 @@ function isPaintParticipant(element: HTMLElement, selected: HTMLElement, paintHo
   return false;
 }
 
-function hasAncestorStackingContext(element: HTMLElement): boolean {
-  const view = element.ownerDocument.defaultView;
-  if (!view) {
-    return false;
-  }
-
-  let ancestor = element.parentElement;
-  while (ancestor && ancestor.tagName.toLowerCase() !== "body") {
-    const inlineTransform = ancestor.style.transform;
-    if (inlineTransform && inlineTransform !== "none") {
-      return true;
-    }
-
-    const style = view.getComputedStyle(ancestor);
-    if (
-      (style.transform && style.transform !== "none") ||
-      (style.filter && style.filter !== "none") ||
-      style.isolation === "isolate" ||
-      (style.opacity !== "" && Number.parseFloat(style.opacity) < 1)
-    ) {
-      return true;
-    }
-    ancestor = ancestor.parentElement;
-  }
-
-  return false;
-}
-
 function wantsOnTop(command: LayerCommand): boolean {
   return command === "forward" || command === "front";
-}
-
-function verifyRelativeLayer(
-  selectedHost: HTMLElement,
-  blockerHost: HTMLElement,
-  command: LayerCommand,
-): boolean {
-  const selectedLayer = resolveCurrentManagedLayer(
-    readInlineZIndex(selectedHost),
-    readComputedZIndex(selectedHost),
-  );
-  const blockerLayer = resolveCurrentManagedLayer(
-    readInlineZIndex(blockerHost),
-    readComputedZIndex(blockerHost),
-  );
-  return wantsOnTop(command) ? selectedLayer > blockerLayer : selectedLayer < blockerLayer;
 }
 
 function verifyLayerVisual(
   selected: HTMLElement,
   paintHosts: Set<HTMLElement>,
+  blocker: HTMLElement,
+  blockerHost: HTMLElement,
   rect: MeasurementRect,
   command: LayerCommand,
   document: Document,
-  options: {
-    selectedHost?: HTMLElement;
-    blockerHost?: HTMLElement | null;
-  } = {},
 ): boolean {
   const points = sampleInnerPoints(rect);
   const expectOnTop = wantsOnTop(command);
-  let sampled = false;
+  let sampledOverlap = false;
 
   for (const point of points) {
     const stack = getFilteredElementsFromPoint(document, point.x, point.y);
-    const top = stack[0] ?? null;
-    if (!top) {
+    const selectedIndex = stack.findIndex((element) =>
+      isPaintParticipant(element, selected, paintHosts));
+    const blockerIndex = stack.findIndex((element) =>
+      element === blocker || blocker.contains(element) || element.contains(blocker) ||
+      element === blockerHost || blockerHost.contains(element) || element.contains(blockerHost));
+    if (selectedIndex < 0 || blockerIndex < 0 || selectedIndex === blockerIndex) {
       continue;
     }
-    sampled = true;
-
-    const selectedOnTop = isPaintParticipant(top, selected, paintHosts);
-    if (expectOnTop && !selectedOnTop) {
-      if (options.selectedHost && options.blockerHost) {
-        return verifyRelativeLayer(options.selectedHost, options.blockerHost, command);
-      }
+    sampledOverlap = true;
+    if (expectOnTop && selectedIndex > blockerIndex) {
       return false;
     }
-    if (!expectOnTop && selectedOnTop) {
-      if (options.selectedHost && options.blockerHost) {
-        return verifyRelativeLayer(options.selectedHost, options.blockerHost, command);
-      }
+    if (!expectOnTop && selectedIndex < blockerIndex) {
       return false;
     }
   }
 
-  if (
-    !sampled &&
-    options.selectedHost &&
-    options.blockerHost
-  ) {
-    return verifyRelativeLayer(options.selectedHost, options.blockerHost, command);
-  }
-
-  return sampled;
+  return sampledOverlap;
 }
 
 function findLowestCommonAncestor(a: HTMLElement, b: HTMLElement): HTMLElement | null {
@@ -332,42 +274,15 @@ function isUnsafePaintHost(element: HTMLElement): boolean {
 
 /** Prefer the selected node, then the nearest non-giant managed move host. */
 export function resolveInitialLayerTarget(selected: HTMLElement): HTMLElement {
-  if (selected.hasAttribute(OTF_MANAGED_ATTR)) {
-    return selected;
-  }
-
-  let bestManaged: HTMLElement | null = null;
-  let current: HTMLElement | null = selected.parentElement;
-  while (current && current !== current.ownerDocument.documentElement) {
-    if (current.hasAttribute(OTF_MANAGED_ATTR) && !isUnsafePaintHost(current)) {
-      bestManaged = current;
-      break;
-    }
-    current = current.parentElement;
-  }
-
-  return bestManaged ?? selected;
+  return selected;
 }
 
 export function resolveSelectedPaintHost(
   selected: HTMLElement,
   blocker: HTMLElement,
 ): HTMLElement {
-  const lca = findLowestCommonAncestor(selected, blocker);
-  const branch = directChildUnderAncestor(selected, lca);
-  if (!branch) {
-    return resolveInitialLayerTarget(selected);
-  }
-
-  if (branch === selected) {
-    return resolveInitialLayerTarget(selected);
-  }
-
-  if (!isUnsafePaintHost(branch)) {
-    return branch;
-  }
-
-  return resolveInitialLayerTarget(selected);
+  void blocker;
+  return selected;
 }
 
 export function resolveBlockerPaintHost(
@@ -600,10 +515,8 @@ export function resolveLayerPlan(
     applyLayerToHostDry(host, layer);
     const verifyHosts = collectManagedPaintHosts(selected, host);
     verifyHosts.add(host);
-    const verification = verifyLayerVisual(selected, verifyHosts, selectedRect, command, document, {
-      selectedHost: host,
-      blockerHost,
-    })
+    const verification = blocker && blockerHost &&
+      verifyLayerVisual(selected, verifyHosts, blocker, blockerHost, selectedRect, command, document)
       ? "pass"
       : "fail";
     restoreLayerStyle(host, before);
@@ -634,20 +547,11 @@ export function resolveLayerPlan(
     };
   };
 
-  const initialLayer = computeTargetLayer(initialTarget, command, options.explicitLayer, null);
-  const initialAttempt = probeHost(initialTarget, initialLayer, null, null);
   const overlapBlocker = findVisualBlocker(selected, paintHosts, selectedRect, command, document);
-  if (
-    initialAttempt.verification === "pass" &&
-    !hasAncestorStackingContext(selected) &&
-    overlapBlocker &&
-    !isPaintParticipant(overlapBlocker, selected, paintHosts)
-  ) {
-    return initialAttempt;
-  }
-
   const blocker = overlapBlocker;
   if (!blocker) {
+    const initialLayer = computeTargetLayer(initialTarget, command, options.explicitLayer, null);
+    const initialAttempt = probeHost(initialTarget, initialLayer, null, null);
     return {
       ...initialAttempt,
       verification: "fail",
@@ -668,10 +572,6 @@ export function resolveLayerPlan(
     options.explicitLayer,
     blockerHost,
   );
-
-  if (selectedHost === initialTarget && resolvedLayer === initialLayer) {
-    return probeHost(selectedHost, resolvedLayer, blocker, blockerHost);
-  }
 
   const resolvedAttempt = probeHost(selectedHost, resolvedLayer, blocker, blockerHost);
   if (resolvedAttempt.verification === "fail") {

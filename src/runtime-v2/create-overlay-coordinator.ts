@@ -81,7 +81,11 @@ function overlayStyles(doc: Document): HTMLStyleElement {
 export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayCoordinator & {
   mount(): void;
   unmount(): void;
-  setSave(state: { visible: boolean; onSave?: () => void }): void;
+  setSave(state: {
+    visible: boolean;
+    status?: "idle" | "saving" | "saved" | "failed";
+    onSave?: () => void;
+  }): void;
 } {
   let host: HTMLElement | null = null;
   let shadow: ShadowRoot | null = null;
@@ -319,8 +323,16 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     },
     setSave(state) {
       saveHandler = state.onSave ?? null;
+      host?.setAttribute("data-otf-save-status", state.status ?? "idle");
       if (saveButton) {
         saveButton.hidden = !state.visible;
+        saveButton.textContent = state.status === "saving"
+          ? "Saving…"
+          : state.status === "saved"
+            ? "Saved"
+            : state.status === "failed"
+              ? "Save failed"
+              : "Save";
       }
     },
   };

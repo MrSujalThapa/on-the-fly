@@ -29,8 +29,6 @@ import {
   inferLayerCommandFromOperation,
   resolveLayerPlan,
 } from "../editor/dom/layer-overlap-resolver.js";
-import { counterMoveDetachedDescendants } from "../editor/dom/managed-detach.js";
-import { applyInteractionSafeFixedPlacement } from "../editor/dom/interactive-fixed-placement.js";
 
 export interface OperationExecutorDeps {
   document: Document;
@@ -49,7 +47,6 @@ interface CapturedEffect {
   nodeId: VisualNodeId;
   snapshot: ElementDomSnapshot;
   originalRect: IntendedRect;
-  descendantSnapshots: { element: HTMLElement; snapshot: ElementDomSnapshot }[];
 }
 
 function failure(error: string, rolledBack: boolean, verification?: VisualVerification): ExecutionFailure {
@@ -159,40 +156,12 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
   }): ExecutionResult => {
     const snapshot = captureElementDomSnapshot(input.element, deps.document);
     const originalRect = rectFromElement(input.element);
-    const independentDescendants = Array.from(
-      input.element.querySelectorAll<HTMLElement>(
-        '[data-otf-detached="true"], [data-otf-interaction-fixed="true"]',
-      ),
-    );
-    const descendantSnapshots = independentDescendants.map((element) => ({
-      element,
-      snapshot: captureElementDomSnapshot(element, deps.document),
-      originalRect: rectFromElement(element),
-    }));
     const rollbackApplied = (): boolean => {
-      const parentRestored = rollback(input.element, snapshot);
-      const descendantsRestored = descendantSnapshots.every(({ element, snapshot: childSnapshot }) =>
-        rollback(element, childSnapshot),
-      );
-      return parentRestored && descendantsRestored;
+      return rollback(input.element, snapshot);
     };
 
     try {
       applyMoveOperation(input.element, input.operation, snapshotStore);
-      counterMoveDetachedDescendants(
-        input.element,
-        input.operation.payload.dx,
-        input.operation.payload.dy,
-      );
-      for (const descendant of descendantSnapshots) {
-        if (descendant.element.getAttribute("data-otf-interaction-fixed") === "true") {
-          applyInteractionSafeFixedPlacement(
-            descendant.element,
-            descendant.originalRect,
-            snapshotStore,
-          );
-        }
-      }
     } catch (error) {
       const rolledBack = rollbackApplied();
       return failure(error instanceof Error ? error.message : "apply_threw", rolledBack);
@@ -224,7 +193,6 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         nodeId: input.nodeId,
         snapshot,
         originalRect,
-        descendantSnapshots,
       });
     }
 
@@ -277,6 +245,38 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       const resolved = resolveOrFail(input.nodeId, identity);
       if ("error" in resolved) {
         return resolved;
+      }
+      if (resolved.element.getAttribute("data-otf-detached") !== "true") {
+        const currentRect = rectFromElement(resolved.element);
+        const independentPlan = deps.placement.planMove({
+          element: resolved.element,
+          currentRect,
+          dx: 0,
+          dy: 0,
+          forceIndependent: true,
+        });
+        const independentOperation = buildVerifiedMove(
+          input.nodeId,
+          identity,
+          independentPlan,
+          currentRect,
+          input.pageKey,
+        );
+        if ("error" in independentOperation) {
+          return independentOperation;
+        }
+        const independentResult = applyAndVerify({
+          nodeId: input.nodeId,
+          identity,
+          element: resolved.element,
+          operation: independentOperation,
+          expected: currentRect,
+          commit: true,
+          captureEffect: true,
+        });
+        if (!independentResult.ok) {
+          return independentResult;
+        }
       }
       const plan = resolveLayerPlan(resolved.element, input.command, snapshotStore, { onDebug: debugLayer });
       if (plan.verification !== "pass") {
@@ -333,7 +333,11 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         height: current.height,
       };
       const stored = operation.metadata?.finalRect;
-      const expected = stored && rectsNear(composed, stored, 24) ? stored : composed;
+      const expected = stored && operation.payload.detached
+        ? stored
+        : stored && rectsNear(composed, stored, 24)
+          ? { x: stored.x, y: stored.y, width: current.width, height: current.height }
+          : composed;
       const replayOperation: MoveOperation =
         expected === stored
           ? operation
@@ -425,9 +429,6 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         const rolledBack = rollback(resolved.element, effect.snapshot);
         if (!rolledBack) {
           return failure("rollback_failed", false);
-        }
-        for (const descendant of effect.descendantSnapshots) {
-          rollback(descendant.element, descendant.snapshot);
         }
       } else {
         const current = rectFromElement(resolved.element);
