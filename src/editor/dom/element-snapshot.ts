@@ -118,6 +118,28 @@ export function writeStoredTransformState(
   element.setAttribute(OTF_TRANSFORM_ATTR, JSON.stringify(state));
 }
 
+/**
+ * CSS transforms do not affect ordinary non-replaced inline boxes. OTF allows
+ * text/content nodes to be selected directly, so an attached inline target
+ * must be promoted only at the formatting-box level (inline -> inline-block)
+ * before applying its managed transform. This keeps DOM ownership and parent
+ * composition intact while making MOVE observable. Full independent placement
+ * is still handled separately by the placement engine when the target leaves
+ * its visual parent.
+ */
+function ensureTransformableFormattingBox(element: HTMLElement): void {
+  if (element.style.display) {
+    return;
+  }
+  const view = element.ownerDocument.defaultView;
+  if (!view) {
+    return;
+  }
+  if (view.getComputedStyle(element).display === "inline") {
+    element.style.display = "inline-block";
+  }
+}
+
 export function applyStoredTransformState(
   element: HTMLElement,
   state: StoredTransformState,
@@ -154,6 +176,7 @@ export function applyStoredTransformState(
     }
   }
 
+  ensureTransformableFormattingBox(element);
   element.style.position = state.position;
   element.style.transform = `translate(${String(state.dx)}px, ${String(state.dy)}px) rotate(${String(state.rotate)}deg)`;
 
