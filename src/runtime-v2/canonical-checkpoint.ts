@@ -1,4 +1,4 @@
-import type { EditorOperation, MoveOperation } from "../editor/operations.js";
+import type { EditorOperation, MoveOperation, ZIndexOperation } from "../editor/operations.js";
 import { freezeCommittedOperation } from "./freeze-operation.js";
 import { identifyingContent, isGeneratedIdentityValue } from "./visual-identity.js";
 
@@ -10,11 +10,15 @@ function isMoveOperation(value: EditorOperation): value is MoveOperation {
   return value.type === "move";
 }
 
+function isLayerOperation(value: EditorOperation): value is ZIndexOperation {
+  return value.type === "zIndex";
+}
+
 /**
  * Durable MOVE key. Session VisualNodeId is not identity. CSS path is a locator,
  * not a key, so similar siblings compact and resolve independently.
  */
-export function durableMoveKey(operation: MoveOperation): string | null {
+export function durableMoveKey(operation: MoveOperation | ZIndexOperation): string | null {
   const signature = operation.target.signature;
   if (!signature) {
     return null;
@@ -117,9 +121,18 @@ export function projectCanonicalCheckpoint(
   operations: readonly EditorOperation[],
 ): CanonicalCheckpoint {
   const moves = new Map<string, { continuity: string; operations: MoveOperation[] }>();
+  const layers = new Map<string, ZIndexOperation>();
   const rest: EditorOperation[] = [];
 
   for (const operation of operations) {
+    if (isLayerOperation(operation)) {
+      const key = durableMoveKey(operation);
+      if (!key) {
+        return { ok: false, error: "layer_missing_durable_identity" };
+      }
+      layers.set(key, operation);
+      continue;
+    }
     if (!isMoveOperation(operation)) {
       rest.push(operation);
       continue;
@@ -145,6 +158,6 @@ export function projectCanonicalCheckpoint(
     .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   return {
     ok: true,
-    operations: [...rest, ...canonicalMoves],
+    operations: [...rest, ...canonicalMoves, ...layers.values()],
   };
 }

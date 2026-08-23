@@ -1,4 +1,4 @@
-import type { MoveOperation } from "../editor/operations.js";
+import type { MoveOperation, ZIndexOperation } from "../editor/operations.js";
 import type { PageKey } from "../editor/ids.js";
 import { validateOperation } from "../editor/validation/validate-operation.js";
 import { applyMoveOperation } from "../editor/dom/handlers/transform-handler.js";
@@ -23,6 +23,13 @@ import type {
 import type { IntendedRect, PlacementEngine } from "./placement-engine.js";
 import type { DurableVisualIdentity, VisualModel } from "./visual-model.js";
 import { isResolvedVisual } from "./visual-model.js";
+import { buildZIndexOperation } from "../editor/transform/operation-factory.js";
+import {
+  applyLayerToHost,
+  inferLayerCommandFromOperation,
+  resolveLayerPlan,
+} from "../editor/dom/layer-overlap-resolver.js";
+import { counterMoveDetachedDescendants } from "../editor/dom/managed-detach.js";
 
 export interface OperationExecutorDeps {
   document: Document;
@@ -31,10 +38,17 @@ export interface OperationExecutorDeps {
   placement: PlacementEngine;
 }
 
+function debugLayer(message: string, data?: unknown): void {
+  if (typeof __OTF_DIAGNOSTICS_ENABLED__ !== "undefined" && __OTF_DIAGNOSTICS_ENABLED__) {
+    console.info(`[otf-v2] ${message}`, data ?? {});
+  }
+}
+
 interface CapturedEffect {
   nodeId: VisualNodeId;
   snapshot: ElementDomSnapshot;
   originalRect: IntendedRect;
+  descendantSnapshots: { element: HTMLElement; snapshot: ElementDomSnapshot }[];
 }
 
 function failure(error: string, rolledBack: boolean, verification?: VisualVerification): ExecutionFailure {
@@ -96,6 +110,7 @@ function buildVerifiedMove(
 export function createOperationExecutor(deps: OperationExecutorDeps): OperationExecutor {
   const snapshotStore = new ElementSnapshotStore();
   const effects = new Map<string, CapturedEffect>();
+  const layerEffects = new Map<string, { element: HTMLElement; snapshot: ElementDomSnapshot }>();
 
   const resolveOrFail = (
     nodeId: VisualNodeId | null,
@@ -143,11 +158,30 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
   }): ExecutionResult => {
     const snapshot = captureElementDomSnapshot(input.element, deps.document);
     const originalRect = rectFromElement(input.element);
+    const detachedDescendants = Array.from(
+      input.element.querySelectorAll<HTMLElement>('[data-otf-detached="true"]'),
+    );
+    const descendantSnapshots = detachedDescendants.map((element) => ({
+      element,
+      snapshot: captureElementDomSnapshot(element, deps.document),
+    }));
+    const rollbackApplied = (): boolean => {
+      const parentRestored = rollback(input.element, snapshot);
+      const descendantsRestored = descendantSnapshots.every(({ element, snapshot: childSnapshot }) =>
+        rollback(element, childSnapshot),
+      );
+      return parentRestored && descendantsRestored;
+    };
 
     try {
       applyMoveOperation(input.element, input.operation, snapshotStore);
+      counterMoveDetachedDescendants(
+        input.element,
+        input.operation.payload.dx,
+        input.operation.payload.dy,
+      );
     } catch (error) {
-      const rolledBack = rollback(input.element, snapshot);
+      const rolledBack = rollbackApplied();
       return failure(error instanceof Error ? error.message : "apply_threw", rolledBack);
     }
 
@@ -159,12 +193,12 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     };
 
     if (!verification.ok) {
-      const rolledBack = rollback(input.element, snapshot);
+      const rolledBack = rollbackApplied();
       return failure("geometry_mismatch", rolledBack, verification);
     }
 
     if (!verifyIdentity(input.nodeId, input.identity, input.element)) {
-      const rolledBack = rollback(input.element, snapshot);
+      const rolledBack = rollbackApplied();
       return failure("identity_uncertain", rolledBack, verification);
     }
 
@@ -177,6 +211,7 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         nodeId: input.nodeId,
         snapshot,
         originalRect,
+        descendantSnapshots,
       });
     }
 
@@ -219,6 +254,49 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         commit: true,
         captureEffect: true,
       });
+    },
+
+    executeLayer(input) {
+      const identity = deps.visualModel.durableIdentityOf(input.nodeId);
+      if (!identity) {
+        return failure("missing_identity", false);
+      }
+      const resolved = resolveOrFail(input.nodeId, identity);
+      if ("error" in resolved) {
+        return resolved;
+      }
+      const plan = resolveLayerPlan(resolved.element, input.command, snapshotStore, { onDebug: debugLayer });
+      if (plan.verification !== "pass") {
+        return failure(plan.reason ?? "layer_verification_failed", false);
+      }
+      const snapshot = captureElementDomSnapshot(plan.host, deps.document);
+      const drafted = buildZIndexOperation(
+        toTarget(input.nodeId, identity, rectFromElement(resolved.element)),
+        plan.layer,
+        plan.previousLayer,
+        { pageKey: input.pageKey, sourceCommand: `layer:${input.command}` },
+        resolved.element,
+      );
+      const operation: ZIndexOperation = {
+        ...drafted,
+        target: { nodeId: input.nodeId, signature: identity.signature },
+        status: "approved",
+      };
+      const validation = validateOperation(operation);
+      if (!validation.ok) {
+        return failure(validation.errors.join("; ") || "invalid_operation", false);
+      }
+      applyLayerToHost(plan.host, plan.layer, snapshotStore);
+      const verified = resolveLayerPlan(resolved.element, input.command, snapshotStore, {
+        explicitLayer: plan.layer,
+      });
+      if (verified.verification !== "pass" || !verifyIdentity(input.nodeId, identity, resolved.element)) {
+        return failure("layer_verification_failed", rollback(plan.host, snapshot));
+      }
+      layerEffects.set(operation.id, { element: plan.host, snapshot });
+      deps.ledger.commit(operation);
+      const box = rectFromElement(resolved.element);
+      return { ok: true, operation, verification: { ok: true, expected: box, actual: box } };
     },
 
     replayMove(operation) {
@@ -266,7 +344,55 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       });
     },
 
+    replayLayer(operation) {
+      const existingEffect = layerEffects.get(operation.id);
+      if (
+        existingEffect?.element.isConnected &&
+        existingEffect.element.style.zIndex === String(operation.payload.layer)
+      ) {
+        const box = rectFromElement(existingEffect.element);
+        return { ok: true, operation, verification: { ok: true, expected: box, actual: box } };
+      }
+      const signature = operation.target.signature;
+      if (!signature) {
+        return failure("missing_signature", false);
+      }
+      const identity = { signature };
+      const resolved = resolveOrFail(null, identity);
+      if ("error" in resolved) {
+        return resolved;
+      }
+      const command = inferLayerCommandFromOperation(
+        operation.metadata?.sourceCommand,
+        operation.payload.layer,
+        operation.payload.previousLayer,
+      );
+      const plan = resolveLayerPlan(resolved.element, command, snapshotStore, {
+        explicitLayer: operation.payload.layer,
+      });
+      if (plan.verification !== "pass") {
+        return failure(plan.reason ?? "layer_verification_failed", false);
+      }
+      const snapshot = captureElementDomSnapshot(plan.host, deps.document);
+      applyLayerToHost(plan.host, operation.payload.layer, snapshotStore);
+      layerEffects.set(operation.id, { element: plan.host, snapshot });
+      const box = rectFromElement(resolved.element);
+      return { ok: true, operation, verification: { ok: true, expected: box, actual: box } };
+    },
+
     revertCommitted(operation) {
+      if (operation.type === "zIndex") {
+        const effect = layerEffects.get(operation.id);
+        if (!effect) {
+          return failure("missing_layer_effect", false);
+        }
+        const restored = rollback(effect.element, effect.snapshot);
+        if (!restored) {
+          return failure("rollback_failed", false);
+        }
+        const box = rectFromElement(effect.element);
+        return { ok: true, operation, verification: { ok: true, expected: box, actual: box } };
+      }
       const identity = identityFromMove(operation);
       const effect = effects.get(operation.id);
       if (!identity) {
@@ -286,6 +412,9 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         const rolledBack = rollback(resolved.element, effect.snapshot);
         if (!rolledBack) {
           return failure("rollback_failed", false);
+        }
+        for (const descendant of effect.descendantSnapshots) {
+          rollback(descendant.element, descendant.snapshot);
         }
       } else {
         const current = rectFromElement(resolved.element);
@@ -328,7 +457,7 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     },
 
     reapplyCommitted(operation) {
-      return this.replayMove(operation);
+      return operation.type === "move" ? this.replayMove(operation) : this.replayLayer(operation);
     },
   };
 }

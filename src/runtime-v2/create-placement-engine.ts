@@ -1,5 +1,9 @@
-import { OTF_DETACH_ATTR } from "../editor/dom/managed-detach.js";
+import {
+  OTF_DETACH_ATTR,
+  shouldDetachForPredictedRect,
+} from "../editor/dom/managed-detach.js";
 import { isInteractionSafeFixed } from "../editor/dom/interactive-fixed-placement.js";
+import { requiresTransformOnlyMove } from "../editor/dom/interactive-safety.js";
 import { OTF_TRANSFORM_ONLY_ATTR } from "../editor/dom/types.js";
 import type {
   IntendedRect,
@@ -58,6 +62,9 @@ export function createPlacementEngine(): PlacementEngine {
     planMove(request: MovePlacementRequest): MovePlacementPlan {
       const expected = translateRect(request.currentRect, request.dx, request.dy);
       const existing = readExisting(request.element, request);
+      const shouldDetach =
+        !existing.detached &&
+        shouldDetachForPredictedRect(request.element, [request.element], expected);
 
       if (existing.interactionSafeFixed) {
         return {
@@ -83,7 +90,10 @@ export function createPlacementEngine(): PlacementEngine {
         };
       }
 
-      if (existing.detached) {
+      if (
+        existing.detached ||
+        (shouldDetach && !requiresTransformOnlyMove(request.element))
+      ) {
         const { scrollX, scrollY } = pageOffset(request.element);
         return {
           strategy: "detached",
@@ -119,7 +129,7 @@ export function createPlacementEngine(): PlacementEngine {
         payload: {
           dx: request.dx,
           dy: request.dy,
-          detached: false,
+          detached: shouldDetach,
           transformOnly: true,
           interactionSafeFixed: false,
         },

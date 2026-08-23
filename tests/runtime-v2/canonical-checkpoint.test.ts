@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { MoveOperation } from "../../src/editor/operations.js";
+import type { MoveOperation, ZIndexOperation } from "../../src/editor/operations.js";
 import { createEmptyBoundingBoxHint } from "../../src/editor/element-signature.js";
 import {
   durableMoveKey,
@@ -30,6 +30,21 @@ function move(id: string, nodeKey: string, dx: number, originalX: number, finalX
       finalRect: { x: finalX, y: 10, width: 40, height: 20 },
       affectedRect: { x: finalX, y: 10, width: 40, height: 20 },
     },
+  };
+}
+
+function layer(id: string, nodeKey: string, value: number): ZIndexOperation {
+  const target = move(id, nodeKey, 0, 0, 0).target;
+  return {
+    id: `layer-${id}`,
+    type: "zIndex",
+    pageKey: "https://example.com/",
+    target,
+    payload: { layer: value, previousLayer: 0 },
+    createdAt: Number(id),
+    source: "manual",
+    status: "approved",
+    metadata: { sourceCommand: value > 0 ? "layer:front" : "layer:back" },
   };
 }
 
@@ -133,5 +148,29 @@ describe("canonical MOVE checkpoint", () => {
       ok: false,
       error: "move_durable_identity_collision",
     });
+  });
+
+  it("persists only the final layer state per durable target", () => {
+    const checkpoint = projectCanonicalCheckpoint([
+      layer("1", "mentions", 10),
+      layer("2", "mentions", 0),
+      layer("3", "mentions", 20),
+    ]);
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) return;
+    expect(checkpoint.operations).toHaveLength(1);
+    expect(checkpoint.operations[0]?.type).toBe("zIndex");
+    if (checkpoint.operations[0]?.type === "zIndex") {
+      expect(checkpoint.operations[0].payload.layer).toBe(20);
+    }
+  });
+
+  it("preserves the final detached relationship in the compacted move", () => {
+    const first = move("1", "mentions", 100, 0, 100);
+    first.payload.detached = true;
+    const checkpoint = projectCanonicalCheckpoint([first]);
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok || checkpoint.operations[0]?.type !== "move") return;
+    expect(checkpoint.operations[0].payload.detached).toBe(true);
   });
 });

@@ -1,4 +1,4 @@
-import type { EditorOperation, MoveOperation } from "../editor/operations.js";
+import type { EditorOperation, MoveOperation, ZIndexOperation } from "../editor/operations.js";
 import type { VisualNodeId } from "../editor/ids.js";
 import { computeDocumentPageKey } from "../content/page-identity.js";
 import {
@@ -39,6 +39,10 @@ function isMoveOperation(value: { type: string }): value is MoveOperation {
   return value.type === "move";
 }
 
+function isLayerOperation(value: { type: string }): value is ZIndexOperation {
+  return value.type === "zIndex";
+}
+
 function logV2(event: string, details?: Record<string, unknown>): void {
   if (typeof __OTF_DIAGNOSTICS_ENABLED__ !== "undefined" && __OTF_DIAGNOSTICS_ENABLED__) {
     console.info(`[otf-v2] ${event}`, details ?? {});
@@ -64,6 +68,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   let selected: VisualNodeId | null = null;
   let gesture: MovingGesture | null = null;
   let ignoreMutations = false;
+  const releaseMutationIgnore = (): void => {
+    queueMicrotask(() => {
+      ignoreMutations = false;
+    });
+  };
   let previousUserSelect = "";
   let resizeObserver: ResizeObserver | null = null;
 
@@ -119,7 +128,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     ignoreMutations = true;
     try {
       for (const operation of ledger.activeOperations()) {
-        if (!isMoveOperation(operation)) {
+        if (!isMoveOperation(operation) && !isLayerOperation(operation)) {
           continue;
         }
         const identity = operation.target.signature
@@ -139,6 +148,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
             kind: resolved.kind,
             evidence: resolved.evidence,
           });
+          continue;
+        }
+        if (isLayerOperation(operation)) {
+          executor.replayLayer(operation);
           continue;
         }
         const expected = operation.metadata?.finalRect;
@@ -163,7 +176,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         });
       }
     } finally {
-      ignoreMutations = false;
+      releaseMutationIgnore();
     }
     if (selected) {
       overlays.showSelection([selected]);
@@ -288,7 +301,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       dy,
       pageKey: pageKey(),
     });
-    ignoreMutations = false;
+    releaseMutationIgnore();
     logV2("move", {
       owner: result.ok ? "EXECUTION" : "EXECUTION",
       ok: result.ok,
@@ -318,6 +331,19 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     if (event.altKey && event.key === "ArrowUp") {
       event.preventDefault();
       runtime.selectParent();
+      return;
+    }
+    const modifier = event.ctrlKey || event.metaKey;
+    const bracketRight = event.code === "BracketRight" || event.key === "]" || event.key === "}";
+    const bracketLeft = event.code === "BracketLeft" || event.key === "[" || event.key === "{";
+    if (modifier && (bracketRight || bracketLeft)) {
+      event.preventDefault();
+      if (selected) {
+        const command = bracketRight
+          ? event.shiftKey ? "front" : "forward"
+          : event.shiftKey ? "back" : "backward";
+        runtime.layer(selected, command);
+      }
       return;
     }
     const undoKey = event.key === "z" && (event.ctrlKey || event.metaKey) && !event.shiftKey;
@@ -355,8 +381,14 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       }
       const relevant = records.some((record) => {
         const node = record.target;
-        if (node instanceof Element && isExtensionRoot(node)) {
-          return false;
+        if (node instanceof Element) {
+          const treeRoot = node.getRootNode();
+          if (
+            isExtensionRoot(node) ||
+            (treeRoot instanceof ShadowRoot && isExtensionRoot(treeRoot.host))
+          ) {
+            return false;
+          }
         }
         if (record.type === "attributes") {
           return record.attributeName === "style" || record.attributeName === OTF_TRANSFORM_ATTR;
@@ -478,7 +510,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         dy,
         pageKey: pageKey(),
       });
-      ignoreMutations = false;
+      releaseMutationIgnore();
       if (result.ok) {
         selectNode(nodeId);
       }
@@ -486,14 +518,26 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       overlays.refreshFromLiveGeometry();
       return result;
     },
+    layer(nodeId, command): ExecutionResult {
+      ignoreMutations = true;
+      const result = executor.executeLayer({ nodeId, command, pageKey: pageKey() });
+      releaseMutationIgnore();
+      if (result.ok) {
+        selectNode(nodeId);
+      }
+      refreshSave();
+      overlays.refreshFromLiveGeometry();
+      logV2("layer", { owner: "EXECUTION", ok: result.ok, command, error: result.ok ? undefined : result.error });
+      return result;
+    },
     undo() {
       const operation = ledger.peekUndo();
-      if (!operation || !isMoveOperation(operation)) {
+      if (!operation || (!isMoveOperation(operation) && !isLayerOperation(operation))) {
         return { ok: false, error: "nothing_to_undo", rolledBack: false };
       }
       ignoreMutations = true;
       const result = executor.revertCommitted(operation);
-      ignoreMutations = false;
+      releaseMutationIgnore();
       if (result.ok) {
         ledger.confirmUndo();
       }
@@ -503,12 +547,12 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     },
     redo() {
       const operation = ledger.peekRedo();
-      if (!operation || !isMoveOperation(operation)) {
+      if (!operation || (!isMoveOperation(operation) && !isLayerOperation(operation))) {
         return { ok: false, error: "nothing_to_redo", rolledBack: false };
       }
       ignoreMutations = true;
       const result = executor.reapplyCommitted(operation);
-      ignoreMutations = false;
+      releaseMutationIgnore();
       if (result.ok) {
         ledger.confirmRedo();
       }
@@ -568,6 +612,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const checkpoint = projectCanonicalCheckpoint(loaded);
       const toApply = checkpoint.ok ? checkpoint.operations : loaded;
       const moves = toApply.filter(isMoveOperation);
+      const layers = toApply.filter(isLayerOperation);
       await waitForReplayTargets(root, moves, {
         maxFrames: 240,
         canResolve: (operation) => Boolean(
@@ -626,8 +671,15 @@ export function createEditorRuntime(root: Document): EditorRuntime {
           failureKind = "EXECUTION";
         }
       }
-      ignoreMutations = false;
-      ledger.hydratePersisted(moves);
+      for (const operation of layers) {
+        const result = executor.replayLayer(operation);
+        if (result.ok) applied += 1;
+        else if (result.error === "unresolved_target" || result.error === "ambiguous_target") {
+          unresolved += 1; failureKind = "IDENTITY";
+        } else { failed += 1; failureKind = "EXECUTION"; }
+      }
+      releaseMutationIgnore();
+      ledger.hydratePersisted([...moves, ...layers]);
       const ok = unresolved === 0 && failed === 0;
       logV2("replay", {
         owner: ok ? "LEDGER" : failureKind ?? "LEDGER",

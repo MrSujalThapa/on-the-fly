@@ -132,10 +132,6 @@ export function shouldDetachForPredictedRect(
   coMovedElements: readonly HTMLElement[],
   predicted: { x: number; y: number; width: number; height: number },
 ): boolean {
-  if (requiresTransformOnlyMove(element)) {
-    return false;
-  }
-
   for (const other of coMovedElements) {
     if (other !== element && other.contains(element)) {
       return false;
@@ -152,12 +148,37 @@ export function shouldDetachForPredictedRect(
   }
 
   const parentRect = containerParent.getBoundingClientRect();
-  return (
-    predicted.x < parentRect.left - OUTSIDE_PARENT_TOLERANCE_PX ||
-    predicted.y < parentRect.top - OUTSIDE_PARENT_TOLERANCE_PX ||
-    predicted.x + predicted.width > parentRect.right + OUTSIDE_PARENT_TOLERANCE_PX ||
-    predicted.y + predicted.height > parentRect.bottom + OUTSIDE_PARENT_TOLERANCE_PX
+  const overlapWidth = Math.max(
+    0,
+    Math.min(predicted.x + predicted.width, parentRect.right) -
+      Math.max(predicted.x, parentRect.left),
   );
+  const overlapHeight = Math.max(
+    0,
+    Math.min(predicted.y + predicted.height, parentRect.bottom) -
+      Math.max(predicted.y, parentRect.top),
+  );
+  const childArea = predicted.width * predicted.height;
+  return childArea > 0 && (overlapWidth * overlapHeight) / childArea < 0.5;
+}
+
+/** Keep logically detached descendants fixed while an old DOM ancestor moves. */
+export function counterMoveDetachedDescendants(
+  root: HTMLElement,
+  dx: number,
+  dy: number,
+): HTMLElement[] {
+  const detached = Array.from(
+    root.querySelectorAll<HTMLElement>(`[${OTF_DETACH_ATTR}="true"]`),
+  );
+  for (const element of detached) {
+    const state = readStoredTransformState(element);
+    if (!state) continue;
+    const next = { ...state, dx: state.dx - dx, dy: state.dy - dy };
+    writeStoredTransformState(element, next);
+    applyStoredTransformState(element, next);
+  }
+  return detached;
 }
 
 export interface DetachRectOverride {

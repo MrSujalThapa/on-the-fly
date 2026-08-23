@@ -6,7 +6,7 @@ import {
   type ElementSnapshotStore,
   writeStoredTransformState,
 } from "../element-snapshot.js";
-import { applyPersistedDetachPlacement } from "../managed-detach.js";
+import { applyPersistedDetachPlacement, OTF_DETACH_ATTR } from "../managed-detach.js";
 import {
   applyPersistedInteractionSafeFixed,
   applyInteractionSafeFixedDelta,
@@ -144,7 +144,11 @@ function applyMoveToFinalRect(
   const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
   state.dx += dx;
   state.dy += dy;
-  return commitTransformState(element, state, previousSerialized);
+  const changes = commitTransformState(element, state, previousSerialized);
+  if (operation.payload.detached) {
+    element.setAttribute(OTF_DETACH_ATTR, "true");
+  }
+  return changes;
 }
 
 export function applyResizeOperation(

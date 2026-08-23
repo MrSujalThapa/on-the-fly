@@ -1,4 +1,5 @@
-import type { MoveOperation } from "../editor/operations.js";
+import type { MoveOperation, ZIndexOperation } from "../editor/operations.js";
+import type { LayerCommand } from "../editor/transform/layer-order.js";
 import type { PageKey, VisualNodeId } from "../editor/ids.js";
 import type { IntendedRect } from "./placement-engine.js";
 
@@ -10,7 +11,7 @@ export interface VisualVerification {
 
 export type ExecutionSuccess = {
   readonly ok: true;
-  readonly operation: MoveOperation;
+  readonly operation: MoveOperation | ZIndexOperation;
   readonly verification: VisualVerification;
 };
 
@@ -35,9 +36,15 @@ export interface OperationExecutor {
     dy: number;
     pageKey: PageKey;
   }): ExecutionResult;
+  executeLayer(input: {
+    nodeId: VisualNodeId;
+    command: LayerCommand;
+    pageKey: PageKey;
+  }): ExecutionResult;
   replayMove(operation: MoveOperation): ExecutionResult;
-  revertCommitted(operation: MoveOperation): ExecutionResult;
-  reapplyCommitted(operation: MoveOperation): ExecutionResult;
+  replayLayer(operation: ZIndexOperation): ExecutionResult;
+  revertCommitted(operation: MoveOperation | ZIndexOperation): ExecutionResult;
+  reapplyCommitted(operation: MoveOperation | ZIndexOperation): ExecutionResult;
 }
 
 export const MOVE_GEOMETRY_TOLERANCE_PX = 3;

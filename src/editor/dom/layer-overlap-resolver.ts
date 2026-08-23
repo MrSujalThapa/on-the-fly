@@ -1,5 +1,4 @@
 import { extractBoundingBox } from "../measurement/bounding-box.js";
-import { rectsOverlap } from "../measurement/geometry.js";
 import { isExtensionRoot, isGiantPageWrapper } from "../measurement/scan-guards.js";
 import type { MeasurementRect } from "../measurement/types.js";
 import {
@@ -142,6 +141,10 @@ function sampleInnerPoints(rect: MeasurementRect): { x: number; y: number }[] {
   const cy = rect.y + rect.height / 2;
   return [
     { x: cx, y: cy },
+    { x: rect.x + insetX, y: cy },
+    { x: rect.x + rect.width - insetX, y: cy },
+    { x: cx, y: rect.y + insetY },
+    { x: cx, y: rect.y + rect.height - insetY },
     { x: rect.x + insetX, y: rect.y + insetY },
     { x: rect.x + rect.width - insetX, y: rect.y + insetY },
     { x: rect.x + insetX, y: rect.y + rect.height - insetY },
@@ -165,7 +168,7 @@ function collectManagedPaintHosts(selected: HTMLElement, initialTarget: HTMLElem
 }
 
 function isPaintParticipant(element: HTMLElement, selected: HTMLElement, paintHosts: Set<HTMLElement>): boolean {
-  if (element === selected || selected.contains(element)) {
+  if (element === selected || selected.contains(element) || element.contains(selected)) {
     return true;
   }
   for (const host of paintHosts) {
@@ -388,44 +391,6 @@ export function resolveBlockerPaintHost(
   return branch;
 }
 
-function findBlockerByRectOverlap(
-  selected: HTMLElement,
-  paintHosts: Set<HTMLElement>,
-  rect: MeasurementRect,
-  document: Document,
-): HTMLElement | null {
-  let best: { element: HTMLElement; layer: number } | null = null;
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
-  let node = walker.nextNode();
-  while (node) {
-    if (!(node instanceof HTMLElement)) {
-      node = walker.nextNode();
-      continue;
-    }
-    if (!isPageSampleElement(node) || isPaintParticipant(node, selected, paintHosts)) {
-      node = walker.nextNode();
-      continue;
-    }
-
-    const nodeRect = extractBoundingBox(node);
-    if (!rectsOverlap(rect, nodeRect)) {
-      node = walker.nextNode();
-      continue;
-    }
-
-    const layer = resolveCurrentManagedLayer(
-      readInlineZIndex(node),
-      readComputedZIndex(node),
-    );
-    if (!best || layer >= best.layer) {
-      best = { element: node, layer };
-    }
-    node = walker.nextNode();
-  }
-
-  return best?.element ?? null;
-}
-
 function findVisualBlocker(
   selected: HTMLElement,
   paintHosts: Set<HTMLElement>,
@@ -434,22 +399,17 @@ function findVisualBlocker(
   document: Document,
 ): HTMLElement | null {
   const points = sampleInnerPoints(rect);
-  const expectOnTop = wantsOnTop(command);
-
   for (const point of points) {
     const stack = getFilteredElementsFromPoint(document, point.x, point.y);
     for (const element of stack) {
       if (isPaintParticipant(element, selected, paintHosts)) {
-        if (expectOnTop) {
-          continue;
-        }
-        return element;
+        continue;
       }
       return element;
     }
   }
 
-  return findBlockerByRectOverlap(selected, paintHosts, rect, document);
+  return null;
 }
 
 function computeTargetLayer(
@@ -676,26 +636,21 @@ export function resolveLayerPlan(
 
   const initialLayer = computeTargetLayer(initialTarget, command, options.explicitLayer, null);
   const initialAttempt = probeHost(initialTarget, initialLayer, null, null);
-  const overlapBlocker = findBlockerByRectOverlap(
-    selected,
-    paintHosts,
-    selectedRect,
-    document,
-  );
+  const overlapBlocker = findVisualBlocker(selected, paintHosts, selectedRect, command, document);
   if (
     initialAttempt.verification === "pass" &&
     !hasAncestorStackingContext(selected) &&
-    (!overlapBlocker || isPaintParticipant(overlapBlocker, selected, paintHosts))
+    overlapBlocker &&
+    !isPaintParticipant(overlapBlocker, selected, paintHosts)
   ) {
     return initialAttempt;
   }
 
-  const blocker =
-    findVisualBlocker(selected, paintHosts, selectedRect, command, document) ??
-    overlapBlocker;
+  const blocker = overlapBlocker;
   if (!blocker) {
     return {
       ...initialAttempt,
+      verification: "fail",
       reason: "blocker-not-found",
       diagnostic: {
         ...initialAttempt.diagnostic,
@@ -715,20 +670,7 @@ export function resolveLayerPlan(
   );
 
   if (selectedHost === initialTarget && resolvedLayer === initialLayer) {
-    return {
-      ...initialAttempt,
-      host: selectedHost,
-      layer: resolvedLayer,
-      reason: "unresolved-stacking-context",
-      diagnostic: {
-        ...initialAttempt.diagnostic,
-        blocker: describeElement(blocker),
-        blockerHost: describeElement(blockerHost),
-        selectedHost: describeElement(selectedHost),
-        verification: "fail",
-        reason: "unresolved-stacking-context",
-      },
-    };
+    return probeHost(selectedHost, resolvedLayer, blocker, blockerHost);
   }
 
   const resolvedAttempt = probeHost(selectedHost, resolvedLayer, blocker, blockerHost);

@@ -1,4 +1,5 @@
 import type { VisualNodeId } from "../editor/ids.js";
+import type { LayerCommand } from "../editor/transform/layer-order.js";
 import type { ExecutionResult, OperationExecutor } from "./operation-executor.js";
 import type { OperationLedger } from "./operation-ledger.js";
 import type { OverlayCoordinator } from "./overlay-coordinator.js";
@@ -39,6 +40,7 @@ export interface EditorRuntime {
   select(element: HTMLElement): VisualNodeId | null;
   selectParent(): VisualNodeId | null;
   move(nodeId: VisualNodeId, dx: number, dy: number): ExecutionResult;
+  layer(nodeId: VisualNodeId, command: LayerCommand): ExecutionResult;
   undo(): ExecutionResult;
   redo(): ExecutionResult;
   save(): Promise<PersistResult>;
