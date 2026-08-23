@@ -3,6 +3,8 @@ import {
   enableEditMode,
   enableInteractMode,
   openFixture,
+  reloadAndWaitForReplay,
+  save,
   selectAndDrag,
   selectParent,
   selectTarget,
@@ -128,6 +130,13 @@ test.describe("visual model VM1–VM8 VM12", () => {
     expectRectNear(await rect(page.getByTestId("card-a")), translated(origin.a, 100, 0), 8, "A +100");
     expectRectNear(await rect(page.getByTestId("card-b")), translated(origin.b, 300, 0), 8, "B +300");
     expectRectNear(await rect(page.getByTestId("card-c")), translated(origin.c, 100, 0), 8, "C +100");
+    await selectAndDrag(page, page.getByTestId("card-b"), -25, 15);
+    const committed = await rect(page.getByTestId("card-b"));
+    await save(page);
+    await reloadAndWaitForReplay(page);
+    await enableEditMode(context, page);
+    const reloaded = await rect(page.getByTestId("card-b"));
+    expectRectNear(reloaded, committed, 8, "B parent/child reload");
   });
 
   test("VM7 nested button still selects the card unit", async ({ page, context }) => {

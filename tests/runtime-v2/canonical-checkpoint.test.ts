@@ -69,6 +69,23 @@ describe("canonical MOVE checkpoint", () => {
     expect(checkpoint.operations).toHaveLength(2);
   });
 
+  it("does not fold inherited ancestor movement into a child's local delta", () => {
+    const checkpoint = projectCanonicalCheckpoint([
+      move("1", "child", 200, 280, 480),
+      move("2", "child", -25, 580, 555),
+    ]);
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) {
+      return;
+    }
+    const only = checkpoint.operations[0];
+    expect(only?.type).toBe("move");
+    if (only?.type === "move") {
+      expect(only.payload.dx).toBe(175);
+      expect(only.metadata?.finalRect?.x).toBe(555);
+    }
+  });
+
   it("compacts the same logical control across generated dataset ids", () => {
     const first = move("1", "Mentions", 40, 0, 40);
     const second = move("2", "Mentions", 32, 40, 72);

@@ -4,7 +4,6 @@ import { rectFromElement } from "./geometry.js";
 import { discoverFromElement, discoverFromPath } from "./visual-hierarchy.js";
 import {
   buildDurableIdentity,
-  identityConsistent,
   resolveDurableIdentity,
 } from "./visual-identity.js";
 import type { IntendedRect } from "./placement-engine.js";
@@ -172,7 +171,7 @@ export function createVisualModel(root: Document): VisualModel {
         };
       }
       const cached = readCache(id);
-      if (cached && identityConsistent(cached, node.durableIdentity)) {
+      if (cached) {
         return {
           kind: "resolved",
           nodeId: id,
@@ -203,8 +202,8 @@ export function createVisualModel(root: Document): VisualModel {
         writeCache(existingId, resolved.element);
         return withNodeId(resolved, existingId);
       }
-      const adopted = this.adopt(resolved.element);
-      return adopted ? withNodeId(resolved, adopted) : resolved;
+      const reboundId = upsertNode(resolved.element, "unit", null);
+      return withNodeId(resolved, reboundId);
     },
     cache(id, element) {
       writeCache(id, element);

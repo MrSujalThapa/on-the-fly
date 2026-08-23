@@ -75,10 +75,11 @@ function composeMove(group: MoveOperation[]): MoveOperation {
   }
   const original = first.metadata?.originalRect ?? last.metadata?.originalRect;
   const finalRect = last.metadata?.finalRect ?? last.metadata?.affectedRect;
-  const dx =
-    original && finalRect ? finalRect.x - original.x : group.reduce((sum, operation) => sum + operation.payload.dx, 0);
-  const dy =
-    original && finalRect ? finalRect.y - original.y : group.reduce((sum, operation) => sum + operation.payload.dy, 0);
+  // MOVE payloads are target-local deltas. Geometry may also include movement
+  // inherited from an edited ancestor, so finalRect - originalRect would
+  // double-apply that ancestor displacement during replay.
+  const dx = group.reduce((sum, operation) => sum + operation.payload.dx, 0);
+  const dy = group.reduce((sum, operation) => sum + operation.payload.dy, 0);
   const metadata: MoveOperation["metadata"] = {};
   if (last.metadata?.targetSummary) {
     metadata.targetSummary = last.metadata.targetSummary;
@@ -139,7 +140,9 @@ export function projectCanonicalCheckpoint(
     }
   }
 
-  const canonicalMoves = [...moves.values()].map((group) => composeMove(group.operations));
+  const canonicalMoves = [...moves.values()]
+    .map((group) => composeMove(group.operations))
+    .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   return {
     ok: true,
     operations: [...rest, ...canonicalMoves],

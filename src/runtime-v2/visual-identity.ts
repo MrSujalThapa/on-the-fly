@@ -87,7 +87,7 @@ export function isGeneratedIdentityValue(value: string | undefined): boolean {
   if (!token) {
     return false;
   }
-  return /^(ember\d+|react[-:].+|:?r[a-z0-9]+:)$/iu.test(token);
+  return /(?:^|[-_:])ember\d+(?:$|[-_:])|^react[-:].+|^:?r[a-z0-9]+:$/iu.test(token);
 }
 
 function stableDatasetEntries(element: HTMLElement): Array<[string, string]> {
@@ -204,12 +204,15 @@ function uniqueIn(root: ParentNode, selector: string): HTMLElement[] {
 
 function gatherByStableKeys(root: ParentNode, signature: ElementSignature): HTMLElement[] {
   const found = new Set<HTMLElement>();
-  if (signature.idAttr) {
+  if (signature.idAttr && !isGeneratedIdentityValue(signature.idAttr)) {
     for (const node of uniqueIn(root, `#${escapeCssIdentifier(signature.idAttr)}`)) {
       found.add(node);
     }
   }
   for (const [key, value] of parseDatasetFingerprint(signature.datasetFingerprint)) {
+    if (isGeneratedIdentityValue(value)) {
+      continue;
+    }
     const attr = key.startsWith("data-")
       ? key
       : `data-${key.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}`;

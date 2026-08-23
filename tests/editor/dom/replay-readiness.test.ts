@@ -30,6 +30,16 @@ function styleOp(id: string, cssPath: string): EditorOperation {
 }
 
 describe("replay readiness", () => {
+  it("uses the caller's canonical target resolver when provided", async () => {
+    const { root } = createTestDocument(`<main></main>`);
+    const operations = [styleOp("logical-target", "main p#late")];
+    const result = await waitForReplayTargets(root, operations, {
+      maxFrames: 1,
+      canResolve: () => true,
+    });
+    expect(result).toEqual({ resolved: 1, total: 1, timedOut: false });
+  });
+
   it("waits for late-mounted targets before replay applies once", async () => {
     const { document, root } = createTestDocument(`<main></main>`);
     const operations = [styleOp("style-late", "main p#late")];

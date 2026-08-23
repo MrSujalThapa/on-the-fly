@@ -568,7 +568,13 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const checkpoint = projectCanonicalCheckpoint(loaded);
       const toApply = checkpoint.ok ? checkpoint.operations : loaded;
       const moves = toApply.filter(isMoveOperation);
-      await waitForReplayTargets(root, moves, { maxFrames: 240 });
+      await waitForReplayTargets(root, moves, {
+        maxFrames: 240,
+        canResolve: (operation) => Boolean(
+          operation.target.signature &&
+          isResolvedVisual(visualModel.resolveIdentity({ signature: operation.target.signature })),
+        ),
+      });
       let applied = 0;
       let unresolved = 0;
       let failed = 0;

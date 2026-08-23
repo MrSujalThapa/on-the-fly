@@ -70,23 +70,26 @@ export async function waitForDocumentReady(document: Document): Promise<void> {
 export async function waitForReplayTargets(
   root: ParentNode,
   operations: readonly EditorOperation[],
-  options: { maxFrames?: number } = {},
+  options: { maxFrames?: number; canResolve?: (operation: EditorOperation) => boolean } = {},
 ): Promise<{ resolved: number; total: number; timedOut: boolean }> {
   const maxFrames = options.maxFrames ?? DEFAULT_MAX_FRAMES;
   const total = operations.length;
+  const countResolved = (): number => options.canResolve
+    ? operations.filter(options.canResolve).length
+    : countResolvableOperationTargets(root, operations);
 
   if (total === 0) {
     return { resolved: 0, total: 0, timedOut: false };
   }
 
-  let resolved = countResolvableOperationTargets(root, operations);
+  let resolved = countResolved();
   if (resolved === total) {
     return { resolved, total, timedOut: false };
   }
 
   for (let frame = 0; frame < maxFrames; frame += 1) {
     await waitForNextFrame();
-    resolved = countResolvableOperationTargets(root, operations);
+    resolved = countResolved();
     if (resolved === total) {
       return { resolved, total, timedOut: false };
     }

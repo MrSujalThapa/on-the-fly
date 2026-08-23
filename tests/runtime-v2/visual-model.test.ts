@@ -339,4 +339,69 @@ describe("logical identity vs positional locators", () => {
       expect(identifyingContent(resolved.element.textContent || "")).toBe("mentions");
     }
   });
+
+  it("ignores an embedded Ember suffix when rebinding an interactive control", () => {
+    const { document, root } = createTestDocument(`
+      <button id="nt-card-settings-dropdown-trigger-ember36" aria-label="Settings menu">...</button>
+    `);
+    const button = root.querySelector("button");
+    if (!(button instanceof HTMLElement)) {
+      return;
+    }
+    layoutCards(root, "button", 40);
+    const identity = buildDurableIdentity(button, document);
+    button.id = "nt-card-settings-dropdown-trigger-ember99";
+    const resolved = resolveDurableIdentity(document, identity);
+    expect(isResolvedVisual(resolved)).toBe(true);
+    if (isResolvedVisual(resolved)) {
+      expect(resolved.element).toBe(button);
+    }
+  });
+
+  it("keeps the exact connected live binding authoritative when identity evidence changes", () => {
+    const { document, root } = createTestDocument(`<button id="ember1" aria-label="Settings menu">Menu</button>`);
+    const button = root.querySelector("button");
+    if (!(button instanceof HTMLElement)) {
+      return;
+    }
+    layoutCards(root, "button", 40);
+    const model = createVisualModel(document);
+    const nodeId = model.adopt(button);
+    expect(nodeId).not.toBeNull();
+    if (!nodeId) {
+      return;
+    }
+    button.id = "ember999";
+    button.setAttribute("aria-label", "Updated settings menu");
+    const resolved = model.resolveNode(nodeId);
+    expect(isResolvedVisual(resolved)).toBe(true);
+    if (isResolvedVisual(resolved)) {
+      expect(resolved.element).toBe(button);
+      expect(resolved.evidence.strategy).toBe("live-cache");
+    }
+  });
+
+  it("rebinds distinct persisted children exactly instead of promoting both to their card", () => {
+    const { document, root } = createTestDocument(`
+      <article><a><img src="avatar.png" /></a><button aria-label="Settings menu">...</button></article>
+    `);
+    const image = root.querySelector("img");
+    const button = root.querySelector("button");
+    if (!(image instanceof HTMLElement) || !(button instanceof HTMLElement)) {
+      return;
+    }
+    layoutCards(root, "article, img, button", 40);
+    const model = createVisualModel(document);
+    const imageResult = model.resolveIdentity(buildDurableIdentity(image, document));
+    const buttonResult = model.resolveIdentity(buildDurableIdentity(button, document));
+    expect(isResolvedVisual(imageResult)).toBe(true);
+    expect(isResolvedVisual(buttonResult)).toBe(true);
+    if (isResolvedVisual(imageResult) && isResolvedVisual(buttonResult)) {
+      expect(imageResult.element).toBe(image);
+      expect(buttonResult.element).toBe(button);
+      expect(imageResult.nodeId).not.toBe(buttonResult.nodeId);
+      expect(imageResult.nodeId && model.bind(imageResult.nodeId)).toBe(image);
+      expect(buttonResult.nodeId && model.bind(buttonResult.nodeId)).toBe(button);
+    }
+  });
 });
