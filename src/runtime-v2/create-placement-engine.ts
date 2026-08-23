@@ -3,10 +3,7 @@ import {
   shouldDetachForPredictedRect,
 } from "../editor/dom/managed-detach.js";
 import { isInteractionSafeFixed } from "../editor/dom/interactive-fixed-placement.js";
-import {
-  requiresInteractionSafeFixedMove,
-  requiresTransformOnlyMove,
-} from "../editor/dom/interactive-safety.js";
+import { requiresTransformOnlyMove } from "../editor/dom/interactive-safety.js";
 import { OTF_TRANSFORM_ONLY_ATTR } from "../editor/dom/types.js";
 import type {
   IntendedRect,
@@ -45,20 +42,23 @@ function pageOffset(element: HTMLElement): { scrollX: number; scrollY: number } 
 /**
  * MOVE strategies:
  *
- * in-flow (default for block/flex/grid children):
+ * in-flow (default for ordinary block/flex/grid children):
  *   visual translate, original flow slot remains, viewport coordinates,
  *   repeated moves compose via metadata.finalRect, rollback restores snapshot.
  *
  * transform-only:
- *   already-managed transform-only or host-positioned elements that must keep
- *   their CSS position; same composition as in-flow.
+ *   only for elements already committed to transform-only compatibility mode.
  *
  * interaction-safe-fixed:
- *   only when the element is already in that compatibility mode.
- *   Not selected from tag names like `a` / `button`.
+ *   used when an element that must preserve its DOM/event tree is dragged out
+ *   of its visual container. This includes grouped SPA controls and larger
+ *   units containing interactive descendants. The target stays in its DOM tree
+ *   but receives independent viewport/containing-block placement so the old
+ *   parent no longer owns future OTF movement.
  *
  * detached:
- *   only when the element is already OTF-detached. Not the default MOVE.
+ *   body-level managed placement for non-interactive targets that are dragged
+ *   out of their visual container.
  */
 export function createPlacementEngine(): PlacementEngine {
   return {
@@ -69,9 +69,14 @@ export function createPlacementEngine(): PlacementEngine {
         !existing.detached &&
         shouldDetachForPredictedRect(request.element, [request.element], expected);
 
+      // Any target whose DOM/event relationship makes physical reparenting
+      // unsafe must still become independently placeable when it leaves its
+      // visual parent. Previously grouped controls and units containing links
+      // fell through to transform-only, which left them trapped in the old
+      // parent's clipping/stacking/coordinate context.
       if (
         existing.interactionSafeFixed ||
-        (shouldDetach && requiresInteractionSafeFixedMove(request.element))
+        (shouldDetach && requiresTransformOnlyMove(request.element))
       ) {
         return {
           strategy: "interaction-safe-fixed",
@@ -155,8 +160,8 @@ export function createPlacementEngine(): PlacementEngine {
         payload: {
           dx: request.dx,
           dy: request.dy,
-          detached: shouldDetach,
-          transformOnly: true,
+          detached: false,
+          transformOnly: strategy === "transform-only",
           interactionSafeFixed: false,
         },
       };
