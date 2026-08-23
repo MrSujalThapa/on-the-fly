@@ -30,9 +30,12 @@ export function isInteractionSafeFixed(element: HTMLElement): boolean {
 }
 
 function isLegacyTransformOnlyPayload(operation: MoveOperation): boolean {
-  // Legacy persisted moves before interaction-safe fixed rollout.
+  // Legacy persisted moves predate the explicit interactionSafeFixed flag.
+  // Current Runtime V2 operations always write interactionSafeFixed as a
+  // boolean, so transformOnly=true on a current operation must not be mistaken
+  // for a legacy payload. Misclassifying it suppresses real detach placement.
   // eslint-disable-next-line @typescript-eslint/no-deprecated -- replay migration for saved ops
-  return operation.payload.transformOnly === true;
+  return operation.payload.transformOnly === true && operation.payload.interactionSafeFixed === undefined;
 }
 
 export function isLegacyTransformOnlyMovePayload(operation: MoveOperation): boolean {
