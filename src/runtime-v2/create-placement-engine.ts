@@ -3,11 +3,6 @@ import {
   shouldDetachForPredictedRect,
 } from "../editor/dom/managed-detach.js";
 import { isInteractionSafeFixed } from "../editor/dom/interactive-fixed-placement.js";
-import {
-  requiresInteractionSafeFixedMove,
-  requiresTransformOnlyMove,
-} from "../editor/dom/interactive-safety.js";
-import { OTF_TRANSFORM_ONLY_ATTR } from "../editor/dom/types.js";
 import type {
   IntendedRect,
   MovePlacementPlan,
@@ -26,11 +21,11 @@ function translateRect(rect: IntendedRect, dx: number, dy: number): IntendedRect
 
 function readExisting(element: HTMLElement, request: MovePlacementRequest) {
   return {
-    detached: request.existing?.detached ?? element.getAttribute(OTF_DETACH_ATTR) === "true",
-    interactionSafeFixed:
-      request.existing?.interactionSafeFixed ?? isInteractionSafeFixed(element),
-    transformOnly:
-      request.existing?.transformOnly ?? element.getAttribute(OTF_TRANSFORM_ONLY_ATTR) === "true",
+    independent:
+      request.existing?.detached === true ||
+      request.existing?.interactionSafeFixed === true ||
+      element.getAttribute(OTF_DETACH_ATTR) === "true" ||
+      isInteractionSafeFixed(element),
   };
 }
 
@@ -43,22 +38,9 @@ function pageOffset(element: HTMLElement): { scrollX: number; scrollY: number } 
 }
 
 /**
- * MOVE strategies:
- *
- * in-flow (default for block/flex/grid children):
- *   visual translate, original flow slot remains, viewport coordinates,
- *   repeated moves compose via metadata.finalRect, rollback restores snapshot.
- *
- * transform-only:
- *   already-managed transform-only or host-positioned elements that must keep
- *   their CSS position; same composition as in-flow.
- *
- * interaction-safe-fixed:
- *   only when the element is already in that compatibility mode.
- *   Not selected from tag names like `a` / `button`.
- *
- * detached:
- *   only when the element is already OTF-detached. Not the default MOVE.
+ * Runtime V2 has two placement semantics: attached in-flow, or independent
+ * body-managed placement. Legacy fixed/transform-only markers are read only
+ * so the next MOVE migrates them into the independent realization.
  */
 export function createPlacementEngine(): PlacementEngine {
   return {
@@ -66,60 +48,10 @@ export function createPlacementEngine(): PlacementEngine {
       const expected = translateRect(request.currentRect, request.dx, request.dy);
       const existing = readExisting(request.element, request);
       const shouldDetach =
-        !existing.detached &&
+        !existing.independent &&
         shouldDetachForPredictedRect(request.element, [request.element], expected);
 
-      if (
-        existing.interactionSafeFixed ||
-        (shouldDetach && requiresInteractionSafeFixedMove(request.element))
-      ) {
-        return {
-          strategy: "interaction-safe-fixed",
-          dx: request.dx,
-          dy: request.dy,
-          intendedRect: expected,
-          expectedRect: expected,
-          coordinateSpace: "viewport",
-          flowSlotRemains: true,
-          rollback: "restore-dom-snapshot",
-          payload: {
-            dx: request.dx,
-            dy: request.dy,
-            interactionSafeFixed: true,
-            transformOnly: false,
-            detached: false,
-            fixedViewportLeft: expected.x,
-            fixedViewportTop: expected.y,
-            fixedWidth: expected.width,
-            fixedHeight: expected.height,
-          },
-        };
-      }
-
-      if (existing.detached && requiresTransformOnlyMove(request.element)) {
-        return {
-          strategy: "transform-only",
-          dx: request.dx,
-          dy: request.dy,
-          intendedRect: expected,
-          expectedRect: expected,
-          coordinateSpace: "viewport",
-          flowSlotRemains: true,
-          rollback: "restore-dom-snapshot",
-          payload: {
-            dx: request.dx,
-            dy: request.dy,
-            detached: true,
-            transformOnly: true,
-            interactionSafeFixed: false,
-          },
-        };
-      }
-
-      if (
-        existing.detached ||
-        (shouldDetach && !requiresTransformOnlyMove(request.element))
-      ) {
+      if (existing.independent || request.forceIndependent === true || shouldDetach) {
         const { scrollX, scrollY } = pageOffset(request.element);
         return {
           strategy: "detached",
@@ -142,9 +74,8 @@ export function createPlacementEngine(): PlacementEngine {
         };
       }
 
-      const strategy = existing.transformOnly ? "transform-only" : "in-flow";
       return {
-        strategy,
+        strategy: "in-flow",
         dx: request.dx,
         dy: request.dy,
         intendedRect: expected,
@@ -155,8 +86,8 @@ export function createPlacementEngine(): PlacementEngine {
         payload: {
           dx: request.dx,
           dy: request.dy,
-          detached: shouldDetach,
-          transformOnly: true,
+          detached: false,
+          transformOnly: false,
           interactionSafeFixed: false,
         },
       };

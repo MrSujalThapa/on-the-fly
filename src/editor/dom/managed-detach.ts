@@ -1,5 +1,4 @@
 import { readStoredTransformState, writeStoredTransformState, applyStoredTransformState } from "./element-snapshot.js";
-import { requiresTransformOnlyMove } from "./interactive-safety.js";
 import { OTF_INTERACTION_FIXED_ATTR, OTF_MANAGED_ATTR, OTF_TRANSFORM_ONLY_ATTR, type StoredTransformState } from "./types.js";
 import type { MoveOperation } from "../operations.js";
 
@@ -17,6 +16,7 @@ export function isTransformOnlyMove(element: HTMLElement): boolean {
 }
 
 const OUTSIDE_PARENT_TOLERANCE_PX = 2;
+const INDEPENDENT_BASE_LAYER = "1";
 
 export interface DetachPlacement {
   left: number;
@@ -97,10 +97,6 @@ export function shouldDetachAfterMove(
   element: HTMLElement,
   coMovedElements: readonly HTMLElement[],
 ): boolean {
-  if (requiresTransformOnlyMove(element)) {
-    return false;
-  }
-
   if (!hasIndependentManagedTransform(element)) {
     return false;
   }
@@ -221,7 +217,10 @@ export function promoteElementToManagedLayer(
   const placement: DetachPlacement = {
     left: rect.left + scrollX,
     top: rect.top + scrollY,
-    zIndex: element.style.zIndex || getComputedStyle(element).zIndex || "",
+    zIndex: (() => {
+      const current = element.style.zIndex || getComputedStyle(element).zIndex;
+      return current && current !== "auto" ? current : INDEPENDENT_BASE_LAYER;
+    })(),
     width: element.style.width || `${String(rect.width)}px`,
     height: element.style.height || `${String(rect.height)}px`,
   };
@@ -248,9 +247,7 @@ export function promoteElementToManagedLayer(
   element.style.width = placement.width;
   element.style.height = placement.height;
   element.style.transform = `rotate(${String(nextState.rotate)}deg)`;
-  if (placement.zIndex && placement.zIndex !== "auto") {
-    element.style.zIndex = placement.zIndex;
-  }
+  element.style.zIndex = placement.zIndex;
   element.setAttribute(OTF_MANAGED_ATTR, "true");
 
   return placement;
@@ -287,6 +284,8 @@ export function applyPersistedDetachPlacement(
     element.setAttribute(OTF_DETACH_ATTR, "true");
     element.setAttribute(OTF_MANAGED_ATTR, "true");
   }
+  element.removeAttribute(OTF_INTERACTION_FIXED_ATTR);
+  element.removeAttribute(OTF_TRANSFORM_ONLY_ATTR);
 
   const state = readStoredTransformState(element);
   if (state) {
@@ -299,10 +298,19 @@ export function applyPersistedDetachPlacement(
   element.style.position = "absolute";
   element.style.left = `${String(left)}px`;
   element.style.top = `${String(top)}px`;
-  const zIndex = operation.payload.detachedZIndex;
-  if (zIndex && zIndex !== "auto") {
-    element.style.zIndex = zIndex;
+  const intended = operation.metadata?.finalRect;
+  if (intended) {
+    const actual = element.getBoundingClientRect();
+    const view = element.ownerDocument.defaultView;
+    const intendedViewportX = left - (view?.scrollX ?? 0);
+    const intendedViewportY = top - (view?.scrollY ?? 0);
+    const correctedLeft = left + intendedViewportX - actual.x;
+    const correctedTop = top + intendedViewportY - actual.y;
+    element.style.left = `${String(correctedLeft)}px`;
+    element.style.top = `${String(correctedTop)}px`;
   }
+  const zIndex = operation.payload.detachedZIndex;
+  element.style.zIndex = zIndex && zIndex !== "auto" ? zIndex : INDEPENDENT_BASE_LAYER;
 }
 
 /**

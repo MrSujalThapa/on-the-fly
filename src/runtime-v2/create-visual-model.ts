@@ -64,21 +64,26 @@ export function createVisualModel(root: Document): VisualModel {
   ): VisualNodeId => {
     const existingId = liveIds.get(binding);
     const existing = existingId ? nodes.get(existingId) : undefined;
-    if (existing && existing.role === role) {
+    if (existing) {
       writeCache(existing.id, binding);
-      if (parentId && existing.parentId !== parentId) {
-        nodes.set(existing.id, { ...existing, parentId });
+      if (existing.role !== role || (parentId && existing.parentId !== parentId)) {
+        nodes.set(existing.id, {
+          ...existing,
+          role,
+          capabilities: capabilitiesFor(role),
+          ...(parentId ? { parentId } : {}),
+        });
       }
       return existing.id;
     }
 
-    const id = existing?.id ?? nextNodeId();
+    const id = nextNodeId();
     const node: VisualNode = {
       id,
       durableIdentity: buildDurableIdentity(binding, root),
       role,
       parentId,
-      childIds: existing?.childIds ?? [],
+      childIds: [],
       capabilities: capabilitiesFor(role),
     };
     nodes.set(id, node);
@@ -131,7 +136,20 @@ export function createVisualModel(root: Document): VisualModel {
       return nodes.get(id) ?? null;
     },
     parentOf(id) {
-      return nodes.get(id)?.parentId ?? null;
+      const existingParent = nodes.get(id)?.parentId ?? null;
+      if (existingParent) {
+        return existingParent;
+      }
+      const binding = readCache(id);
+      const parent = binding?.parentElement;
+      if (!(parent instanceof HTMLElement)) {
+        return null;
+      }
+      const parentId = materialize(discoverFromElement(parent));
+      if (parentId) {
+        linkChild(parentId, id);
+      }
+      return parentId;
     },
     childrenOf(id) {
       return nodes.get(id)?.childIds ?? [];

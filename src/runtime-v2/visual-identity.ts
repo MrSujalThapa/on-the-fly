@@ -358,14 +358,19 @@ function evaluateCandidate(
   const expectedIdent =
     identifyingContent(signature.ariaLabel) || identifyingContent(signature.textFingerprint);
   const actualIdent = identifyingContent(textOf(element));
-  const contentMatches = Boolean(expectedIdent) && expectedIdent === actualIdent;
+  const containerTag = new Set(["article", "aside", "div", "section"])
+    .has(element.tagName.toLowerCase());
+  const descendantCompatible = containerTag && expectedIdent.length >= 12 && actualIdent.length >= 12 &&
+    (expectedIdent.includes(actualIdent) || actualIdent.includes(expectedIdent));
+  const contentMatches = Boolean(expectedIdent) &&
+    (expectedIdent === actualIdent || descendantCompatible);
   if (contentMatches) {
     matchedKeys.push("text");
   }
   const hasSemantic = matchedKeys.some(
     (key) => key === "id" || key.startsWith("data:") || key === "href" || key === "src" || key === "name" || key === "aria",
   );
-  if (expectedIdent && actualIdent && expectedIdent !== actualIdent && !hasSemantic) {
+  if (expectedIdent && actualIdent && !contentMatches && !hasSemantic) {
     contradicted = true;
   }
 

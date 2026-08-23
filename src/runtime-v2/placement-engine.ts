@@ -5,11 +5,7 @@ export interface IntendedRect {
   height: number;
 }
 
-export type MovePlacementStrategy =
-  | "in-flow"
-  | "detached"
-  | "interaction-safe-fixed"
-  | "transform-only";
+export type MovePlacementStrategy = "in-flow" | "detached";
 
 export type PlacementCoordinateSpace = "viewport" | "page";
 
@@ -24,6 +20,7 @@ export interface MovePlacementRequest {
   currentRect: IntendedRect;
   dx: number;
   dy: number;
+  forceIndependent?: boolean;
   existing?: ExistingPlacementState;
 }
 
