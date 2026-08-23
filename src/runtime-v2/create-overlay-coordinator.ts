@@ -320,7 +320,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     setSave(state) {
       saveHandler = state.onSave ?? null;
       if (saveButton) {
-        saveButton.hidden = !state.visible || mode === "interact";
+        saveButton.hidden = !state.visible;
       }
     },
   };

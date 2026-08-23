@@ -3,6 +3,7 @@ import { createTestDocument } from "../editor/dom/test-document.js";
 import { createPlacementEngine } from "../../src/runtime-v2/create-placement-engine.js";
 import { layoutElement } from "../editor/measurement/layout-helpers.js";
 import {
+  applyPersistedDetachPlacement,
   counterMoveDetachedDescendants,
   OTF_DETACH_ATTR,
 } from "../../src/editor/dom/managed-detach.js";
@@ -12,6 +13,26 @@ import {
 } from "../../src/editor/dom/element-snapshot.js";
 
 describe("PlacementEngine", () => {
+  it("updates page coordinates when an already-detached target moves again", () => {
+    const { document, root } = createTestDocument(`<div data-otf-detached="true">Child</div>`);
+    const element = root.querySelector("div") as HTMLElement;
+    document.body.appendChild(element);
+
+    applyPersistedDetachPlacement(element, {
+      id: "repeat-detach",
+      type: "move",
+      pageKey: "https://example.com/",
+      target: {},
+      payload: { dx: 12, dy: 8, detached: true, detachedLeft: 140, detachedTop: 90 },
+      createdAt: 1,
+      source: "manual",
+      status: "draft",
+    });
+
+    expect(element.style.left).toBe("140px");
+    expect(element.style.top).toBe("90px");
+    expect(element.parentElement).toBe(document.body);
+  });
   it("prefers in-flow transform for ordinary elements and keeps the flow slot", () => {
     const { root } = createTestDocument(`<article class="card">Card</article>`);
     const element = root.querySelector("article");

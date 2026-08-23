@@ -282,13 +282,11 @@ export function applyPersistedDetachPlacement(
     return;
   }
 
-  if (element.getAttribute(OTF_DETACH_ATTR) === "true") {
-    return;
+  if (element.getAttribute(OTF_DETACH_ATTR) !== "true") {
+    element.ownerDocument.body.appendChild(element);
+    element.setAttribute(OTF_DETACH_ATTR, "true");
+    element.setAttribute(OTF_MANAGED_ATTR, "true");
   }
-
-  element.ownerDocument.body.appendChild(element);
-  element.setAttribute(OTF_DETACH_ATTR, "true");
-  element.setAttribute(OTF_MANAGED_ATTR, "true");
 
   const state = readStoredTransformState(element);
   if (state) {

@@ -83,6 +83,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   };
   let previousUserSelect = "";
   let resizeObserver: ResizeObserver | null = null;
+  let saveInFlight: Promise<PersistResult> | null = null;
 
   const pageKey = (): string => computeDocumentPageKey(root);
 
@@ -594,50 +595,69 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return result;
     },
     async save(): Promise<PersistResult> {
-      const active = ledger.activeOperations();
-      const checkpoint = projectCanonicalCheckpoint(active);
-      if (!checkpoint.ok) {
+      if (saveInFlight) {
+        return saveInFlight;
+      }
+      const pending = (async (): Promise<PersistResult> => {
+        const active = ledger.activeOperations();
+        const checkpoint = projectCanonicalCheckpoint(active);
+        if (!checkpoint.ok) {
+          logV2("save", {
+            owner: "LEDGER",
+            pageKey: pageKey(),
+            ledgerRevision: ledger.cursor,
+            error: checkpoint.error,
+          });
+          return {
+            ok: false,
+            error: checkpoint.error,
+            failureKind: "IDENTITY",
+          };
+        }
+        const projection = JSON.parse(JSON.stringify(checkpoint.operations)) as EditorOperation[];
+        const persistedRevisionBefore = ledger.persistedRevision;
+        const identities = projection.map((operation) =>
+          operation.target.signature
+            ? summarizeIdentity({ signature: operation.target.signature })
+            : "missing",
+        );
+        const persist = await replacePageOperations(pageKey(), projection);
         logV2("save", {
-          owner: "LEDGER",
+          owner: persist.ok ? "PERSISTENCE" : "PERSISTENCE",
           pageKey: pageKey(),
           ledgerRevision: ledger.cursor,
-          error: checkpoint.error,
+          persistedRevisionBefore,
+          checkpointCount: projection.length,
+          operationIds: projection.map((operation) => operation.id),
+          identities,
+          writeOk: persist.ok,
+          error: persist.ok ? undefined : persist.error,
         });
-        return {
-          ok: false,
-          error: checkpoint.error,
-          failureKind: "IDENTITY",
-        };
+        if (!persist.ok) {
+          return {
+            ok: false,
+            error: persist.error ?? "save_failed",
+            failureKind: "PERSISTENCE",
+          };
+        }
+        const currentCheckpoint = projectCanonicalCheckpoint(ledger.activeOperations());
+        if (
+          currentCheckpoint.ok &&
+          JSON.stringify(currentCheckpoint.operations) === JSON.stringify(projection)
+        ) {
+          ledger.markPersisted();
+        }
+        return { ok: true };
+      })();
+      saveInFlight = pending;
+      try {
+        return await pending;
+      } finally {
+        if (saveInFlight === pending) {
+          saveInFlight = null;
+        }
+        refreshSave();
       }
-      const projection = JSON.parse(JSON.stringify(checkpoint.operations)) as EditorOperation[];
-      const persistedRevisionBefore = ledger.persistedRevision;
-      const identities = projection.map((operation) =>
-        operation.target.signature
-          ? summarizeIdentity({ signature: operation.target.signature })
-          : "missing",
-      );
-      const persist = await replacePageOperations(pageKey(), projection);
-      logV2("save", {
-        owner: persist.ok ? "PERSISTENCE" : "PERSISTENCE",
-        pageKey: pageKey(),
-        ledgerRevision: ledger.cursor,
-        persistedRevisionBefore,
-        checkpointCount: projection.length,
-        operationIds: projection.map((operation) => operation.id),
-        identities,
-        writeOk: persist.ok,
-        error: persist.ok ? undefined : persist.error,
-      });
-      if (!persist.ok) {
-        return {
-          ok: false,
-          error: persist.error ?? "save_failed",
-          failureKind: "PERSISTENCE",
-        };
-      }
-      ledger.markPersisted();
-      refreshSave();
-      return { ok: true };
     },
     async replay(): Promise<ReplayResult> {
       await waitForDocumentReady(root);
