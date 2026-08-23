@@ -68,4 +68,53 @@ describe("canonical MOVE checkpoint", () => {
     }
     expect(checkpoint.operations).toHaveLength(2);
   });
+
+  it("compacts the same logical control across generated dataset ids", () => {
+    const first = move("1", "Mentions", 40, 0, 40);
+    const second = move("2", "Mentions", 32, 40, 72);
+    if (first.target.signature) {
+      first.target.signature.idAttr = "ember123";
+      first.target.signature.datasetFingerprint = "id=ember123";
+      first.target.signature.role = "radio";
+      first.target.signature.siblingOrdinal = 4;
+      first.target.signature.siblingCount = 4;
+    }
+    if (second.target.signature) {
+      second.target.signature.idAttr = "ember999";
+      second.target.signature.datasetFingerprint = "id=ember999";
+      second.target.signature.role = "radio";
+      second.target.signature.siblingOrdinal = 4;
+      second.target.signature.siblingCount = 4;
+    }
+    const checkpoint = projectCanonicalCheckpoint([first, second]);
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) {
+      return;
+    }
+    expect(checkpoint.operations).toHaveLength(1);
+    const only = checkpoint.operations[0];
+    if (only?.type === "move") {
+      expect(only.payload.dx).toBe(72);
+      expect(durableMoveKey(only)).toBe(durableMoveKey(first));
+    }
+  });
+
+  it("fails closed when distinct targets produce the same durable key", () => {
+    const first = move("1", "Duplicate", 20, 0, 20);
+    const second = move("2", "Duplicate", 30, 0, 30);
+    if (first.target.signature && second.target.signature) {
+      first.target.signature.role = "radio";
+      first.target.signature.parentFingerprint = "div.filters";
+      first.target.signature.siblingOrdinal = 1;
+      first.target.signature.siblingCount = 2;
+      second.target.signature.role = "radio";
+      second.target.signature.parentFingerprint = "div.filters";
+      second.target.signature.siblingOrdinal = 2;
+      second.target.signature.siblingCount = 2;
+    }
+    expect(projectCanonicalCheckpoint([first, second])).toEqual({
+      ok: false,
+      error: "move_durable_identity_collision",
+    });
+  });
 });

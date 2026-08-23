@@ -82,10 +82,18 @@ function isVolatileDataKey(key: string): boolean {
   return VOLATILE_DATA_PREFIXES.some((prefix) => lower.startsWith(prefix));
 }
 
+export function isGeneratedIdentityValue(value: string | undefined): boolean {
+  const token = (value ?? "").trim();
+  if (!token) {
+    return false;
+  }
+  return /^(ember\d+|react[-:].+|:?r[a-z0-9]+:)$/iu.test(token);
+}
+
 function stableDatasetEntries(element: HTMLElement): Array<[string, string]> {
   const entries: Array<[string, string]> = [];
   for (const [rawKey, value] of Object.entries(element.dataset)) {
-    if (!value || isVolatileDataKey(rawKey)) {
+    if (!value || isVolatileDataKey(rawKey) || isGeneratedIdentityValue(value)) {
       continue;
     }
     if (STABLE_DATA_KEYS.has(rawKey.toLowerCase()) || STABLE_DATA_KEYS.has(rawKey)) {
@@ -256,6 +264,17 @@ interface CandidateScore {
 }
 
 function textOf(element: HTMLElement): string {
+  const aria = element.getAttribute("aria-label");
+  if (aria) {
+    return normalize(aria);
+  }
+  if (element instanceof HTMLInputElement && element.labels && element.labels.length > 0) {
+    return normalize(
+      Array.from(element.labels)
+        .map((label) => label.textContent)
+        .join(" "),
+    );
+  }
   return normalize(element.textContent);
 }
 
@@ -282,18 +301,21 @@ function evaluateCandidate(
   if (element.tagName.toLowerCase() !== signature.tagName.toLowerCase()) {
     contradicted = true;
   }
-  if (signature.idAttr) {
+  if (signature.idAttr && !isGeneratedIdentityValue(signature.idAttr)) {
     if (element.id === signature.idAttr) {
       matchedKeys.push("id");
-    } else if (element.id) {
+    } else if (element.id && !isGeneratedIdentityValue(element.id)) {
       contradicted = true;
     }
   }
   for (const [key, value] of parseDatasetFingerprint(signature.datasetFingerprint)) {
+    if (isGeneratedIdentityValue(value)) {
+      continue;
+    }
     const actual = element.dataset[key];
     if (actual === value) {
       matchedKeys.push(`data:${key}`);
-    } else if (actual) {
+    } else if (actual && !isGeneratedIdentityValue(actual)) {
       contradicted = true;
     }
   }
@@ -330,7 +352,8 @@ function evaluateCandidate(
     }
   }
 
-  const expectedIdent = identifyingContent(signature.textFingerprint);
+  const expectedIdent =
+    identifyingContent(signature.ariaLabel) || identifyingContent(signature.textFingerprint);
   const actualIdent = identifyingContent(textOf(element));
   const contentMatches = Boolean(expectedIdent) && expectedIdent === actualIdent;
   if (contentMatches) {

@@ -5,7 +5,7 @@ import {
   loadPageOperations,
   replacePageOperations,
 } from "../content/storage-client.js";
-import { waitForDocumentReady } from "../editor/dom/replay-readiness.js";
+import { waitForDocumentReady, waitForReplayTargets } from "../editor/dom/replay-readiness.js";
 import { OTF_TRANSFORM_ATTR } from "../editor/dom/types.js";
 import { isExtensionRoot } from "../editor/measurement/scan-guards.js";
 import { createInputRouter } from "./create-input-router.js";
@@ -354,14 +354,14 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         return;
       }
       const relevant = records.some((record) => {
-        if (record.type !== "childList") {
-          return false;
-        }
         const node = record.target;
         if (node instanceof Element && isExtensionRoot(node)) {
           return false;
         }
-        return true;
+        if (record.type === "attributes") {
+          return record.attributeName === "style" || record.attributeName === OTF_TRANSFORM_ATTR;
+        }
+        return record.type === "childList";
       });
       if (!relevant) {
         return;
@@ -372,7 +372,8 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     observer.observe(root.documentElement, {
       subtree: true,
       childList: true,
-      attributes: false,
+      attributes: true,
+      attributeFilter: ["style", OTF_TRANSFORM_ATTR],
       characterData: false,
     });
     owner().observe(observer);
@@ -566,11 +567,12 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const loaded = await loadPageOperations(pageKey());
       const checkpoint = projectCanonicalCheckpoint(loaded);
       const toApply = checkpoint.ok ? checkpoint.operations : loaded;
+      const moves = toApply.filter(isMoveOperation);
+      await waitForReplayTargets(root, moves, { maxFrames: 240 });
       let applied = 0;
       let unresolved = 0;
       let failed = 0;
       let failureKind: ReplayResult["failureKind"];
-      const succeeded: MoveOperation[] = [];
       ignoreMutations = true;
       logV2("replay-start", {
         owner: "LEDGER",
@@ -579,10 +581,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         checkpointCount: toApply.length,
         compacted: checkpoint.ok,
       });
-      for (const operation of toApply) {
-        if (!isMoveOperation(operation)) {
-          continue;
-        }
+      for (const operation of moves) {
         const identity = operation.target.signature
           ? { signature: operation.target.signature }
           : null;
@@ -611,7 +610,6 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         });
         if (result.ok) {
           applied += 1;
-          succeeded.push(operation);
           continue;
         }
         if (result.error === "unresolved_target" || result.error === "ambiguous_target") {
@@ -623,7 +621,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         }
       }
       ignoreMutations = false;
-      ledger.hydratePersisted(succeeded);
+      ledger.hydratePersisted(moves);
       const ok = unresolved === 0 && failed === 0;
       logV2("replay", {
         owner: ok ? "LEDGER" : failureKind ?? "LEDGER",

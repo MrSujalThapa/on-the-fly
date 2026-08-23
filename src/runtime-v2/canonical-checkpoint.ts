@@ -1,6 +1,6 @@
 import type { EditorOperation, MoveOperation } from "../editor/operations.js";
 import { freezeCommittedOperation } from "./freeze-operation.js";
-import { identifyingContent } from "./visual-identity.js";
+import { identifyingContent, isGeneratedIdentityValue } from "./visual-identity.js";
 
 export type CanonicalCheckpoint =
   | { readonly ok: true; readonly operations: EditorOperation[] }
@@ -19,11 +19,8 @@ export function durableMoveKey(operation: MoveOperation): string | null {
   if (!signature) {
     return null;
   }
-  if (signature.idAttr) {
+  if (signature.idAttr && !isGeneratedIdentityValue(signature.idAttr)) {
     return `id:${signature.idAttr}`;
-  }
-  if (signature.datasetFingerprint) {
-    return `data:${signature.datasetFingerprint}`;
   }
   if (signature.hrefAttr) {
     return `href:${signature.tagName}:${signature.hrefAttr}`;
@@ -31,13 +28,43 @@ export function durableMoveKey(operation: MoveOperation): string | null {
   if (signature.nameAttr) {
     return `name:${signature.tagName}:${signature.nameAttr}`;
   }
+  if (signature.datasetFingerprint) {
+    const stable = signature.datasetFingerprint
+      .split(";")
+      .filter((part) => {
+        const value = part.split("=")[1] ?? "";
+        return !isGeneratedIdentityValue(value);
+      })
+      .join(";");
+    if (stable) {
+      return `data:${stable}`;
+    }
+  }
+  const aria = identifyingContent(signature.ariaLabel);
   const content = identifyingContent(signature.textFingerprint);
+  const semantic = aria || content;
+  if (semantic) {
+    const parent = signature.parentFingerprint ?? "";
+    const role = signature.role ?? "";
+    return `el:${signature.tagName}|${role}|${parent}|${semantic}`;
+  }
   const parent = signature.parentFingerprint ?? "";
   const classes = [...signature.classList].slice(0, 3).join(".");
-  if (!content && !parent && classes.length === 0) {
+  if (!parent && classes.length === 0) {
     return null;
   }
-  return `el:${signature.tagName}|${classes}|${parent}|${content}`;
+  return `el:${signature.tagName}|${classes}|${parent}|`;
+}
+
+function continuityKey(operation: MoveOperation): string {
+  const signature = operation.target.signature;
+  if (!signature) {
+    return "missing";
+  }
+  if (signature.siblingOrdinal !== undefined && signature.siblingCount !== undefined) {
+    return `sibling:${String(signature.siblingOrdinal)}/${String(signature.siblingCount)}`;
+  }
+  return `path:${signature.cssPath.replace(/#ember\d+/giu, "#<generated>")}`;
 }
 
 function composeMove(group: MoveOperation[]): MoveOperation {
@@ -88,7 +115,7 @@ function composeMove(group: MoveOperation[]): MoveOperation {
 export function projectCanonicalCheckpoint(
   operations: readonly EditorOperation[],
 ): CanonicalCheckpoint {
-  const moves = new Map<string, MoveOperation[]>();
+  const moves = new Map<string, { continuity: string; operations: MoveOperation[] }>();
   const rest: EditorOperation[] = [];
 
   for (const operation of operations) {
@@ -100,12 +127,19 @@ export function projectCanonicalCheckpoint(
     if (!key) {
       return { ok: false, error: "move_missing_durable_identity" };
     }
-    const group = moves.get(key) ?? [];
-    group.push(operation);
-    moves.set(key, group);
+    const continuity = continuityKey(operation);
+    const group = moves.get(key);
+    if (group && group.continuity !== continuity) {
+      return { ok: false, error: "move_durable_identity_collision" };
+    }
+    if (group) {
+      group.operations.push(operation);
+    } else {
+      moves.set(key, { continuity, operations: [operation] });
+    }
   }
 
-  const canonicalMoves = [...moves.values()].map(composeMove);
+  const canonicalMoves = [...moves.values()].map((group) => composeMove(group.operations));
   return {
     ok: true,
     operations: [...rest, ...canonicalMoves],

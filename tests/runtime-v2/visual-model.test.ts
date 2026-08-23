@@ -316,4 +316,27 @@ describe("logical identity vs positional locators", () => {
       expect(identifyingContent(resolved.element.textContent || "")).toBe("c");
     }
   });
+
+  it("still resolves a control after generated data-id values change", () => {
+    const { document, root } = createTestDocument(`
+      <div role="radiogroup">
+        <button role="radio" data-id="ember1">All</button>
+        <button role="radio" data-id="ember2">Jobs</button>
+        <button role="radio" data-id="ember3">My posts</button>
+        <button role="radio" data-id="ember4">Mentions</button>
+      </div>
+    `);
+    const tabs = layoutCards(root, "button", 40);
+    const mentions = tabs[3];
+    if (!mentions) {
+      return;
+    }
+    const identity = buildDurableIdentity(mentions, document);
+    mentions.dataset.id = "ember88";
+    const resolved = resolveDurableIdentity(document, identity);
+    expect(isResolvedVisual(resolved)).toBe(true);
+    if (isResolvedVisual(resolved)) {
+      expect(identifyingContent(resolved.element.textContent || "")).toBe("mentions");
+    }
+  });
 });

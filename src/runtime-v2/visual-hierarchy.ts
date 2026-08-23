@@ -58,6 +58,7 @@ const CONTENT_TAGS = new Set([
   "br",
 ]);
 const CONTROL_TAGS = new Set(["button", "input", "select", "textarea", "option"]);
+const CONTROL_ROLES = new Set(["radio", "tab", "checkbox", "switch", "button", "menuitem"]);
 
 function readRect(element: Element): LayoutRect {
   const box = element.getBoundingClientRect();
@@ -244,12 +245,20 @@ function hasVisibleSurface(element: HTMLElement): boolean {
   );
 }
 
+function isControl(element: HTMLElement): boolean {
+  if (CONTROL_TAGS.has(element.tagName.toLowerCase())) {
+    return true;
+  }
+  const role = (element.getAttribute("role") ?? "").toLowerCase();
+  return CONTROL_ROLES.has(role);
+}
+
 function isContentLike(element: HTMLElement): boolean {
   const tag = element.tagName.toLowerCase();
   if (CONTENT_TAGS.has(tag) && tag !== "a" && tag !== "label" && tag !== "li") {
     return true;
   }
-  if (CONTROL_TAGS.has(tag)) {
+  if (isControl(element)) {
     return true;
   }
   const view = element.ownerDocument.defaultView;
@@ -257,7 +266,7 @@ function isContentLike(element: HTMLElement): boolean {
     return false;
   }
   const display = view.getComputedStyle(element).display;
-  return display === "inline" || display === "contents" || display === "inline-block" && CONTROL_TAGS.has(tag);
+  return display === "inline" || display === "contents" || (display === "inline-block" && isControl(element));
 }
 
 function looksLikeUnit(element: HTMLElement): boolean {
