@@ -30,6 +30,7 @@ import {
   resolveLayerPlan,
 } from "../editor/dom/layer-overlap-resolver.js";
 import { counterMoveDetachedDescendants } from "../editor/dom/managed-detach.js";
+import { applyInteractionSafeFixedPlacement } from "../editor/dom/interactive-fixed-placement.js";
 
 export interface OperationExecutorDeps {
   document: Document;
@@ -158,12 +159,15 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
   }): ExecutionResult => {
     const snapshot = captureElementDomSnapshot(input.element, deps.document);
     const originalRect = rectFromElement(input.element);
-    const detachedDescendants = Array.from(
-      input.element.querySelectorAll<HTMLElement>('[data-otf-detached="true"]'),
+    const independentDescendants = Array.from(
+      input.element.querySelectorAll<HTMLElement>(
+        '[data-otf-detached="true"], [data-otf-interaction-fixed="true"]',
+      ),
     );
-    const descendantSnapshots = detachedDescendants.map((element) => ({
+    const descendantSnapshots = independentDescendants.map((element) => ({
       element,
       snapshot: captureElementDomSnapshot(element, deps.document),
+      originalRect: rectFromElement(element),
     }));
     const rollbackApplied = (): boolean => {
       const parentRestored = rollback(input.element, snapshot);
@@ -180,6 +184,15 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         input.operation.payload.dx,
         input.operation.payload.dy,
       );
+      for (const descendant of descendantSnapshots) {
+        if (descendant.element.getAttribute("data-otf-interaction-fixed") === "true") {
+          applyInteractionSafeFixedPlacement(
+            descendant.element,
+            descendant.originalRect,
+            snapshotStore,
+          );
+        }
+      }
     } catch (error) {
       const rolledBack = rollbackApplied();
       return failure(error instanceof Error ? error.message : "apply_threw", rolledBack);

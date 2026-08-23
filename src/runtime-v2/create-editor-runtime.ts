@@ -23,6 +23,7 @@ import type { IntendedRect } from "./placement-engine.js";
 import { summarizeIdentity } from "./visual-identity.js";
 import { isResolvedVisual } from "./visual-model.js";
 import { projectCanonicalCheckpoint } from "./canonical-checkpoint.js";
+import { viewportRectToInteractionPlacement } from "../editor/dom/fixed-position-anchor.js";
 
 const MOVE_THRESHOLD_PX = 3;
 
@@ -33,6 +34,13 @@ interface MovingGesture {
   startRect: IntendedRect;
   styleSnapshot: string | null;
   committedTransform: string;
+  detachedDescendants: Array<{
+    element: HTMLElement;
+    styleSnapshot: string | null;
+    committedTransform: string;
+    interactionFixed: boolean;
+    rect: IntendedRect;
+  }>;
 }
 
 function isMoveOperation(value: { type: string }): value is MoveOperation {
@@ -187,6 +195,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     if (!gesture || !gesture.element.isConnected) {
       return;
     }
+    for (const child of gesture.detachedDescendants) {
+      if (!child.element.isConnected) continue;
+      if (child.styleSnapshot) child.element.setAttribute("style", child.styleSnapshot);
+      else child.element.removeAttribute("style");
+    }
     if (gesture.styleSnapshot) {
       gesture.element.setAttribute("style", gesture.styleSnapshot);
       return;
@@ -203,6 +216,17 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     gesture.element.style.transform = gesture.committedTransform
       ? `${gesture.committedTransform} ${extra}`
       : extra;
+    const inverse = `translate(${String(-dx)}px, ${String(-dy)}px)`;
+    for (const child of gesture.detachedDescendants) {
+      if (!child.element.isConnected) continue;
+      if (child.interactionFixed) {
+        viewportRectToInteractionPlacement(child.element, child.rect);
+      } else {
+        child.element.style.transform = child.committedTransform
+          ? `${child.committedTransform} ${inverse}`
+          : inverse;
+      }
+    }
   };
 
   const cancelGesture = (): void => {
@@ -215,10 +239,46 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     return x >= rect.x && y >= rect.y && x <= rect.x + rect.width && y <= rect.y + rect.height;
   };
 
+  const beginGesture = (
+    nodeId: VisualNodeId,
+    element: HTMLElement,
+    event: NormalizedPointer,
+  ): void => {
+    gesture = {
+      nodeId,
+      element,
+      startPointer: { x: event.clientX, y: event.clientY },
+      startRect: rectFromElement(element),
+      styleSnapshot: element.getAttribute("style"),
+      committedTransform: element.style.transform,
+      detachedDescendants: Array.from(
+        element.querySelectorAll<HTMLElement>(
+          '[data-otf-detached="true"], [data-otf-interaction-fixed="true"]',
+        ),
+      ).map((child) => ({
+        element: child,
+        styleSnapshot: child.getAttribute("style"),
+        committedTransform: child.style.transform,
+        interactionFixed: child.getAttribute("data-otf-interaction-fixed") === "true",
+        rect: rectFromElement(child),
+      })),
+    };
+  };
+
   const onPointerDown = (event: NormalizedPointer): void => {
     if (event.target instanceof Element && isExtensionRoot(event.target)) {
       return;
     }
+    const selectedElement = selected ? visualModel.bind(selected) : null;
+    if (
+      selected &&
+      selectedElement &&
+      pointInRect(event.clientX, event.clientY, rectFromElement(selectedElement))
+    ) {
+      beginGesture(selected, selectedElement, event);
+      return;
+    }
+
     const picked = visualModel.pick(event.clientX, event.clientY);
     if (picked) {
       const element = visualModel.bind(picked);
@@ -227,34 +287,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         return;
       }
       selectNode(picked);
-      gesture = {
-        nodeId: picked,
-        element,
-        startPointer: { x: event.clientX, y: event.clientY },
-        startRect: rectFromElement(element),
-        styleSnapshot: element.getAttribute("style"),
-        committedTransform: element.style.transform,
-      };
-      return;
-    }
-
-    const selectedElement = selected ? visualModel.bind(selected) : null;
-    const selectedNode = selected ? visualModel.get(selected) : null;
-    if (
-      selected &&
-      selectedElement &&
-      selectedNode &&
-      (selectedNode.role === "collection" || selectedNode.role === "section") &&
-      pointInRect(event.clientX, event.clientY, rectFromElement(selectedElement))
-    ) {
-      gesture = {
-        nodeId: selected,
-        element: selectedElement,
-        startPointer: { x: event.clientX, y: event.clientY },
-        startRect: rectFromElement(selectedElement),
-        styleSnapshot: selectedElement.getAttribute("style"),
-        committedTransform: selectedElement.style.transform,
-      };
+      beginGesture(picked, element, event);
       return;
     }
 

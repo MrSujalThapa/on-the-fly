@@ -74,6 +74,28 @@ describe("PlacementEngine", () => {
     expect(plan.payload.detached).toBe(true);
   });
 
+  it("uses interaction-safe fixed placement when a standalone link leaves its container", () => {
+    const { root } = createTestDocument(`<section><a href="/settings">View settings</a></section>`);
+    const parent = root.querySelector("section") as HTMLElement;
+    const link = root.querySelector("a") as HTMLElement;
+    layoutElement(parent, { x: 20, y: 20, width: 200, height: 100 });
+    layoutElement(link, { x: 40, y: 40, width: 100, height: 20 });
+
+    const plan = createPlacementEngine().planMove({
+      element: link,
+      currentRect: { x: 40, y: 40, width: 100, height: 20 },
+      dx: 260,
+      dy: 80,
+    });
+
+    expect(plan.strategy).toBe("interaction-safe-fixed");
+    expect(plan.flowSlotRemains).toBe(true);
+    expect(plan.payload.interactionSafeFixed).toBe(true);
+    expect(plan.payload.detached).toBe(false);
+    expect(plan.payload.fixedViewportLeft).toBe(300);
+    expect(plan.payload.fixedViewportTop).toBe(120);
+  });
+
   it("counters future old-parent movement for a logically detached child", () => {
     const { root } = createTestDocument(`<section><button>Detached</button></section>`);
     const parent = root.querySelector("section") as HTMLElement;
@@ -91,6 +113,28 @@ describe("PlacementEngine", () => {
     expect(counterMoveDetachedDescendants(parent, 25, 10)).toEqual([child]);
     expect(readStoredTransformState(child)).toMatchObject({ dx: 75, dy: 50 });
     expect(child.parentElement).toBe(parent);
+  });
+
+  it("keeps a logically detached interactive control transform-only on later moves", () => {
+    const { root } = createTestDocument(
+      `<div role="radiogroup"><button role="radio" data-otf-detached="true">My posts</button></div>`,
+    );
+    const child = root.querySelector("button") as HTMLElement;
+    const plan = createPlacementEngine().planMove({
+      element: child,
+      currentRect: { x: 40, y: 140, width: 90, height: 32 },
+      dx: 30,
+      dy: 20,
+    });
+
+    expect(plan.strategy).toBe("transform-only");
+    expect(plan.flowSlotRemains).toBe(true);
+    expect(plan.payload).toMatchObject({
+      detached: true,
+      transformOnly: true,
+      interactionSafeFixed: false,
+    });
+    expect(plan.payload.detachedLeft).toBeUndefined();
   });
 
   it("composes already-detached placement in page coordinates", () => {

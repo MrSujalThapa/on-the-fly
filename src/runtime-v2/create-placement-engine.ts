@@ -3,7 +3,10 @@ import {
   shouldDetachForPredictedRect,
 } from "../editor/dom/managed-detach.js";
 import { isInteractionSafeFixed } from "../editor/dom/interactive-fixed-placement.js";
-import { requiresTransformOnlyMove } from "../editor/dom/interactive-safety.js";
+import {
+  requiresInteractionSafeFixedMove,
+  requiresTransformOnlyMove,
+} from "../editor/dom/interactive-safety.js";
 import { OTF_TRANSFORM_ONLY_ATTR } from "../editor/dom/types.js";
 import type {
   IntendedRect,
@@ -66,7 +69,10 @@ export function createPlacementEngine(): PlacementEngine {
         !existing.detached &&
         shouldDetachForPredictedRect(request.element, [request.element], expected);
 
-      if (existing.interactionSafeFixed) {
+      if (
+        existing.interactionSafeFixed ||
+        (shouldDetach && requiresInteractionSafeFixedMove(request.element))
+      ) {
         return {
           strategy: "interaction-safe-fixed",
           dx: request.dx,
@@ -86,6 +92,26 @@ export function createPlacementEngine(): PlacementEngine {
             fixedViewportTop: expected.y,
             fixedWidth: expected.width,
             fixedHeight: expected.height,
+          },
+        };
+      }
+
+      if (existing.detached && requiresTransformOnlyMove(request.element)) {
+        return {
+          strategy: "transform-only",
+          dx: request.dx,
+          dy: request.dy,
+          intendedRect: expected,
+          expectedRect: expected,
+          coordinateSpace: "viewport",
+          flowSlotRemains: true,
+          rollback: "restore-dom-snapshot",
+          payload: {
+            dx: request.dx,
+            dy: request.dy,
+            detached: true,
+            transformOnly: true,
+            interactionSafeFixed: false,
           },
         };
       }
