@@ -242,8 +242,14 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       saveButton = deps.document.createElement("button");
       saveButton.type = "button";
       saveButton.className = SAVE_BUTTON_CLASS;
-      saveButton.hidden = true;
+      saveButton.hidden = false;
       saveButton.textContent = "Save";
+      saveButton.addEventListener("pointerdown", (event) => {
+        event.stopPropagation();
+      });
+      saveButton.addEventListener("pointerup", (event) => {
+        event.stopPropagation();
+      });
       saveButton.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -320,7 +326,11 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     setSave(state) {
       saveHandler = state.onSave ?? null;
       if (saveButton) {
-        saveButton.hidden = !state.visible;
+        // Save is editor chrome, not a dirty-state indicator. Keeping the
+        // action hit-testable avoids intermittent "can't press Save" states
+        // after failed/rolled-back operations or input-mode transitions. A
+        // clean save is idempotent; runtime.save remains the sole state owner.
+        saveButton.hidden = saveHandler === null;
       }
     },
   };
