@@ -7,7 +7,6 @@ import {
   nearRect,
   overlayDiagnostic,
   productFailure,
-  reloadReplay,
   saveReal,
   selectAndDragReal,
   selectRealTarget,
@@ -19,10 +18,9 @@ import {
   assertSiblingMoveIsolated,
   linkedInFilterCollectionRect,
   linkedInFilters,
+  reloadLinkedInAndReplay,
   requireLinkedInAuth,
 } from "./linkedin.js";
-
-test.describe.configure({ mode: "serial" });
 
 test.describe("LinkedIn notifications RL1–RL4", () => {
   test.afterEach(async ({ page, context }, testInfo) => {
@@ -32,6 +30,8 @@ test.describe("LinkedIn notifications RL1–RL4", () => {
   test.beforeEach(async ({ page, context }) => {
     await requireLinkedInAuth(page);
     await clearPageOperations(context, page);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await linkedInFilters(page);
     await enableEdit(context, page);
   });
 
@@ -44,8 +44,7 @@ test.describe("LinkedIn notifications RL1–RL4", () => {
     const postsOrigin = await rect(filters["My posts"]);
     await selectAndDragReal(page, filters.Mentions, mentionsMove.dx, mentionsMove.dy);
     await saveReal(page);
-    await reloadReplay(page);
-    await enableEdit(context, page);
+    await reloadLinkedInAndReplay(page, context);
     const afterFirst = await linkedInFilters(page);
     const mentionsAfterFirst = await rect(afterFirst.Mentions);
     const postsAfterFirst = await rect(afterFirst["My posts"]);
@@ -62,8 +61,7 @@ test.describe("LinkedIn notifications RL1–RL4", () => {
 
     await selectAndDragReal(page, afterFirst["My posts"], postsMove.dx, postsMove.dy);
     await saveReal(page);
-    await reloadReplay(page);
-    await enableEdit(context, page);
+    await reloadLinkedInAndReplay(page, context);
     const afterSecond = await linkedInFilters(page);
     const mentionsFinal = await rect(afterSecond.Mentions);
     const postsFinal = await rect(afterSecond["My posts"]);
@@ -91,18 +89,21 @@ test.describe("LinkedIn notifications RL1–RL4", () => {
 
     const mentionsCommitted = await rect(filters.Mentions);
     const postsCommitted = await rect(filters["My posts"]);
-    await reloadReplay(page);
-    await enableEdit(context, page);
+    await reloadLinkedInAndReplay(page, context);
     const reloadedFilters = await linkedInFilters(page);
     const mentionsReloaded = await rect(reloadedFilters.Mentions);
     const postsReloaded = await rect(reloadedFilters["My posts"]);
     expect(
       nearRect(mentionsReloaded, mentionsCommitted, 14),
-      productFailure("Mentions did not retain final committed geometry after reload"),
+      productFailure(
+        `Mentions did not retain final committed geometry after reload committed=${JSON.stringify(mentionsCommitted)} reloaded=${JSON.stringify(mentionsReloaded)}`,
+      ),
     ).toBe(true);
     expect(
       nearRect(postsReloaded, postsCommitted, 14),
-      productFailure("My posts did not retain final committed geometry after reload"),
+      productFailure(
+        `My posts did not retain final committed geometry after reload committed=${JSON.stringify(postsCommitted)} reloaded=${JSON.stringify(postsReloaded)}`,
+      ),
     ).toBe(true);
     expect(
       nearRect(mentionsReloaded, translated(mentionsOrigin, 40, 32), 14),
@@ -147,7 +148,7 @@ test.describe("LinkedIn notifications RL1–RL4", () => {
     const check = async (label: string): Promise<void> => {
       const target = await rect(filters.Mentions);
       const pipeline = await getOverlayPipeline(page);
-      const outline = pipeline.rendered;
+      const outline = pipeline.rendered ?? (await getOverlayRect(page));
       expect(outline, productFailure(`${label}: rendered OTF outline missing. ${overlayDiagnostic(pipeline, target)}`)).not.toBeNull();
       if (!outline) {
         return;

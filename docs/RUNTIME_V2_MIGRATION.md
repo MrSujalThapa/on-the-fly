@@ -83,3 +83,29 @@ Wrong-target resolution is rejected (`unresolved` / `ambiguous`) instead of fall
 The overlay host is `position: fixed; inset: 0` on `documentElement`.
 
 CSS `zoom` on `html` scales both the page and the overlay host together. CDP box models include zoom and must not be mixed with `getBoundingClientRect` values when classifying overlay drift.
+
+## B4 — Real Failure Root Cause
+
+### Sibling / save failure
+
+Moving and saving Mentions, then editing My posts, could replace the earlier saved target. The correlated LinkedIn trace showed distinct live radio controls and distinct aria/text evidence, but both operations could carry the same render-generated Ember ID (for example `ember33`). `durableMoveKey()` treated that generated ID as durable and projected both live targets into the same checkpoint bucket.
+
+Owner: canonical checkpoint target key, using identity evidence classified by VisualModel.
+
+Violated invariant: distinct edited targets cannot share a durable key; generated framework IDs are locators, not durable identity.
+
+### Repeated-save failure
+
+The full real-site suite initially reported lost cumulative displacement even after replay verification passed. The trace showed each focused save/reload converged exactly. The suite cleared IndexedDB only after navigation had already replayed the previous test's operations into the live DOM, then reused that mutated DOM as the next test's origin.
+
+Owner: authenticated real-site harness reset boundary, not runtime persistence.
+
+Violated invariant: each real-site regression must establish an unmodified live baseline after clearing persisted state.
+
+### Overlay failure
+
+The current real LinkedIn trace did not reproduce blue-outline divergence. For initial selection, scroll, viewport resize, and layout change/reselection, the selected element rect, VisualModel measurement, OverlayCoordinator input, and rendered outline rect were equal in viewport CSS pixels with one outline present.
+
+Owner: no failing runtime owner observed in the current build. Earlier CDP-based comparisons mixed zoom-aware box-model coordinates with `getBoundingClientRect()` viewport coordinates; those diagnostics were not a valid geometry oracle.
+
+Invariant status: the active overlay currently consumes the same live `getBoundingClientRect()` geometry used by move verification. No additional geometry or observer path is justified by the observed trace.

@@ -1,6 +1,8 @@
-import type { Locator, Page } from "@playwright/test";
+import type { BrowserContext, Locator, Page } from "@playwright/test";
 import { LINKEDIN_NOTIFICATIONS } from "./constants.js";
 import { productFailure, rectDelta, unionRect, waitVisible } from "./harness.js";
+import { enableEditMode } from "../e2e/helpers/actions.js";
+import { waitForReplaySettle } from "../e2e/helpers/geometry.js";
 import { rect, type GeometryRect } from "../e2e/helpers/geometry.js";
 import { classifyLinkedInSession, requireAuthenticated } from "./session-status.js";
 
@@ -19,8 +21,10 @@ export async function gotoLinkedInNotifications(page: Page): Promise<void> {
 export async function readLinkedInSession(page: Page): Promise<ReturnType<typeof classifyLinkedInSession>> {
   const url = page.url();
   const hasPasswordField = await page.locator('input[type="password"]').first().isVisible().catch(() => false);
-  const mentions = page.getByRole("button", { name: filterNamePattern("Mentions") }).or(
-    page.getByRole("tab", { name: filterNamePattern("Mentions") }),
+  const mentions = page.getByRole("radio", { name: filterNamePattern("Mentions") }).or(
+    page.getByRole("button", { name: filterNamePattern("Mentions") }).or(
+      page.getByRole("tab", { name: filterNamePattern("Mentions") }),
+    ),
   );
   const hasMentionsControl = await mentions.first().isVisible().catch(() => false);
   return classifyLinkedInSession({ url, hasMentionsControl, hasPasswordField });
@@ -35,9 +39,9 @@ export async function requireLinkedInAuth(page: Page): Promise<void> {
 export async function linkedInFilter(page: Page, name: LinkedInFilterName): Promise<Locator> {
   const pattern = filterNamePattern(name);
   const locator = page
-    .getByRole("tab", { name: pattern })
-    .or(page.getByRole("button", { name: pattern }))
-    .or(page.getByRole("link", { name: pattern }));
+    .getByRole("radio", { name: pattern })
+    .or(page.getByRole("tab", { name: pattern }))
+    .or(page.getByRole("button", { name: pattern }));
   return waitVisible(locator, `LinkedIn notifications filter "${name}" was not found`);
 }
 
@@ -47,6 +51,13 @@ export async function linkedInFilters(page: Page): Promise<Record<LinkedInFilter
   const posts = await linkedInFilter(page, "My posts");
   const Mentions = await linkedInFilter(page, "Mentions");
   return { All, Jobs, "My posts": posts, Mentions };
+}
+
+export async function reloadLinkedInAndReplay(page: Page, context: BrowserContext): Promise<void> {
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await linkedInFilters(page);
+  await waitForReplaySettle(page);
+  await enableEditMode(context, page);
 }
 
 export async function linkedInFilterCollectionRect(page: Page): Promise<GeometryRect> {

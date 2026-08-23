@@ -127,7 +127,10 @@ function classifyDevpost(
 async function linkedInStatus(page: Page): Promise<SessionStatus> {
   await page.goto(LINKEDIN_NOTIFICATIONS, { waitUntil: "domcontentloaded", timeout: 60_000 });
   const hasPasswordField = await page.locator('input[type="password"]').first().isVisible().catch(() => false);
-  const mentions = page.getByRole("button", { name: /^Mentions\b/iu }).or(page.getByRole("tab", { name: /^Mentions\b/iu }));
+  const mentions = page
+    .getByRole("radio", { name: /^Mentions\b/iu })
+    .or(page.getByRole("button", { name: /^Mentions\b/iu }))
+    .or(page.getByRole("tab", { name: /^Mentions\b/iu }));
   const hasMentionsControl = await mentions.first().isVisible().catch(() => false);
   return classifyLinkedIn(page.url(), hasMentionsControl, hasPasswordField);
 }
