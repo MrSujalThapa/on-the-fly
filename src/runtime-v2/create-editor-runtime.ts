@@ -29,6 +29,8 @@ const MOVE_THRESHOLD_PX = 3;
 interface MovingGesture {
   nodeId: VisualNodeId;
   element: HTMLElement;
+  selectParentOnClick: boolean;
+  exceededMoveThreshold: boolean;
   startPointer: { x: number; y: number };
   startRect: IntendedRect;
   styleSnapshot: string | null;
@@ -227,10 +229,13 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     nodeId: VisualNodeId,
     element: HTMLElement,
     event: NormalizedPointer,
+    selectParentOnClick = false,
   ): void => {
     gesture = {
       nodeId,
       element,
+      selectParentOnClick,
+      exceededMoveThreshold: false,
       startPointer: { x: event.clientX, y: event.clientY },
       startRect: rectFromElement(element),
       styleSnapshot: element.getAttribute("style"),
@@ -248,7 +253,13 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       selectedElement &&
       pointInRect(event.clientX, event.clientY, rectFromElement(selectedElement))
     ) {
-      beginGesture(selected, selectedElement, event);
+      const target = event.target;
+      beginGesture(
+        selected,
+        selectedElement,
+        event,
+        target instanceof Node && (target === selectedElement || selectedElement.contains(target)),
+      );
       return;
     }
 
@@ -280,6 +291,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     if (Math.hypot(dx, dy) < MOVE_THRESHOLD_PX) {
       return;
     }
+    gesture.exceededMoveThreshold = true;
     applyPreview(dx, dy);
     overlays.refreshFromLiveGeometry();
   };
@@ -295,6 +307,13 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     gesture = null;
 
     if (!active.element.isConnected || Math.hypot(dx, dy) < MOVE_THRESHOLD_PX) {
+      if (
+        active.element.isConnected &&
+        active.selectParentOnClick &&
+        !active.exceededMoveThreshold
+      ) {
+        runtime.selectParent();
+      }
       overlays.refreshFromLiveGeometry();
       refreshSave();
       return;
