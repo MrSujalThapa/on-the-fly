@@ -179,32 +179,8 @@ function isPaintParticipant(element: HTMLElement, selected: HTMLElement, paintHo
   return false;
 }
 
-function hasAncestorStackingContext(element: HTMLElement): boolean {
-  const view = element.ownerDocument.defaultView;
-  if (!view) {
-    return false;
-  }
-
-  let ancestor = element.parentElement;
-  while (ancestor && ancestor.tagName.toLowerCase() !== "body") {
-    const inlineTransform = ancestor.style.transform;
-    if (inlineTransform && inlineTransform !== "none") {
-      return true;
-    }
-
-    const style = view.getComputedStyle(ancestor);
-    if (
-      (style.transform && style.transform !== "none") ||
-      (style.filter && style.filter !== "none") ||
-      style.isolation === "isolate" ||
-      (style.opacity !== "" && Number.parseFloat(style.opacity) < 1)
-    ) {
-      return true;
-    }
-    ancestor = ancestor.parentElement;
-  }
-
-  return false;
+function isHostParticipant(element: HTMLElement, host: HTMLElement): boolean {
+  return element === host || host.contains(element) || element.contains(host);
 }
 
 function wantsOnTop(command: LayerCommand): boolean {
@@ -227,6 +203,12 @@ function verifyRelativeLayer(
   return wantsOnTop(command) ? selectedLayer > blockerLayer : selectedLayer < blockerLayer;
 }
 
+/**
+ * Verify actual paint order only at points where both the selected visual
+ * object and another paint participant overlap. The old verifier required the
+ * selected object to be globally topmost/backmost at every sample point, which
+ * made partial overlaps fail and then encouraged mutation of a shared ancestor.
+ */
 function verifyLayerVisual(
   selected: HTMLElement,
   paintHosts: Set<HTMLElement>,
@@ -238,42 +220,42 @@ function verifyLayerVisual(
     blockerHost?: HTMLElement | null;
   } = {},
 ): boolean {
-  const points = sampleInnerPoints(rect);
   const expectOnTop = wantsOnTop(command);
-  let sampled = false;
+  let compared = 0;
 
-  for (const point of points) {
+  for (const point of sampleInnerPoints(rect)) {
     const stack = getFilteredElementsFromPoint(document, point.x, point.y);
-    const top = stack[0] ?? null;
-    if (!top) {
+    const selectedIndex = stack.findIndex((element) =>
+      isPaintParticipant(element, selected, paintHosts),
+    );
+    if (selectedIndex < 0) {
       continue;
     }
-    sampled = true;
 
-    const selectedOnTop = isPaintParticipant(top, selected, paintHosts);
-    if (expectOnTop && !selectedOnTop) {
-      if (options.selectedHost && options.blockerHost) {
-        return verifyRelativeLayer(options.selectedHost, options.blockerHost, command);
-      }
-      return false;
+    const blockerIndex = options.blockerHost
+      ? stack.findIndex((element) => isHostParticipant(element, options.blockerHost as HTMLElement))
+      : stack.findIndex((element) => !isPaintParticipant(element, selected, paintHosts));
+
+    if (blockerIndex < 0 || blockerIndex === selectedIndex) {
+      continue;
     }
-    if (!expectOnTop && selectedOnTop) {
-      if (options.selectedHost && options.blockerHost) {
-        return verifyRelativeLayer(options.selectedHost, options.blockerHost, command);
-      }
+
+    compared += 1;
+    const selectedIsAbove = selectedIndex < blockerIndex;
+    if (selectedIsAbove !== expectOnTop) {
       return false;
     }
   }
 
-  if (
-    !sampled &&
-    options.selectedHost &&
-    options.blockerHost
-  ) {
+  if (compared > 0) {
+    return true;
+  }
+
+  if (options.selectedHost && options.blockerHost) {
     return verifyRelativeLayer(options.selectedHost, options.blockerHost, command);
   }
 
-  return sampled;
+  return false;
 }
 
 function findLowestCommonAncestor(a: HTMLElement, b: HTMLElement): HTMLElement | null {
@@ -330,44 +312,25 @@ function isUnsafePaintHost(element: HTMLElement): boolean {
   return false;
 }
 
-/** Prefer the selected node, then the nearest non-giant managed move host. */
+/**
+ * A layer command belongs to the selected visual object. Never silently route
+ * it to a previously-managed ancestor: that couples siblings (for example a
+ * layer command on My posts changing Mentions) and violates target isolation.
+ */
 export function resolveInitialLayerTarget(selected: HTMLElement): HTMLElement {
-  if (selected.hasAttribute(OTF_MANAGED_ATTR)) {
-    return selected;
-  }
-
-  let bestManaged: HTMLElement | null = null;
-  let current: HTMLElement | null = selected.parentElement;
-  while (current && current !== current.ownerDocument.documentElement) {
-    if (current.hasAttribute(OTF_MANAGED_ATTR) && !isUnsafePaintHost(current)) {
-      bestManaged = current;
-      break;
-    }
-    current = current.parentElement;
-  }
-
-  return bestManaged ?? selected;
+  return selected;
 }
 
+/**
+ * The selected object remains the mutation host. Difficult stacking-context
+ * cases must be solved by the selected object's placement state; mutating an
+ * LCA branch changes unrelated content and is not an acceptable fallback.
+ */
 export function resolveSelectedPaintHost(
   selected: HTMLElement,
-  blocker: HTMLElement,
+  _blocker: HTMLElement,
 ): HTMLElement {
-  const lca = findLowestCommonAncestor(selected, blocker);
-  const branch = directChildUnderAncestor(selected, lca);
-  if (!branch) {
-    return resolveInitialLayerTarget(selected);
-  }
-
-  if (branch === selected) {
-    return resolveInitialLayerTarget(selected);
-  }
-
-  if (!isUnsafePaintHost(branch)) {
-    return branch;
-  }
-
-  return resolveInitialLayerTarget(selected);
+  return selected;
 }
 
 export function resolveBlockerPaintHost(
@@ -395,7 +358,7 @@ function findVisualBlocker(
   selected: HTMLElement,
   paintHosts: Set<HTMLElement>,
   rect: MeasurementRect,
-  command: LayerCommand,
+  _command: LayerCommand,
   document: Document,
 ): HTMLElement | null {
   const points = sampleInnerPoints(rect);
@@ -636,17 +599,11 @@ export function resolveLayerPlan(
 
   const initialLayer = computeTargetLayer(initialTarget, command, options.explicitLayer, null);
   const initialAttempt = probeHost(initialTarget, initialLayer, null, null);
-  const overlapBlocker = findVisualBlocker(selected, paintHosts, selectedRect, command, document);
-  if (
-    initialAttempt.verification === "pass" &&
-    !hasAncestorStackingContext(selected) &&
-    overlapBlocker &&
-    !isPaintParticipant(overlapBlocker, selected, paintHosts)
-  ) {
+  if (initialAttempt.verification === "pass") {
     return initialAttempt;
   }
 
-  const blocker = overlapBlocker;
+  const blocker = findVisualBlocker(selected, paintHosts, selectedRect, command, document);
   if (!blocker) {
     return {
       ...initialAttempt,
@@ -669,14 +626,10 @@ export function resolveLayerPlan(
     blockerHost,
   );
 
-  if (selectedHost === initialTarget && resolvedLayer === initialLayer) {
-    return probeHost(selectedHost, resolvedLayer, blocker, blockerHost);
-  }
-
   const resolvedAttempt = probeHost(selectedHost, resolvedLayer, blocker, blockerHost);
   if (resolvedAttempt.verification === "fail") {
     options.onDebug?.("layer-overlap-warning", {
-      reason: "verification-failed-after-host-resolution",
+      reason: "verification-failed-with-selected-target-isolation",
       command,
       selected: describeElement(selected),
       selectedHost: describeElement(selectedHost),
