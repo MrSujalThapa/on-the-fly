@@ -37,13 +37,14 @@ describe("layer overlap resolver", () => {
     expect(resolveInitialLayerTarget(experience)).toBe(experience);
   });
 
-  it("prefers a managed move host over reparenting the selected node", () => {
+  it("keeps the selected node as its own layer host", () => {
     const { root } = createTestDocument(`
       <main><div class="card" data-otf-managed="true"><span id="chip">Jobs</span></div></main>
     `);
     const card = root.querySelector(".card") as HTMLElement;
     const chip = root.querySelector("#chip") as HTMLElement;
-    expect(resolveInitialLayerTarget(chip)).toBe(card);
+    expect(resolveInitialLayerTarget(chip)).toBe(chip);
+    expect(resolveInitialLayerTarget(chip)).not.toBe(card);
   });
 
   it("fails closed when no overlapping paint peer can verify the command", () => {
@@ -59,7 +60,7 @@ describe("layer overlap resolver", () => {
     expect(plan.reason).toBe("blocker-not-found");
   });
 
-  it("lifts the selected-side branch host above a navbar blocker", () => {
+  it("never lifts a shared selected-side branch above a navbar blocker", () => {
     const { document, root } = createTestDocument(`
       <div id="application-outlet">
         <header id="global-nav">Nav</header>
@@ -90,9 +91,9 @@ describe("layer overlap resolver", () => {
     const plan = resolveLayerPlan(experience, "forward", new ElementSnapshotStore());
     expect(plan.host).not.toBe(outlet);
     expect(plan.host.tagName.toLowerCase()).not.toBe("body");
-    expect(plan.host.id).toBe("sidebar");
+    expect(plan.host.id).toBe("experience");
     expect(plan.layer).toBeGreaterThan(100);
-    expect(plan.verification).toBe("pass");
+    expect(plan.verification).toBe("fail");
   });
 
   it("does not choose application-outlet when a smaller host exists", () => {

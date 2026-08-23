@@ -52,25 +52,13 @@ const DY = 36;
  * test failure so we cannot silently “lose” a characterization.
  */
 const KNOWN_FAILURES: Record<string, "B" | "D" | "F" | "G" | "H"> = {
-  "nested-flex:M1-signature": "F",
-  "nested-flex:M3": "D",
-  "nested-flex:M6": "F",
-  "nested-grid:M1-signature": "F",
-  "nested-grid:M3": "D",
-  "nested-grid:M6": "F",
-  "repeated-sibling-cards:M1-signature": "F",
-  "repeated-sibling-cards:M3": "D",
-  "repeated-sibling-cards:M6": "F",
   "absolute-descendant:M2": "D",
   "absolute-descendant:M3": "D",
   "absolute-descendant:M5": "D",
-  "framework-rerender:M3": "D",
   "ambiguous-signature:M1-signature": "F",
   "ambiguous-signature:M6": "F",
-  "repeated-siblings-dedicated:M6": "F",
   "ambiguous-dedicated:M1-signature": "F",
   "ambiguous-dedicated:M6": "F",
-  "framework-rerender:M7": "G",
   "overlay:V12-scroll": "H",
 };
 

@@ -3,7 +3,6 @@ import { createTestDocument } from "../editor/dom/test-document.js";
 import { createEditorRuntime } from "../../src/runtime-v2/create-editor-runtime.js";
 import { OTF_ROOT_HOST_ID } from "../../src/editor/measurement/constants.js";
 import { layoutElement } from "../editor/measurement/layout-helpers.js";
-import { writeStoredTransformState } from "../../src/editor/dom/element-snapshot.js";
 
 describe("RuntimeLifecycle", () => {
   it("start then stop removes the overlay host and restores page input", () => {
@@ -69,23 +68,4 @@ describe("RuntimeLifecycle", () => {
     runtime.stop();
   });
 
-  it("counter-transforms detached descendants during parent preview", () => {
-    const { document, root } = createTestDocument(`<section><button data-otf-detached="true">Detached</button></section>`);
-    const parent = root.querySelector("section") as HTMLElement;
-    const child = root.querySelector("button") as HTMLElement;
-    const view = document.defaultView;
-    if (!view) return;
-    layoutElement(parent, { x: 20, y: 20, width: 200, height: 100 });
-    writeStoredTransformState(child, { dx: 100, dy: 60, width: null, height: null, rotate: 0, position: "relative" });
-    child.style.transform = "translate(100px, 60px)";
-    document.elementsFromPoint = () => [parent];
-    const runtime = createEditorRuntime(document);
-    runtime.start();
-    view.dispatchEvent(new PointerEvent("pointerdown", { clientX: 30, clientY: 30, button: 0 }));
-    view.dispatchEvent(new PointerEvent("pointermove", { clientX: 55, clientY: 40, button: 0 }));
-
-    expect(parent.style.transform).toContain("translate(25px, 10px)");
-    expect(child.style.transform).toContain("translate(-25px, -10px)");
-    runtime.stop();
-  });
 });

@@ -26,8 +26,15 @@ export async function enableEditMode(context: BrowserContext, page: Page): Promi
     if (!tab?.id) {
       return { ok: false as const, error: "no_tab" };
     }
-    await chrome.tabs.sendMessage(tab.id, { type: "OTF_EDIT_MODE_CHANGED", enabled: true });
-    return { ok: true as const, tabId: tab.id };
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        await chrome.tabs.sendMessage(tab.id, { type: "OTF_EDIT_MODE_CHANGED", enabled: true });
+        return { ok: true as const, tabId: tab.id };
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    return { ok: false as const, error: "content_receiver_unavailable" };
   });
   expect(result.ok, `enable edit mode: ${JSON.stringify(result)}`).toBe(true);
   await page.locator("#on-the-fly-root-host").waitFor({ state: "attached", timeout: 15_000 });

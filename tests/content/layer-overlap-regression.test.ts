@@ -45,14 +45,13 @@ function createLinkedInFixture(document: Document) {
   if (typeof document.elementsFromPoint !== "function") {
     document.elementsFromPoint = () => [];
   }
-  vi.spyOn(document, "elementsFromPoint").mockImplementation(() => [
-    navbar,
-    experience,
-    sidebar,
-    outlet,
-    document.body,
-    document.documentElement,
-  ]);
+  vi.spyOn(document, "elementsFromPoint").mockImplementation(() => {
+    const experienceLayer = Number.parseInt(experience.style.zIndex, 10) || 0;
+    const navbarLayer = Number.parseInt(navbar.style.zIndex, 10) || 0;
+    return experienceLayer > navbarLayer
+      ? [experience, navbar, sidebar, outlet, document.body, document.documentElement]
+      : [navbar, experience, sidebar, outlet, document.body, document.documentElement];
+  });
 
   return { outlet, navbar, sidebar, experience };
 }
@@ -98,7 +97,7 @@ describe("layer overlap regression", () => {
     expect(layerOps.length).toBe(1);
 
     expect(Number.parseInt(navbar.style.zIndex, 10)).toBe(100);
-    expect(Number.parseInt(sidebar.style.zIndex, 10)).toBeGreaterThan(100);
+    expect(Number.parseInt(experience.style.zIndex, 10)).toBeGreaterThan(100);
     expect(experience.parentElement?.parentElement).toBe(sidebar);
   });
 
@@ -148,12 +147,12 @@ describe("layer overlap regression", () => {
     const afterRefresh = new PageCustomizationController(document);
     await afterRefresh.ensureReplayed();
 
-    expect(sidebar.style.zIndex).toBe(String(FRONT_LAYER));
+    expect(experience.style.zIndex).toBe(String(FRONT_LAYER));
   });
 
   it("clear page restores original inline z-index on resolved host", () => {
     const { document } = createTestDocument("");
-    const { sidebar, experience } = createLinkedInFixture(document);
+    const { experience } = createLinkedInFixture(document);
 
     const pageCustomization = new PageCustomizationController(document);
     const controller = createTransformController({
@@ -182,10 +181,10 @@ describe("layer overlap regression", () => {
       handleTarget: target,
     });
     controller.applyLayerCommand("forward");
-    expect(sidebar.style.zIndex).not.toBe("");
+    expect(experience.style.zIndex).not.toBe("");
 
     pageCustomization.getAdapter().clearAppliedEffects();
-    expect(sidebar.style.zIndex).toBe("");
-    expect(sidebar.style.position).toBe("");
+    expect(experience.style.zIndex).toBe("");
+    expect(experience.style.position).toBe("");
   });
 });

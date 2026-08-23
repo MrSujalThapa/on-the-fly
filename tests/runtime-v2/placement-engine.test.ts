@@ -4,13 +4,7 @@ import { createPlacementEngine } from "../../src/runtime-v2/create-placement-eng
 import { layoutElement } from "../editor/measurement/layout-helpers.js";
 import {
   applyPersistedDetachPlacement,
-  counterMoveDetachedDescendants,
-  OTF_DETACH_ATTR,
 } from "../../src/editor/dom/managed-detach.js";
-import {
-  readStoredTransformState,
-  writeStoredTransformState,
-} from "../../src/editor/dom/element-snapshot.js";
 
 describe("PlacementEngine", () => {
   it("updates page coordinates when an already-detached target moves again", () => {
@@ -51,7 +45,7 @@ describe("PlacementEngine", () => {
     expect(plan.flowSlotRemains).toBe(true);
     expect(plan.payload.detached).toBe(false);
     expect(plan.payload.interactionSafeFixed).toBe(false);
-    expect(plan.payload.transformOnly).toBe(true);
+    expect(plan.payload.transformOnly).toBe(false);
     expect(plan.expectedRect).toEqual({ x: 64, y: 92, width: 120, height: 60 });
   });
 
@@ -74,7 +68,7 @@ describe("PlacementEngine", () => {
     expect(plan.payload.interactionSafeFixed).toBe(false);
   });
 
-  it("records logical detachment for an interactive child without reparenting it", () => {
+  it("makes an interactive child independently placeable when it leaves its parent", () => {
     const { root } = createTestDocument(
       `<section><div role="radiogroup"><button role="radio">Mentions</button></div></section>`,
     );
@@ -90,12 +84,13 @@ describe("PlacementEngine", () => {
       dy: 100,
     });
 
-    expect(plan.strategy).toBe("in-flow");
-    expect(plan.flowSlotRemains).toBe(true);
+    expect(plan.strategy).toBe("detached");
+    expect(plan.flowSlotRemains).toBe(false);
     expect(plan.payload.detached).toBe(true);
+    expect(plan.payload.detachedTop).toBe(130);
   });
 
-  it("uses interaction-safe fixed placement when a standalone link leaves its container", () => {
+  it("uses the same independent placement when a standalone link leaves its container", () => {
     const { root } = createTestDocument(`<section><a href="/settings">View settings</a></section>`);
     const parent = root.querySelector("section") as HTMLElement;
     const link = root.querySelector("a") as HTMLElement;
@@ -109,34 +104,15 @@ describe("PlacementEngine", () => {
       dy: 80,
     });
 
-    expect(plan.strategy).toBe("interaction-safe-fixed");
-    expect(plan.flowSlotRemains).toBe(true);
-    expect(plan.payload.interactionSafeFixed).toBe(true);
-    expect(plan.payload.detached).toBe(false);
-    expect(plan.payload.fixedViewportLeft).toBe(300);
-    expect(plan.payload.fixedViewportTop).toBe(120);
+    expect(plan.strategy).toBe("detached");
+    expect(plan.flowSlotRemains).toBe(false);
+    expect(plan.payload.interactionSafeFixed).toBe(false);
+    expect(plan.payload.detached).toBe(true);
+    expect(plan.payload.detachedLeft).toBe(300);
+    expect(plan.payload.detachedTop).toBe(120);
   });
 
-  it("counters future old-parent movement for a logically detached child", () => {
-    const { root } = createTestDocument(`<section><button>Detached</button></section>`);
-    const parent = root.querySelector("section") as HTMLElement;
-    const child = root.querySelector("button") as HTMLElement;
-    child.setAttribute(OTF_DETACH_ATTR, "true");
-    writeStoredTransformState(child, {
-      dx: 100,
-      dy: 60,
-      width: null,
-      height: null,
-      rotate: 0,
-      position: "relative",
-    });
-
-    expect(counterMoveDetachedDescendants(parent, 25, 10)).toEqual([child]);
-    expect(readStoredTransformState(child)).toMatchObject({ dx: 75, dy: 50 });
-    expect(child.parentElement).toBe(parent);
-  });
-
-  it("keeps a logically detached interactive control transform-only on later moves", () => {
+  it("migrates a legacy logical detach to body-managed placement on its next move", () => {
     const { root } = createTestDocument(
       `<div role="radiogroup"><button role="radio" data-otf-detached="true">My posts</button></div>`,
     );
@@ -148,14 +124,15 @@ describe("PlacementEngine", () => {
       dy: 20,
     });
 
-    expect(plan.strategy).toBe("transform-only");
-    expect(plan.flowSlotRemains).toBe(true);
+    expect(plan.strategy).toBe("detached");
+    expect(plan.flowSlotRemains).toBe(false);
     expect(plan.payload).toMatchObject({
       detached: true,
-      transformOnly: true,
+      transformOnly: false,
       interactionSafeFixed: false,
     });
-    expect(plan.payload.detachedLeft).toBeUndefined();
+    expect(plan.payload.detachedLeft).toBe(70);
+    expect(plan.payload.detachedTop).toBe(160);
   });
 
   it("composes already-detached placement in page coordinates", () => {
@@ -203,7 +180,7 @@ describe("PlacementEngine", () => {
     expect(plan.payload.detachedTop).toBe(40);
   });
 
-  it("composes already-managed interaction-safe-fixed in viewport coordinates", () => {
+  it("migrates legacy interaction-safe-fixed placement to independent page coordinates", () => {
     const { root } = createTestDocument(
       `<button type="button" data-otf-interaction-fixed="true">Ok</button>`,
     );
@@ -219,9 +196,9 @@ describe("PlacementEngine", () => {
       dy: 4,
     });
 
-    expect(plan.strategy).toBe("interaction-safe-fixed");
-    expect(plan.payload.interactionSafeFixed).toBe(true);
-    expect(plan.payload.fixedViewportLeft).toBe(11);
-    expect(plan.payload.fixedViewportTop).toBe(20);
+    expect(plan.strategy).toBe("detached");
+    expect(plan.payload.interactionSafeFixed).toBe(false);
+    expect(plan.payload.detachedLeft).toBe(11);
+    expect(plan.payload.detachedTop).toBe(20);
   });
 });

@@ -3,7 +3,7 @@ import { createTestDocument } from "../editor/dom/test-document.js";
 import { createVisualModel } from "../../src/runtime-v2/create-visual-model.js";
 import { isResolvedVisual, isUnresolvedVisual } from "../../src/runtime-v2/visual-model.js";
 import { buildDurableIdentity, identifyingContent, resolveDurableIdentity } from "../../src/runtime-v2/visual-identity.js";
-import { discoverFromElement } from "../../src/runtime-v2/visual-hierarchy.js";
+import { discoverFromElement, discoverFromPath } from "../../src/runtime-v2/visual-hierarchy.js";
 
 function stubRect(
   element: HTMLElement,
@@ -177,10 +177,32 @@ describe("VisualModel identity", () => {
       expect(resolved.element.dataset.logicalId).toBe("b");
     }
   });
+
+  it("resolves a unique container when an independently moved child changes its text content", () => {
+    const { document, root } = createTestDocument(`
+      <div class="profile-card"><h2>Jamie Alexandra Doe</h2><p>Product designer</p></div>
+    `);
+    const card = root.querySelector(".profile-card");
+    if (!(card instanceof HTMLElement)) return;
+    const identity = buildDurableIdentity(card, document);
+    card.querySelector("p")?.remove();
+    const resolved = resolveDurableIdentity(document, identity);
+    expect(isResolvedVisual(resolved)).toBe(true);
+    if (isResolvedVisual(resolved)) expect(resolved.element).toBe(card);
+  });
 });
 
 describe("VisualModel hierarchy", () => {
-  it("collapses an anchor wrapper and content into one unit", () => {
+  it("keeps a managed BACK object selectable beneath unmanaged page content", () => {
+    const { root } = createTestDocument(`<div class="page">Page</div><button data-otf-managed="true">My posts</button>`);
+    const page = root.querySelector(".page");
+    const managed = root.querySelector("button");
+    if (!(page instanceof HTMLElement) || !(managed instanceof HTMLElement)) return;
+    const discovery = discoverFromPath([page, managed]);
+    expect(discovery?.binding).toBe(managed);
+  });
+
+  it("keeps ordinary image and text descendants as the exact selected unit", () => {
     const { root } = createTestDocument(`
       <div class="gallery">
         <div class="item">
@@ -203,18 +225,11 @@ describe("VisualModel hierarchy", () => {
         </div>
       </div>
     `);
-    const items = Array.from(root.querySelectorAll(".item")).filter(
-      (node): node is HTMLElement => node instanceof HTMLElement,
-    );
     layoutCards(root, ".item");
     const image = root.querySelector("img");
     const title = root.querySelector("h2");
     const footer = root.querySelector("footer");
     if (!(image instanceof HTMLElement) || !(title instanceof HTMLElement) || !(footer instanceof HTMLElement)) {
-      return;
-    }
-    const first = items[0];
-    if (!first) {
       return;
     }
     stubRect(image, { x: 50, y: 90, width: 160, height: 40 });
@@ -223,10 +238,10 @@ describe("VisualModel hierarchy", () => {
     const fromImage = discoverFromElement(image);
     const fromTitle = discoverFromElement(title);
     const fromFooter = discoverFromElement(footer);
-    expect(fromImage?.binding).toBe(first);
-    expect(fromTitle?.binding).toBe(first);
-    expect(fromFooter?.binding).toBe(first);
-    expect(fromImage?.parentRole).toBe("collection");
+    expect(fromImage?.binding).toBe(image);
+    expect(fromTitle?.binding).toBe(title);
+    expect(fromFooter?.binding).toBe(footer);
+    expect(fromImage?.parentBinding).toBe(image.parentElement);
   });
 
   it("does not treat the collection as the default unit", () => {
