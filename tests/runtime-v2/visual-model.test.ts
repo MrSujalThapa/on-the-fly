@@ -45,6 +45,31 @@ function layoutCards(root: HTMLElement, selector: string, y = 80): HTMLElement[]
 }
 
 describe("VisualModel identity", () => {
+  it("uses cloneId as the sole live clone node identity and rejects duplicates", () => {
+    const { document, root } = createTestDocument(`
+      <h1 data-otf-clone-id="clone-a">A</h1><h1 data-otf-clone-id="clone-a">A again</h1>
+    `);
+    const clones = layoutCards(root, "h1");
+    const first = clones[0];
+    const second = clones[1];
+    if (!first || !second) return;
+    const model = createVisualModel(document);
+    expect(model.adopt(first)).toBe("clone-a");
+    expect(model.bind("clone-a")).toBe(first);
+    expect(model.adopt(second)).toBeNull();
+    expect(model.bind("clone-a")).toBe(first);
+  });
+
+  it("promotes clone descendants to the clone entity root", () => {
+    const { document, root } = createTestDocument('<section data-otf-clone-id="clone-a"><h1>Title</h1></section>');
+    const clone = root.querySelector("section");
+    const heading = root.querySelector("h1");
+    if (!(clone instanceof HTMLElement) || !(heading instanceof HTMLElement)) return;
+    const model = createVisualModel(document);
+    expect(model.adopt(heading)).toBe("clone-a");
+    expect(model.bind("clone-a")).toBe(clone);
+  });
+
   it("registers repeated sibling cards uniquely", () => {
     const { document, root } = createTestDocument(`
       <section>

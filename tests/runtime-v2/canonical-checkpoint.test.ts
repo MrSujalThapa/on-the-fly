@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { MoveOperation, ZIndexOperation } from "../../src/editor/operations.js";
+import type { DuplicateOperation, EditorOperation, MoveOperation, ZIndexOperation } from "../../src/editor/operations.js";
 import { createEmptyBoundingBoxHint } from "../../src/editor/element-signature.js";
 import {
   durableMoveKey,
@@ -46,6 +46,47 @@ function layer(id: string, nodeKey: string, value: number): ZIndexOperation {
     status: "approved",
     metadata: { sourceCommand: value > 0 ? "layer:front" : "layer:back" },
   };
+}
+
+function duplicate(cloneId: string): DuplicateOperation {
+  return {
+    id: `create-${cloneId}`,
+    type: "duplicate",
+    pageKey: "https://example.com/",
+    target: {
+      nodeId: cloneId,
+      signature: {
+        cssPath: `[data-otf-clone-id="${cloneId}"]`,
+        tagName: "h1",
+        classList: ["title"],
+        textFingerprint: "Manage notifications",
+        datasetFingerprint: `otfCloneId=${cloneId}`,
+        boundingBoxHint: createEmptyBoundingBoxHint(),
+      },
+    },
+    payload: {
+      cloneId,
+      html: '<h1 class="title">Manage notifications</h1>',
+      parentCssPath: "body",
+      offsetDx: 12,
+      offsetDy: 12,
+      sourceCssPath: "aside h1",
+      anchorLeft: 10,
+      anchorTop: 20,
+      anchorWidth: 200,
+      anchorHeight: 40,
+      styleSnapshot: {},
+    },
+    createdAt: 1,
+    source: "manual",
+    status: "approved",
+  };
+}
+
+function cloneMove(cloneId: string, dx: number): MoveOperation {
+  const operation = move(cloneId, "Manage notifications", dx, 10, 10 + dx);
+  operation.target = duplicate(cloneId).target;
+  return operation;
 }
 
 describe("canonical MOVE checkpoint", () => {
@@ -146,10 +187,9 @@ describe("canonical MOVE checkpoint", () => {
       second.target.signature.siblingOrdinal = 2;
       second.target.signature.siblingCount = 2;
     }
-    expect(projectCanonicalCheckpoint([first, second])).toEqual({
-      ok: false,
-      error: "move_durable_identity_collision",
-    });
+    const checkpoint = projectCanonicalCheckpoint([first, second]);
+    expect(checkpoint.ok).toBe(false);
+    if (!checkpoint.ok) expect(checkpoint.error).toContain("move_durable_identity_collision:");
   });
 
   it("keeps one adopted VisualNode continuous when OTF changes its DOM structure", () => {
@@ -197,5 +237,44 @@ describe("canonical MOVE checkpoint", () => {
     expect(checkpoint.ok).toBe(true);
     if (!checkpoint.ok || checkpoint.operations[0]?.type !== "move") return;
     expect(checkpoint.operations[0].payload.detached).toBe(true);
+  });
+
+  it("keys same-source clone creations and effects by cloneId", () => {
+    const checkpoint = projectCanonicalCheckpoint([
+      duplicate("clone-a"), duplicate("clone-b"), cloneMove("clone-a", 20), cloneMove("clone-b", 50),
+    ]);
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) return;
+    expect(checkpoint.operations.filter((operation) => operation.type === "duplicate").map((operation) => operation.payload.cloneId)).toEqual(["clone-a", "clone-b"]);
+    expect(checkpoint.operations.filter((operation) => operation.type === "move").map((operation) => operation.target.nodeId)).toEqual(["clone-a", "clone-b"]);
+  });
+
+  it("preserves orthogonal clone properties in dependency order", () => {
+    const target = duplicate("clone-a").target;
+    const effect = (type: EditorOperation["type"], payload: object, id: string): EditorOperation => ({
+      ...cloneMove("clone-a", 20), id, type, target, payload,
+    } as EditorOperation);
+    const checkpoint = projectCanonicalCheckpoint([
+      effect("hide", { hidden: true }, "hide"),
+      effect("rotate", { degrees: 25 }, "rotate"),
+      duplicate("clone-a"),
+      effect("zIndex", { layer: 8, previousLayer: 1 }, "layer"),
+      cloneMove("clone-a", 20),
+      effect("resize", { width: 240, height: 60, mode: "box" }, "resize"),
+    ]);
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) return;
+    expect(checkpoint.operations.map((operation) => operation.type)).toEqual([
+      "duplicate", "move", "resize", "rotate", "zIndex", "hide",
+    ]);
+  });
+
+  it("fails closed for missing or duplicate clone creation", () => {
+    expect(projectCanonicalCheckpoint([cloneMove("clone-a", 20)])).toEqual({
+      ok: false, error: "clone_effect_missing_creation:clone-a:op-clone-a:move:clone-a:known=none",
+    });
+    expect(projectCanonicalCheckpoint([duplicate("clone-a"), duplicate("clone-a")])).toEqual({
+      ok: false, error: "duplicate_clone_creation:clone-a",
+    });
   });
 });

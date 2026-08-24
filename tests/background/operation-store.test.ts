@@ -117,15 +117,15 @@ describe("OperationStore", () => {
     expect((await store.loadOperations(PAGE_KEY)).map((op) => op.id)).toEqual(["approved"]);
   });
 
-  it("filters non-approved operations from replace-page persistence", async () => {
+  it("rejects an invalid replacement without changing the acknowledged checkpoint", async () => {
     const store = createStore();
-    await store.replacePageOperations(PAGE_KEY, [
+    await store.replacePageOperations(PAGE_KEY, [moveOp("acknowledged", 1, 1)]);
+    await expect(store.replacePageOperations(PAGE_KEY, [
       { ...moveOp("draft", 1, 1), status: "draft" as const },
-      { ...moveOp("preview", 1, 1), status: "preview" as const },
-      moveOp("approved", 1, 1),
-    ]);
+      moveOp("replacement", 1, 1),
+    ])).rejects.toThrow("invalid_checkpoint_operation:draft:draft");
 
-    expect((await store.loadOperations(PAGE_KEY)).map((op) => op.id)).toEqual(["approved"]);
+    expect((await store.loadOperations(PAGE_KEY)).map((op) => op.id)).toEqual(["acknowledged"]);
   });
 
   it("coalesces repeated hide operations for the same target", async () => {

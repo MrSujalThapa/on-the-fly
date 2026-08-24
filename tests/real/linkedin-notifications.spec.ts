@@ -59,6 +59,15 @@ async function verifyCloneReplay(page: import("@playwright/test").Page, expected
   expectTransformStateNear(await page.locator(`[data-otf-clone-id="${movedId}"]`).getAttribute("data-otf-transform"), movedState);
 }
 
+async function expectRealSave(page: import("@playwright/test").Page): Promise<void> {
+  await saveReal(page);
+  const host = page.locator("#on-the-fly-root-host");
+  await expect.poll(async () => host.getAttribute("data-otf-save-status")).not.toBe("saving");
+  const status = await host.getAttribute("data-otf-save-status");
+  if (status === "failed") throw new Error(`SAVE FAILED: ${await host.getAttribute("data-otf-save-error") ?? "unknown"}`);
+  expect(status).toMatch(/^(saved|idle)$/u);
+}
+
 test.describe("LinkedIn notifications RL1–RL4", () => {
   test.afterEach(async ({ page, context }, testInfo) => {
     await attachRealFailureArtifacts(page, context, testInfo);
@@ -509,5 +518,117 @@ test.describe("LinkedIn notifications RL1–RL4", () => {
     await page.keyboard.press("Control+c");
     for (let index = 0; index < 3; index += 1) await page.keyboard.press("Control+v");
     await verifyCloneReplay(page, 6);
+  });
+
+  test("RL13 video repro saves moved Mentions and three independently moved copies", async ({ page }) => {
+    const filters = await linkedInFilters(page);
+    await selectAndDragReal(page, filters.Mentions, 44, 24);
+    await selectRealTarget(page, filters.Mentions);
+    const resizeHandle = await getTransformHandleRect(page, "resize-se");
+    expect(resizeHandle).not.toBeNull();
+    if (!resizeHandle) return;
+    await page.mouse.move(resizeHandle.x + 5, resizeHandle.y + 5);
+    await page.mouse.down();
+    await page.mouse.move(resizeHandle.x + 42, resizeHandle.y + 26, { steps: 6 });
+    await page.mouse.up();
+    await expectRealSave(page);
+    const mentionsState = await filters.Mentions.getAttribute("data-otf-transform");
+
+    await selectRealTarget(page, page.getByRole("heading", { name: "Manage your notifications" }));
+    await page.keyboard.press("Control+c");
+    const cloneStates = new Map<string, string | null>();
+    for (let index = 0; index < 3; index += 1) {
+      await page.keyboard.press("Control+v");
+      const clone = page.locator("[data-otf-clone-id]").last();
+      await selectAndDragReal(page, clone, 24 + index * 18, 12 + index * 9);
+      const cloneId = await clone.getAttribute("data-otf-clone-id");
+      if (!cloneId) throw new Error(productFailure("video repro cloneId missing"));
+      cloneStates.set(cloneId, await clone.getAttribute("data-otf-transform"));
+      await expectRealSave(page);
+    }
+    await expect(page.locator("[data-otf-clone-id]")).toHaveCount(3);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const replayed = await linkedInFilters(page);
+    expectTransformStateNear(await replayed.Mentions.getAttribute("data-otf-transform"), mentionsState);
+    await expect(page.getByRole("heading", { name: "Manage your notifications" })).toHaveCount(4);
+    for (const [cloneId, state] of cloneStates) {
+      const clone = page.locator(`[data-otf-clone-id="${cloneId}"]`);
+      await expect(clone).toHaveCount(1);
+      expectTransformStateNear(await clone.getAttribute("data-otf-transform"), state);
+    }
+  });
+
+  test("RL14 ten same-source clones retain unique mixed final state", async ({ page, context }) => {
+    await linkedInFilters(page);
+    await selectRealTarget(page, page.getByRole("heading", { name: "Manage your notifications" }));
+    await page.keyboard.press("Control+c");
+    const states = new Map<string, string | null>();
+    for (let index = 0; index < 10; index += 1) {
+      await page.keyboard.press("Control+v");
+      const clone = page.locator("[data-otf-clone-id]").last();
+      await selectAndDragReal(page, clone, 10 + index * 5, 8 + index * 3);
+      const cloneId = await clone.getAttribute("data-otf-clone-id");
+      if (!cloneId) throw new Error(productFailure("ten-clone cloneId missing"));
+      states.set(cloneId, await clone.getAttribute("data-otf-transform"));
+    }
+    const clones = page.locator("[data-otf-clone-id]");
+    await expect(clones).toHaveCount(10);
+    expect(new Set(await clones.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-otf-clone-id")))).size).toBe(10);
+
+    for (const index of [0, 3]) {
+      await selectRealTarget(page, clones.nth(index));
+      const handle = await getTransformHandleRect(page, "resize-se");
+      if (!handle) throw new Error(productFailure("ten-clone resize handle missing"));
+      await page.mouse.move(handle.x + 5, handle.y + 5);
+      await page.mouse.down();
+      await page.mouse.move(handle.x + 34, handle.y + 22, { steps: 5 });
+      await page.mouse.up();
+    }
+    for (const index of [1, 4]) {
+      await selectRealTarget(page, clones.nth(index));
+      const handle = await getTransformHandleRect(page, "rotate");
+      if (!handle) throw new Error(productFailure("ten-clone rotate handle missing"));
+      await page.mouse.move(handle.x + 5, handle.y + 5);
+      await page.mouse.down();
+      await page.mouse.move(handle.x + 45, handle.y + 16, { steps: 5 });
+      await page.mouse.up();
+    }
+    const deletedIds: string[] = [];
+    for (const index of [2, 6, 9]) {
+      const clone = clones.nth(index);
+      deletedIds.push((await clone.getAttribute("data-otf-clone-id")) ?? "");
+      await selectRealTarget(page, clone);
+      await page.keyboard.press("Delete");
+    }
+    for (const cloneId of states.keys()) {
+      states.set(cloneId, await page.locator(`[data-otf-clone-id="${cloneId}"]`).getAttribute("data-otf-transform"));
+    }
+    await expectRealSave(page);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await linkedInFilters(page);
+    await expect(page.locator("[data-otf-clone-id]")).toHaveCount(10);
+    for (const [cloneId, state] of states) {
+      const clone = page.locator(`[data-otf-clone-id="${cloneId}"]`);
+      await expect(clone).toHaveCount(1);
+      if (deletedIds.includes(cloneId)) await expect(clone).toBeHidden();
+      else await expect(clone).toBeVisible();
+      expectTransformStateNear(await clone.getAttribute("data-otf-transform"), state);
+    }
+    const worker = context.serviceWorkers()[0] ?? await context.waitForEvent("serviceworker");
+    const checkpointBytes = await worker.evaluate(async (pageKey) => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open("on_the_fly_v1");
+        request.onsuccess = () => { resolve(request.result); };
+        request.onerror = () => { reject(request.error ?? new Error("indexeddb_open_failed")); };
+      });
+      const rows = await new Promise<unknown[]>((resolve, reject) => {
+        const request = db.transaction("operations", "readonly").objectStore("operations").index("pageKey").getAll(pageKey);
+        request.onsuccess = () => { resolve(request.result); };
+        request.onerror = () => { reject(request.error ?? new Error("indexeddb_read_failed")); };
+      });
+      db.close();
+      return new TextEncoder().encode(JSON.stringify(rows)).byteLength;
+    }, await page.evaluate(() => `${location.origin}${location.pathname}`));
+    console.log(`[RL14] checkpointBytes=${String(checkpointBytes)}`);
   });
 });

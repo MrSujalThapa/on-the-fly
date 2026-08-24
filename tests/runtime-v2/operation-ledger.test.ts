@@ -70,6 +70,16 @@ describe("OperationLedger", () => {
     expect(ledger.persistedRevision).toBe(1);
   });
 
+  it("marks only the revision captured by an in-flight save", () => {
+    const ledger = createOperationLedger();
+    ledger.commit(move("save-a"));
+    const savingRevision = ledger.cursor;
+    ledger.commit(move("edit-b"));
+    ledger.markPersisted(savingRevision);
+    expect(ledger.persistedRevision).toBe(1);
+    expect(ledger.isDirty()).toBe(true);
+  });
+
   it("hydrates as a persisted projection", () => {
     const ledger = createOperationLedger();
     ledger.hydratePersisted([move("saved")]);
