@@ -24,6 +24,7 @@ const ALLOWED_PREFIXES = [
   "src/editor/validation/",
   "src/editor/measurement/",
   "src/editor/transform/",
+  "src/editor/duplicate/",
   "src/editor/persistence/",
   "src/editor/dom/handlers/",
   "src/editor/dom/types.ts",
@@ -453,4 +454,3 @@ describe("authenticated real-site harness isolation", () => {
     expect(real).toContain("headless: false");
   });
 });
-

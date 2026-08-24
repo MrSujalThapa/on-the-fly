@@ -15,6 +15,7 @@ import { expect, test } from "./helpers/extension.js";
 import {
   expectRectNear,
   getOverlayPipeline,
+  getTransformHandleRect,
   rect,
   type GeometryRect,
   type OverlayPipeline,
@@ -427,5 +428,69 @@ test.describe("P1–P5 canonical MOVE checkpoints", () => {
     const committed = await rect(target);
     await reloadAndWaitForReplay(page);
     expectRectNear(await rect(page.getByTestId("target")), committed, 4, "P5 final checkpoint");
+  });
+});
+
+test.describe("Runtime V2 copy/delete/resize/rotate parity", () => {
+  test.beforeEach(async ({ page, context }) => {
+    await openSimilarTabs(page);
+    await enableEditMode(context, page);
+  });
+
+  test("copy/paste uses unique durable clones and replays before clone effects", async ({ page, context }) => {
+    page.on("console", (message) => { if (message.text().includes("[otf-v2]")) console.log(message.text()); });
+    await selectTarget(page, tab(page, "Mentions"));
+    await page.keyboard.press("Control+c");
+    await page.keyboard.press("Control+v");
+    await page.keyboard.press("Control+v");
+    await page.keyboard.press("Control+v");
+    const clones = page.locator("[data-otf-clone-id]");
+    await expect(clones).toHaveCount(3);
+    const ids = await clones.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-otf-clone-id")));
+    expect(new Set(ids).size).toBe(3);
+    await save(page);
+    const persisted = await loadPersistedOperations(context, page);
+    expect(persisted.filter((operation) => operation.type === "duplicate")).toHaveLength(3);
+    await reloadAndWaitForReplay(page);
+    await expect(page.locator("[data-otf-clone-id]")).toHaveCount(3);
+  });
+
+  test("delete transaction and resize/rotate handles use one-step history", async ({ page }) => {
+    const mentions = tab(page, "Mentions");
+    await selectTarget(page, mentions);
+    await page.keyboard.press("Delete");
+    await expect(mentions).toBeHidden();
+    await page.keyboard.press("Control+z");
+    await expect(mentions).toBeVisible();
+    await page.keyboard.press("Control+y");
+    await expect(mentions).toBeHidden();
+    await page.keyboard.press("Control+z");
+
+    await selectTarget(page, mentions);
+    const before = await rect(mentions);
+    let handle = await getTransformHandleRect(page, "resize-se");
+    expect(handle).not.toBeNull();
+    if (!handle) return;
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handle.x + handle.width / 2 + 40, handle.y + handle.height / 2 + 25, { steps: 8 });
+    await page.mouse.up();
+    const resized = await rect(mentions);
+    expect(resized.width).toBeGreaterThan(before.width + 20);
+    await page.keyboard.press("Control+z");
+    expectRectNear(await rect(mentions), before, 5, "resize undo");
+    await page.keyboard.press("Control+y");
+    await page.waitForTimeout(100);
+
+    handle = await getTransformHandleRect(page, "rotate");
+    expect(handle).not.toBeNull();
+    if (!handle) return;
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handle.x + 80, handle.y + 50, { steps: 8 });
+    await page.mouse.up();
+    expect(await page.locator(".tab-label", { hasText: /^Mentions$/u }).getAttribute("data-otf-transform")).toContain("rotate");
+    await page.keyboard.press("Control+z");
+    await page.keyboard.press("Control+y");
   });
 });

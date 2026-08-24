@@ -279,4 +279,47 @@ describe("Runtime V2 editor parity", () => {
     expect(checkpoint.ok).toBe(true);
     if (checkpoint.ok) expect(checkpoint.operations).toHaveLength(3);
   });
+
+  it("copies immutable current selection without dirtying the ledger", () => {
+    const { document, root } = createTestDocument(`<button id="a">A</button>`);
+    const a = byId(root, "a");
+    layoutManagedElement(a, { x: 10, y: 20, width: 80, height: 30 });
+    const runtime = createEditorRuntime(document);
+    runtime.select(a);
+    expect(runtime.moveSelection(25, 15).ok).toBe(true);
+    runtime.ledger.markPersisted();
+    expect(runtime.copySelection()).toBe(true);
+    expect(runtime.ledger.isDirty()).toBe(false);
+    expect(runtime.ledger.activeOperations()).toHaveLength(1);
+  });
+
+  it("deletes a group atomically and restores it with one undo/redo", () => {
+    const { document, root } = createTestDocument(`<button id="a">A</button><button id="b">B</button>`);
+    const a = byId(root, "a"); const b = byId(root, "b");
+    layoutManagedElement(a, { x: 10, y: 20, width: 80, height: 30 });
+    layoutManagedElement(b, { x: 110, y: 20, width: 80, height: 30 });
+    const runtime = createEditorRuntime(document);
+    runtime.select(a); runtime.toggleSelection(b); runtime.groupSelection();
+    expect(runtime.deleteSelection().ok).toBe(true);
+    expect(runtime.ledger.peekUndoTransaction()).toHaveLength(2);
+    expect(a.style.display).toBe("none");
+    expect(b.style.display).toBe("none");
+    expect(runtime.undo().ok).toBe(true);
+    expect(a.style.display).not.toBe("none");
+    expect(b.style.display).not.toBe("none");
+    expect(runtime.redo().ok).toBe(true);
+    expect(a.style.display).toBe("none");
+    expect(b.style.display).toBe("none");
+  });
+
+  it("deletes an attached nested selection only once", () => {
+    const { document, root } = createTestDocument(`<section id="p"><button id="c">C</button></section>`);
+    const parent = byId(root, "p"); const child = byId(root, "c");
+    layoutManagedElement(parent, { x: 0, y: 0, width: 120, height: 80 });
+    layoutManagedElement(child, { x: 10, y: 10, width: 40, height: 20 });
+    const runtime = createEditorRuntime(document);
+    runtime.select(parent); runtime.toggleSelection(child);
+    expect(runtime.deleteSelection().ok).toBe(true);
+    expect(runtime.ledger.peekUndoTransaction()).toHaveLength(1);
+  });
 });

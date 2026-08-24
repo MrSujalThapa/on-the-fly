@@ -1,4 +1,4 @@
-import { getOverlayPipeline, getOverlayRect, rect, translated } from "../e2e/helpers/geometry.js";
+import { getOverlayPipeline, getOverlayRect, getTransformHandleRect, rect, translated } from "../e2e/helpers/geometry.js";
 import {
   attachRealFailureArtifacts,
   clearPageOperations,
@@ -172,5 +172,49 @@ test.describe("LinkedIn notifications RL1–RL4", () => {
     await filters.Jobs.scrollIntoViewIfNeeded();
     await selectRealTarget(page, filters.Mentions);
     await check("after layout change/reselect");
+  });
+
+  test("RL5 clipboard, delete, resize, rotate, undo/redo, and replay", async ({ page }) => {
+    const copyTarget = page.getByRole("heading", { name: "Manage your notifications" });
+    await selectRealTarget(page, copyTarget);
+    await page.keyboard.press("Control+c");
+    await page.keyboard.press("Control+v");
+    const clone = page.locator("[data-otf-clone-id]").last();
+    await expect(clone).toBeVisible();
+
+    await page.keyboard.press("Delete");
+    await expect(clone).toBeHidden();
+    await page.keyboard.press("Control+z");
+    await expect(clone).toBeVisible();
+    await page.keyboard.press("Control+y");
+    await expect(clone).toBeHidden();
+    await page.keyboard.press("Control+z");
+    await selectRealTarget(page, clone);
+
+    const before = await rect(clone);
+    let handle = await getTransformHandleRect(page, "resize-se");
+    expect(handle, productFailure("resize handle missing on LinkedIn clone")).not.toBeNull();
+    if (!handle) return;
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handle.right + 36, handle.bottom + 24, { steps: 8 });
+    await page.mouse.up();
+    expect((await rect(clone)).width).toBeGreaterThan(before.width + 15);
+
+    handle = await getTransformHandleRect(page, "rotate");
+    expect(handle, productFailure("rotate handle missing on LinkedIn clone")).not.toBeNull();
+    if (!handle) return;
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handle.right + 70, handle.bottom + 45, { steps: 8 });
+    await page.mouse.up();
+    await expect(clone).toHaveAttribute("data-otf-transform", /"rotate":(?!0)/u);
+
+    await page.keyboard.press("Control+z");
+    await page.keyboard.press("Control+y");
+    await saveReal(page);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await linkedInFilters(page);
+    await expect(page.locator("[data-otf-clone-id]")).toHaveCount(1);
   });
 });

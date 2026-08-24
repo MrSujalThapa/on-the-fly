@@ -164,6 +164,26 @@ export async function getOverlayRect(page: Page): Promise<GeometryRect | null> {
   }
 }
 
+export async function getTransformHandleRect(page: Page, handle: string): Promise<GeometryRect | null> {
+  const session = await page.context().newCDPSession(page);
+  try {
+    const document = await session.send("DOM.getDocument", { depth: -1, pierce: true });
+    const find = (node: CdpNode): CdpNode | null => {
+      if (classListOf(node).includes("otf-transform-handle") && attrOf(node, "data-handle") === handle) return node;
+      for (const child of [...(node.children ?? []), ...(node.shadowRoots ?? [])]) { const hit = find(child); if (hit) return hit; }
+      return node.contentDocument ? find(node.contentDocument) : null;
+    };
+    const target = find(document.root);
+    if (!target) return null;
+    const model = await session.send("DOM.getBoxModel", { nodeId: target.nodeId });
+    const quad = model.model.border;
+    const xs = [quad[0], quad[2], quad[4], quad[6]] as number[];
+    const ys = [quad[1], quad[3], quad[5], quad[7]] as number[];
+    const left = Math.min(...xs); const right = Math.max(...xs); const top = Math.min(...ys); const bottom = Math.max(...ys);
+    return { x: left, y: top, width: right-left, height: bottom-top, left, right, top, bottom };
+  } finally { await session.detach(); }
+}
+
 function attrOf(node: CdpNode, name: string): string | null {
   const attributes = node.attributes ?? [];
   for (let index = 0; index < attributes.length; index += 2) {
