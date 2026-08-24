@@ -4,6 +4,11 @@ import type { MoveOperation } from "../operations.js";
 
 export const OTF_DETACH_ATTR = "data-otf-detached";
 
+export function originalSiblingLayer(element: HTMLElement): string {
+  const siblings = element.parentElement ? Array.from(element.parentElement.children) : [];
+  return String(1 + Math.max(0, siblings.indexOf(element)));
+}
+
 export function markTransformOnlyMove(element: HTMLElement): void {
   element.setAttribute(OTF_TRANSFORM_ONLY_ATTR, "true");
 }

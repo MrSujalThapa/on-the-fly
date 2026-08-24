@@ -41,6 +41,8 @@ export interface MovePlacementPlan {
     interactionSafeFixed?: boolean;
     detachedLeft?: number;
     detachedTop?: number;
+    detachedWidth?: number;
+    detachedHeight?: number;
     detachedZIndex?: string;
     fixedViewportLeft?: number;
     fixedViewportTop?: number;

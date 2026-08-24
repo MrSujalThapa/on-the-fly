@@ -210,16 +210,61 @@ export function projectCanonicalCheckpoint(
     }
   }
 
-  const canonicalMoves = [...moves.values()]
-    .map((group) => composeMove(group.operations))
+  const canonicalMovesByKey = new Map(
+    [...moves.entries()].map(([key, group]) => [key, composeMove(group.operations)] as const),
+  );
+  for (const [key, move] of canonicalMovesByKey) {
+    const rotation = rotates.get(key);
+    const visualRect = move.metadata?.finalRect;
+    if (!rotation || !visualRect || rotation.payload.degrees === 0) continue;
+    const resize = resizes.get(key);
+    const rotationOrigin = rotation.metadata?.originalRect;
+    const localWidth = resize?.payload.width ?? move.payload.detachedWidth ?? rotationOrigin?.width;
+    const localHeight = resize?.payload.height ?? move.payload.detachedHeight ?? rotationOrigin?.height;
+    if (!localWidth || !localHeight) continue;
+    const finalRect = {
+      x: visualRect.x + (visualRect.width - localWidth) / 2,
+      y: visualRect.y + (visualRect.height - localHeight) / 2,
+      width: localWidth,
+      height: localHeight,
+    };
+    const scrollX = move.payload.detachedLeft === undefined ? 0 : move.payload.detachedLeft - visualRect.x;
+    const scrollY = move.payload.detachedTop === undefined ? 0 : move.payload.detachedTop - visualRect.y;
+    canonicalMovesByKey.set(key, freezeCommittedOperation({
+      ...move,
+      payload: {
+        ...move.payload,
+        ...(move.payload.detachedLeft === undefined ? {} : { detachedLeft: finalRect.x + scrollX }),
+        ...(move.payload.detachedTop === undefined ? {} : { detachedTop: finalRect.y + scrollY }),
+        ...(move.payload.detached ? { detachedWidth: localWidth, detachedHeight: localHeight } : {}),
+      },
+      metadata: { ...move.metadata, finalRect, affectedRect: finalRect },
+    }));
+  }
+  const canonicalMoves = [...canonicalMovesByKey.values()]
     .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  const canonicalResizes = [...resizes.entries()].map(([key, resize]) => {
+    const placementRect = canonicalMovesByKey.get(key)?.metadata?.finalRect;
+    const sizeRect = resize.metadata?.finalRect ?? resize.metadata?.affectedRect;
+    if (!placementRect || !sizeRect) return resize;
+    const finalRect = {
+      x: placementRect.x,
+      y: placementRect.y,
+      width: sizeRect.width,
+      height: sizeRect.height,
+    };
+    return freezeCommittedOperation({
+      ...resize,
+      metadata: { ...resize.metadata, finalRect, affectedRect: finalRect },
+    });
+  });
   return {
     ok: true,
     operations: [
       ...duplicates.values(),
       ...rest,
       ...canonicalMoves,
-      ...resizes.values(),
+      ...canonicalResizes,
       ...rotates.values(),
       ...hides.values(),
       ...layers.values(),

@@ -193,6 +193,37 @@ export function applyStoredTransformState(
   }
 }
 
+/**
+ * Realize one complete OTF transform state at an explicit viewport rect.
+ * Callers must start from a captured state; this function never reads another
+ * target or any gesture-global transform value.
+ */
+export function applyStoredTransformStateToRect(
+  element: HTMLElement,
+  state: StoredTransformState,
+  target: { x: number; y: number; width: number; height: number },
+): void {
+  state.width = target.width;
+  state.height = target.height;
+  applyStoredTransformState(element, state);
+  const current = element.getBoundingClientRect();
+  const dx = target.x - current.x;
+  const dy = target.y - current.y;
+  if (
+    (state.position === "fixed" || state.position === "absolute") &&
+    state.fixedLeft !== null && state.fixedLeft !== undefined &&
+    state.fixedTop !== null && state.fixedTop !== undefined
+  ) {
+    state.fixedLeft += dx;
+    state.fixedTop += dy;
+  } else {
+    state.dx += dx;
+    state.dy += dy;
+  }
+  writeStoredTransformState(element, state);
+  applyStoredTransformState(element, state);
+}
+
 export function restoreInlineStyleFromSnapshot(
   element: HTMLElement,
   snapshot: ElementStyleSnapshot,

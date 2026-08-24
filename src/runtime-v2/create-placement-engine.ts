@@ -1,5 +1,6 @@
 import {
   OTF_DETACH_ATTR,
+  originalSiblingLayer,
   shouldDetachForPredictedRect,
 } from "../editor/dom/managed-detach.js";
 import { isInteractionSafeFixed } from "../editor/dom/interactive-fixed-placement.js";
@@ -78,6 +79,9 @@ export function createPlacementEngine(): PlacementEngine {
             interactionSafeFixed: false,
             detachedLeft: expected.x + scrollX,
             detachedTop: expected.y + scrollY,
+            detachedWidth: request.element.offsetWidth,
+            detachedHeight: request.element.offsetHeight,
+            detachedZIndex: originalSiblingLayer(request.element),
           },
         };
       }

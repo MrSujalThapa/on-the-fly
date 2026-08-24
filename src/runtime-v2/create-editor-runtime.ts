@@ -6,7 +6,8 @@ import {
   replacePageOperations,
 } from "../content/storage-client.js";
 import { waitForDocumentReady, waitForReplayTargets } from "../editor/dom/replay-readiness.js";
-import { OTF_TRANSFORM_ATTR } from "../editor/dom/types.js";
+import { OTF_TRANSFORM_ATTR, type StoredTransformState } from "../editor/dom/types.js";
+import { captureElementDomSnapshot, restoreElementDomSnapshot, type ElementDomSnapshot } from "../editor/dom/dom-placement-snapshot.js";
 import { isExtensionRoot } from "../editor/measurement/scan-guards.js";
 import { createInputRouter } from "./create-input-router.js";
 import { createOperationExecutor } from "./create-operation-executor.js";
@@ -25,8 +26,8 @@ import { isResolvedVisual } from "./visual-model.js";
 import { projectCanonicalCheckpoint } from "./canonical-checkpoint.js";
 import { buildDuplicateFromClipboardEntry } from "../editor/duplicate/duplicate-element.js";
 import { buildHideOperation, buildMoveOperation, buildResizeOperation, buildRotateOperation } from "../editor/transform/operation-factory.js";
-import { readStoredTransformState } from "../editor/dom/element-snapshot.js";
-import { resizeRectFromCorner, rotatedMemberRect, scaleRects, type ResizeCorner } from "./editor-parity-geometry.js";
+import { applyStoredTransformState, applyStoredTransformStateToRect, readStoredTransformState, writeStoredTransformState } from "../editor/dom/element-snapshot.js";
+import { localSizeForRotatedBounds, resizeRectFromCorner, rotatePointAroundCenter, rotatedMemberRect, scaleRects, type ResizeCorner } from "./editor-parity-geometry.js";
 import {
   buildLassoSampleGrid,
   LASSO_THRESHOLD_PX,
@@ -60,6 +61,7 @@ interface MovingGesture {
   kind: "move";
   startPointer: { x: number; y: number };
   targets: readonly PreviewTarget[];
+  clickPick: VisualNodeId | null;
 }
 
 interface LassoGesture {
@@ -71,6 +73,25 @@ interface LassoGesture {
 }
 
 type PointerGesture = MovingGesture | LassoGesture;
+
+interface TransformPreviewTarget {
+  nodeId: VisualNodeId;
+  element: HTMLElement;
+  snapshot: ElementDomSnapshot;
+  startRect: IntendedRect;
+  startState: StoredTransformState;
+  localSize: { width: number; height: number };
+}
+
+interface TransformGesture {
+  id: string;
+  kind: "resize-nw" | "resize-ne" | "resize-sw" | "resize-se" | "rotate";
+  startPointer: { x: number; y: number };
+  startUnion: IntendedRect;
+  targets: readonly TransformPreviewTarget[];
+  lastPointer: { x: number; y: number };
+  rafId: number;
+}
 
 interface ClipboardSnapshot {
   copiedAt: number;
@@ -113,6 +134,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   let groupByMember = new Map<VisualNodeId, GroupId>();
   let groupCounter = 0;
   let gesture: PointerGesture | null = null;
+  let transformGesture: TransformGesture | null = null;
   let ignoreMutations = false;
   const releaseMutationIgnore = (): void => {
     queueMicrotask(() => {
@@ -324,10 +346,6 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     overlays.refreshFromLiveGeometry();
   };
 
-  const pointInRect = (x: number, y: number, rect: IntendedRect): boolean => {
-    return x >= rect.x && y >= rect.y && x <= rect.x + rect.width && y <= rect.y + rect.height;
-  };
-
   const effectRoots = (nodeIds: readonly VisualNodeId[]): VisualNodeId[] => {
     if (new Set(nodeIds).size !== nodeIds.length) return [];
     const selectedSet = new Set(nodeIds);
@@ -343,7 +361,172 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     });
   };
 
-  const beginMoveGesture = (event: NormalizedPointer): boolean => {
+  const initialTransformState = (element: HTMLElement): StoredTransformState => {
+    const stored = readStoredTransformState(element);
+    if (stored) return { ...stored };
+    const computed = getComputedStyle(element);
+    return {
+      dx: 0,
+      dy: 0,
+      width: null,
+      height: null,
+      rotate: 0,
+      position: computed.position === "static" ? "relative" : computed.position,
+    };
+  };
+
+  const restoreTransformPreview = (active = transformGesture): void => {
+    if (!active) return;
+    const view = root.defaultView;
+    if (view && active.rafId !== 0) view.cancelAnimationFrame(active.rafId);
+    active.rafId = 0;
+    for (const target of active.targets) {
+      restoreElementDomSnapshot(root, target.snapshot, target.element);
+    }
+  };
+
+  const previewTransformAt = (active: TransformGesture, pointer: { x: number; y: number }): void => {
+    restoreTransformPreview(active);
+    if (active.targets.some((target) => !target.element.isConnected || visualModel.bind(target.nodeId) !== target.element)) return;
+    if (active.kind === "rotate") {
+      const center = { x: active.startUnion.x + active.startUnion.width / 2, y: active.startUnion.y + active.startUnion.height / 2 };
+      const initial = Math.atan2(active.startPointer.y - center.y, active.startPointer.x - center.x);
+      const current = Math.atan2(pointer.y - center.y, pointer.x - center.x);
+      const degrees = (current - initial) * 180 / Math.PI;
+      for (const target of active.targets) {
+        const state = { ...target.startState, rotate: target.startState.rotate + degrees };
+        writeStoredTransformState(target.element, state);
+        applyStoredTransformState(target.element, state);
+        const memberCenter = rotatePointAroundCenter({
+          x: target.startRect.x + target.startRect.width / 2,
+          y: target.startRect.y + target.startRect.height / 2,
+        }, center, degrees);
+        const rotated = target.element.getBoundingClientRect();
+        applyStoredTransformStateToRect(target.element, state, {
+          x: memberCenter.x - rotated.width / 2,
+          y: memberCenter.y - rotated.height / 2,
+          width: target.localSize.width,
+          height: target.localSize.height,
+        });
+      }
+    } else {
+      const targetUnion = resizeRectFromCorner(
+        active.startUnion,
+        active.kind.slice(-2) as ResizeCorner,
+        pointer.x - active.startPointer.x,
+        pointer.y - active.startPointer.y,
+      );
+      const memberRects = scaleRects(active.startUnion, targetUnion, active.targets.map((target) => target.startRect));
+      active.targets.forEach((target, index) => {
+        const desired = memberRects[index];
+        if (!desired) return;
+        const local = localSizeForRotatedBounds(desired.width, desired.height, target.startState.rotate, target.localSize);
+        const state = { ...target.startState };
+        applyStoredTransformStateToRect(target.element, state, { ...desired, ...local });
+      });
+    }
+    overlays.refreshFromLiveGeometry();
+  };
+
+  const scheduleTransformPreview = (pointer: { x: number; y: number }): void => {
+    const active = transformGesture;
+    const view = root.defaultView;
+    if (!active || !view) return;
+    active.lastPointer = pointer;
+    if (active.rafId !== 0) return;
+    active.rafId = view.requestAnimationFrame(() => {
+      active.rafId = 0;
+      if (transformGesture === active) previewTransformAt(active, active.lastPointer);
+    });
+  };
+
+  const finishTransformGesture = (commit: boolean): void => {
+    const active = transformGesture;
+    if (!active) return;
+    const pointer = active.lastPointer;
+    const exactBindings = active.targets.every((target) => target.element.isConnected && visualModel.bind(target.nodeId) === target.element);
+    restoreTransformPreview(active);
+    transformGesture = null;
+    if (!commit || !exactBindings) {
+      overlays.refreshFromLiveGeometry();
+      return;
+    }
+    if (active.kind === "rotate") {
+      const center = { x: active.startUnion.x + active.startUnion.width / 2, y: active.startUnion.y + active.startUnion.height / 2 };
+      const initial = Math.atan2(active.startPointer.y - center.y, active.startPointer.x - center.x);
+      const current = Math.atan2(pointer.y - center.y, pointer.x - center.x);
+      runtime.rotateSelection((current - initial) * 180 / Math.PI);
+    } else {
+      runtime.resizeSelection(resizeRectFromCorner(
+        active.startUnion,
+        active.kind.slice(-2) as ResizeCorner,
+        pointer.x - active.startPointer.x,
+        pointer.y - active.startPointer.y,
+      ));
+    }
+  };
+
+  const beginTransformGesture = (
+    kind: TransformGesture["kind"],
+    event: PointerEvent,
+  ): void => {
+    if (transformGesture) finishTransformGesture(false);
+    const roots = effectRoots(selectedIds());
+    const measured = visualModel.measure(roots);
+    const targets: TransformPreviewTarget[] = [];
+    for (const nodeId of roots) {
+      const element = visualModel.bind(nodeId);
+      const startRect = measured.get(nodeId);
+      if (!element || !startRect) return;
+      const state = initialTransformState(element);
+      targets.push({
+        nodeId,
+        element,
+        snapshot: captureElementDomSnapshot(element, root),
+        startRect,
+        startState: state,
+        localSize: {
+          width: state.width ?? element.offsetWidth,
+          height: state.height ?? element.offsetHeight,
+        },
+      });
+    }
+    const startUnion = unionRects(targets.map((target) => target.startRect));
+    const view = root.defaultView;
+    if (!startUnion || targets.length === 0 || !view) return;
+    const active: TransformGesture = {
+      id: nextOperationId("gesture"),
+      kind,
+      startPointer: { x: event.clientX, y: event.clientY },
+      startUnion,
+      targets,
+      lastPointer: { x: event.clientX, y: event.clientY },
+      rafId: 0,
+    };
+    transformGesture = active;
+    const onMove = (move: PointerEvent): void => {
+      if (transformGesture === active) scheduleTransformPreview({ x: move.clientX, y: move.clientY });
+    };
+    const cleanup = (): void => {
+      view.removeEventListener("pointermove", onMove, true);
+      view.removeEventListener("pointerup", onUp, true);
+      view.removeEventListener("pointercancel", onCancel, true);
+    };
+    const onUp = (up: PointerEvent): void => {
+      active.lastPointer = { x: up.clientX, y: up.clientY };
+      cleanup();
+      finishTransformGesture(true);
+    };
+    const onCancel = (): void => {
+      cleanup();
+      finishTransformGesture(false);
+    };
+    view.addEventListener("pointermove", onMove, true);
+    view.addEventListener("pointerup", onUp, true);
+    view.addEventListener("pointercancel", onCancel, true);
+  };
+
+  const beginMoveGesture = (event: NormalizedPointer, clickPick: VisualNodeId | null = null): boolean => {
     const roots = effectRoots(selectedIds());
     const targets: PreviewTarget[] = [];
     const elements = new Set<HTMLElement>();
@@ -364,6 +547,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       kind: "move",
       startPointer: { x: event.clientX, y: event.clientY },
       targets,
+      clickPick,
     };
     return targets.length > 0;
   };
@@ -384,12 +568,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return;
     }
 
-    const measured = visualModel.measure(selectedIds());
-    const hitSelected = selectedIds().some((nodeId) => {
-      const rect = measured.get(nodeId);
-      return rect ? pointInRect(event.clientX, event.clientY, rect) : false;
-    });
-    if (hitSelected && beginMoveGesture(event)) return;
+    const selectedRect = unionRects(visualModel.measure(selectedIds()).values());
+    const hitSelected = Boolean(selectedRect && event.clientX >= selectedRect.x && event.clientX <= selectedRect.x + selectedRect.width && event.clientY >= selectedRect.y && event.clientY <= selectedRect.y + selectedRect.height);
+    if (hitSelected && beginMoveGesture(event, picked)) return;
 
     if (picked) {
       const element = visualModel.bind(picked);
@@ -458,6 +639,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     gesture = null;
 
     if (active.targets.some((target) => !target.element.isConnected) || Math.hypot(dx, dy) < MOVE_THRESHOLD_PX) {
+      if (active.clickPick && !active.targets.some((target) => target.nodeId === active.clickPick)) {
+        setSelection(selectionFromAtoms([atomForNode(active.clickPick)], "click"));
+      }
       overlays.refreshFromLiveGeometry();
       refreshSave();
       return;
@@ -494,7 +678,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     );
     if (textEntry) return;
     if (event.key === "Escape") {
-      if (gesture) {
+      if (transformGesture) {
+        finishTransformGesture(false);
+      } else if (gesture) {
         cancelGesture();
       } else {
         runtime.clearSelection();
@@ -578,7 +764,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       overlays.refreshFromLiveGeometry();
     });
     const observer = new MutationObserver((records) => {
-      if (ignoreMutations || gesture) {
+      if (ignoreMutations || gesture || transformGesture) {
         return;
       }
       const relevant = records.some((record) => {
@@ -644,24 +830,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         ownerHolder.current = new DisposableOwner();
       }
       overlays.mount();
-      overlays.setHandlePointerDown((kind, startEvent) => {
-        const startRect = runtime.measureSelection();
-        const view = root.defaultView;
-        if (!startRect || !view) return;
-        const start = { x: startEvent.clientX, y: startEvent.clientY };
-        const center = { x: startRect.x + startRect.width / 2, y: startRect.y + startRect.height / 2 };
-        const onUp = (event: PointerEvent): void => {
-          view.removeEventListener("pointerup", onUp, true);
-          if (kind === "rotate") {
-            const initial = Math.atan2(start.y - center.y, start.x - center.x);
-            const final = Math.atan2(event.clientY - center.y, event.clientX - center.x);
-            runtime.rotateSelection((final - initial) * 180 / Math.PI);
-          } else {
-            runtime.resizeSelection(resizeRectFromCorner(startRect, kind.slice(-2) as ResizeCorner, event.clientX - start.x, event.clientY - start.y));
-          }
-        };
-        view.addEventListener("pointerup", onUp, true);
-      });
+      overlays.setHandlePointerDown(beginTransformGesture);
       refreshSave();
       applyUserSelect(true);
       owner().add(() => {
@@ -691,6 +860,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       renderSelection();
     },
     stop() {
+      finishTransformGesture(false);
       cancelGesture();
       resizeObserver?.disconnect();
       resizeObserver = null;
@@ -889,8 +1059,14 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         const identity = visualModel.durableIdentityOf(nodeId);
         const current = rects[index];
         const target = targets[index];
-        if (!identity || !current || !target) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
-        const drafted = buildResizeOperation({ nodeId, signature: identity.signature, rect: current }, { width: target.width, height: target.height, mode: "box" }, { pageKey: pageKey(), sourceCommand: "resize" });
+        const element = visualModel.bind(nodeId);
+        if (!identity || !current || !target || !element) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
+        const state = initialTransformState(element);
+        const local = localSizeForRotatedBounds(target.width, target.height, state.rotate, {
+          width: state.width ?? element.offsetWidth,
+          height: state.height ?? element.offsetHeight,
+        });
+        const drafted = buildResizeOperation({ nodeId, signature: identity.signature, rect: current }, { width: local.width, height: local.height, mode: "box" }, { pageKey: pageKey(), sourceCommand: "resize" });
         operations.push({ ...drafted, id: nextOperationId("resize"), status: "approved", target: { nodeId, signature: identity.signature }, metadata: { ...drafted.metadata, originalRect: current, finalRect: target, affectedRect: target } });
       }
       const expected = new Map(operations.map((operation) => [operation.id, operation.metadata?.finalRect ?? targetRect]));

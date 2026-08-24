@@ -2,6 +2,7 @@ import type { MoveOperation, ResizeOperation, RotateOperation } from "../../oper
 import { extractBoundingBox } from "../../measurement/bounding-box.js";
 import {
   applyStoredTransformState,
+  applyStoredTransformStateToRect,
   readStoredTransformState,
   type ElementSnapshotStore,
   writeStoredTransformState,
@@ -129,11 +130,13 @@ function applyMoveToFinalRect(
     // Carry the saved size in the transform state so `commitTransformState`
     // applies it. Setting width/height directly would be wiped by the trailing
     // `applyStoredTransformState`, which removes them when state.width is null.
-    if (finalRect.width > 0) {
-      state.width = finalRect.width;
+    const localWidth = operation.payload.detachedWidth ?? finalRect.width;
+    const localHeight = operation.payload.detachedHeight ?? finalRect.height;
+    if (localWidth > 0) {
+      state.width = localWidth;
     }
-    if (finalRect.height > 0) {
-      state.height = finalRect.height;
+    if (localHeight > 0) {
+      state.height = localHeight;
     }
     return commitTransformState(element, state, previousSerialized);
   }
@@ -171,15 +174,14 @@ export function applyResizeOperation(
     const finalRect = operation.metadata.finalRect;
     element.style.boxSizing = "border-box";
     const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
-    state.width = finalRect.width;
-    state.height = finalRect.height;
-
-    const current = extractBoundingBox(element);
-    state.dx = finalRect.x - current.x;
-    state.dy = finalRect.y - current.y;
+    applyStoredTransformStateToRect(element, state, {
+      ...finalRect,
+      width: operation.payload.width,
+      height: operation.payload.height,
+    });
 
     return [
-      ...commitTransformState(element, state, previousSerialized),
+      { kind: "transform-state" as const, previousState: previousSerialized },
       { kind: "size", previousWidth, previousHeight, previousBoxSizing },
     ];
   }

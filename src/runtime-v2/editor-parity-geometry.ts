@@ -37,3 +37,24 @@ export function rotatedMemberRect(rect: IntendedRect, union: IntendedRect, degre
   const member = rotatePointAroundCenter({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }, center, degrees);
   return { x: member.x - rect.width / 2, y: member.y - rect.height / 2, width: rect.width, height: rect.height };
 }
+
+export function localSizeForRotatedBounds(
+  width: number,
+  height: number,
+  degrees: number,
+  currentLocal: { width: number; height: number },
+): { width: number; height: number } {
+  const radians = degrees * Math.PI / 180;
+  const cos = Math.abs(Math.cos(radians));
+  const sin = Math.abs(Math.sin(radians));
+  const determinant = cos * cos - sin * sin;
+  if (Math.abs(determinant) > 0.08) {
+    const localWidth = (width * cos - height * sin) / determinant;
+    const localHeight = (height * cos - width * sin) / determinant;
+    if (localWidth > 1 && localHeight > 1) return { width: localWidth, height: localHeight };
+  }
+  const currentBoundsWidth = cos * currentLocal.width + sin * currentLocal.height;
+  const currentBoundsHeight = sin * currentLocal.width + cos * currentLocal.height;
+  const scale = Math.min(width / Math.max(1, currentBoundsWidth), height / Math.max(1, currentBoundsHeight));
+  return { width: Math.max(8, currentLocal.width * scale), height: Math.max(8, currentLocal.height * scale) };
+}

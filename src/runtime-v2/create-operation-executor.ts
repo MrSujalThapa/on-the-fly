@@ -131,6 +131,7 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
   const effects = new Map<string, CapturedEffect>();
   const genericEffects = new Map<string, GenericEffect>();
   const layerEffects = new Map<string, { element: HTMLElement; snapshot: ElementDomSnapshot }>();
+  const replayBindings = new Map<VisualNodeId, { nodeId: VisualNodeId | null; element: HTMLElement }>();
 
   const resolveOrFail = (
     nodeId: VisualNodeId | null,
@@ -229,6 +230,7 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     source: EditorOperation,
     expected: IntendedRect | undefined,
     captureEffect: boolean,
+    useSessionNodeId = true,
   ): ExecutionResult => {
     if (source.type === "move") return applyAndVerifyOperation(source, expected, captureEffect);
     if (source.type === "zIndex") return failure("layer_requires_command", false);
@@ -255,9 +257,11 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         return failure("duplicate_identity_failed", true);
       }
       operation = freezeCommittedOperation({ ...operation, target: { nodeId: adopted, signature: identity.signature }, status: "approved" });
+      if (!useSessionNodeId && source.target.nodeId) replayBindings.set(source.target.nodeId, { nodeId: adopted, element });
     } else {
       if (!signature) return failure("missing_signature", false);
-      const resolved = resolveOrFail(nodeId, { signature });
+      const rebound = !useSessionNodeId && source.target.nodeId ? replayBindings.get(source.target.nodeId) : null;
+      const resolved = rebound?.element.isConnected ? rebound : resolveOrFail(useSessionNodeId ? nodeId : null, { signature });
       if ("error" in resolved) return resolved;
       element = resolved.element;
       nodeId = resolved.nodeId;
@@ -277,7 +281,12 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     const hiddenOk = operation.type !== "hide" || (operation.payload.hidden ? element.style.display === "none" : element.style.display !== "none");
     const rotateOk = operation.type !== "rotate" || readStoredTransformState(element)?.rotate === operation.payload.degrees;
     const geometryOk = operation.type === "resize" || operation.type === "duplicate" ? rectsNear(actual, expectedRect) : true;
-    if (!element.isConnected || !hiddenOk || !rotateOk || !geometryOk) {
+    const identityOk = operation.type === "duplicate"
+      ? Array.from(deps.document.querySelectorAll("[data-otf-clone-id]")).filter(
+        (candidate) => candidate.getAttribute("data-otf-clone-id") === operation.payload.cloneId,
+      ).length === 1
+      : Boolean(signature && verifyIdentity(nodeId, { signature }, element));
+    if (!element.isConnected || !identityOk || !hiddenOk || !rotateOk || !geometryOk) {
       if (snapshot) rollback(element, snapshot); else element.remove();
       return failure("operation_verification_failed", true, { ok: false, expected: expectedRect, actual });
     }
@@ -534,7 +543,7 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
               },
             };
 
-      return applyAndVerify({
+      const result = applyAndVerify({
         nodeId: resolved.nodeId,
         identity,
         element: resolved.element,
@@ -543,6 +552,8 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         commit: false,
         captureEffect: true,
       });
+      if (result.ok && operation.target.nodeId) replayBindings.set(operation.target.nodeId, { nodeId: resolved.nodeId, element: resolved.element });
+      return result;
     },
 
     replayLayer(operation) {
@@ -559,10 +570,14 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         return failure("missing_signature", false);
       }
       const identity = { signature };
-      const resolved = resolveOrFail(null, identity);
+      const rebound = operation.target.nodeId ? replayBindings.get(operation.target.nodeId) : null;
+      const resolved = rebound?.element.isConnected
+        ? { nodeId: rebound.nodeId, element: rebound.element }
+        : resolveOrFail(null, identity);
       if ("error" in resolved) {
         return resolved;
       }
+      if (rebound && resolved.element !== rebound.element) return failure("identity_mismatch", false);
       const command = inferLayerCommandFromOperation(
         operation.metadata?.sourceCommand,
         operation.payload.layer,
@@ -675,7 +690,7 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     replayOperation(operation) {
       if (operation.type === "move") return this.replayMove(operation);
       if (operation.type === "zIndex") return this.replayLayer(operation);
-      return applyGeneric(operation, operation.metadata?.finalRect ?? operation.metadata?.affectedRect, true);
+      return applyGeneric(operation, operation.metadata?.finalRect ?? operation.metadata?.affectedRect, true, false);
     },
 
     revertCommittedBatch(operations): BatchExecutionResult {

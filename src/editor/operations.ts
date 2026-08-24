@@ -129,6 +129,9 @@ export type MoveOperation = OperationBase<
     transformOnly?: boolean;
     detachedLeft?: number;
     detachedTop?: number;
+    /** Local border-box size captured before detaching; never a rotated visual AABB. */
+    detachedWidth?: number;
+    detachedHeight?: number;
     detachedZIndex?: string;
   }
 >;
