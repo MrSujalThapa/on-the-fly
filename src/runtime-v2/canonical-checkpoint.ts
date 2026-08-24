@@ -100,6 +100,10 @@ function composeMove(group: MoveOperation[]): MoveOperation {
   }
   const composed: MoveOperation = {
     ...last,
+    // The first operation owns the host-page identity snapshot. Later MOVE
+    // operations may follow an OTF-managed reparent/detach and must not replace
+    // that identity with a locator derived from OTF-mutated DOM.
+    target: first.target,
     type: "move",
     payload: {
       ...last.payload,
@@ -120,13 +124,24 @@ function composeMove(group: MoveOperation[]): MoveOperation {
 export function projectCanonicalCheckpoint(
   operations: readonly EditorOperation[],
 ): CanonicalCheckpoint {
+  const sessionKeys = new Map<string, string>();
+  const checkpointKey = (operation: MoveOperation | ZIndexOperation): string | null => {
+    const durable = durableMoveKey(operation);
+    if (!durable) return null;
+    const nodeId = operation.target.nodeId;
+    if (!nodeId) return durable;
+    const adopted = sessionKeys.get(nodeId);
+    if (adopted) return adopted;
+    sessionKeys.set(nodeId, durable);
+    return durable;
+  };
   const moves = new Map<string, { continuity: string; operations: MoveOperation[] }>();
   const layers = new Map<string, ZIndexOperation>();
   const rest: EditorOperation[] = [];
 
   for (const operation of operations) {
     if (isLayerOperation(operation)) {
-      const key = durableMoveKey(operation);
+      const key = checkpointKey(operation);
       if (!key) {
         return { ok: false, error: "layer_missing_durable_identity" };
       }
@@ -137,13 +152,18 @@ export function projectCanonicalCheckpoint(
       rest.push(operation);
       continue;
     }
-    const key = durableMoveKey(operation);
+    const key = checkpointKey(operation);
     if (!key) {
       return { ok: false, error: "move_missing_durable_identity" };
     }
     const continuity = continuityKey(operation);
     const group = moves.get(key);
-    if (group && group.continuity !== continuity) {
+    const sameAdoptedNode = Boolean(
+      group && operation.target.nodeId && group.operations.some(
+        (candidate) => candidate.target.nodeId === operation.target.nodeId,
+      ),
+    );
+    if (group && group.continuity !== continuity && !sameAdoptedNode) {
       return { ok: false, error: "move_durable_identity_collision" };
     }
     if (group) {

@@ -134,6 +134,8 @@ describe("canonical MOVE checkpoint", () => {
   it("fails closed when distinct targets produce the same durable key", () => {
     const first = move("1", "Duplicate", 20, 0, 20);
     const second = move("2", "Duplicate", 30, 0, 30);
+    first.target.nodeId = "otf-vn-first";
+    second.target.nodeId = "otf-vn-second";
     if (first.target.signature && second.target.signature) {
       first.target.signature.role = "radio";
       first.target.signature.parentFingerprint = "div.filters";
@@ -148,6 +150,29 @@ describe("canonical MOVE checkpoint", () => {
       ok: false,
       error: "move_durable_identity_collision",
     });
+  });
+
+  it("keeps one adopted VisualNode continuous when OTF changes its DOM structure", () => {
+    const attached = move("1", "My posts", 120, 0, 120);
+    const detached = move("2", "My posts", 40, 120, 160);
+    attached.target.nodeId = "otf-vn-posts";
+    detached.target.nodeId = "otf-vn-posts";
+    if (attached.target.signature && detached.target.signature) {
+      attached.target.signature.parentFingerprint = "div.filters";
+      attached.target.signature.siblingOrdinal = 3;
+      attached.target.signature.siblingCount = 4;
+      detached.target.signature.cssPath = "body > button[data-otf-detached]";
+      detached.target.signature.parentFingerprint = "body";
+      detached.target.signature.siblingOrdinal = 8;
+      detached.target.signature.siblingCount = 12;
+    }
+
+    const checkpoint = projectCanonicalCheckpoint([attached, detached]);
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) return;
+    expect(checkpoint.operations).toHaveLength(1);
+    expect(checkpoint.operations[0]?.type === "move" && checkpoint.operations[0].payload.dx).toBe(160);
+    expect(checkpoint.operations[0]?.target.signature?.parentFingerprint).toBe("div.filters");
   });
 
   it("persists only the final layer state per durable target", () => {
