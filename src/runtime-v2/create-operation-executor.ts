@@ -4,6 +4,7 @@ import { validateOperation } from "../editor/validation/validate-operation.js";
 import { applyMoveOperation, applyResizeOperation, applyRotateOperation } from "../editor/dom/handlers/transform-handler.js";
 import { applyHideOperation } from "../editor/dom/handlers/hide-handler.js";
 import { applyDuplicateOperation } from "../editor/dom/handlers/duplicate-handler.js";
+import { applyCreateElementOperation } from "../editor/dom/handlers/create-element-handler.js";
 import { applyCropOperation } from "../editor/dom/handlers/crop-handler.js";
 import { applyStyleOperation, styleRealizationTargets } from "../editor/dom/handlers/style-handler.js";
 import { applyTextOperation, renderedVisibleText } from "../editor/dom/handlers/text-handler.js";
@@ -237,7 +238,6 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     useSessionNodeId = true,
   ): ExecutionResult => {
     if (source.type === "move") return applyAndVerifyOperation(source, expected, captureEffect);
-    if (source.type === "zIndex") return failure("layer_requires_command", false);
     let operation = source;
     let element: HTMLElement;
     let nodeId: VisualNodeId | null = operation.target.nodeId ?? null;
@@ -263,6 +263,33 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       }
       operation = freezeCommittedOperation({ ...operation, target: { nodeId: adopted, signature: identity.signature }, status: "approved" });
       if (!useSessionNodeId && source.target.nodeId) replayBindings.set(source.target.nodeId, { nodeId: adopted, element });
+    } else if (source.type === "createElement") {
+      operation = source;
+      const existing = Array.from(deps.document.querySelectorAll("[data-otf-element-id]:not([data-otf-preview])")).filter(
+        (candidate) => candidate.getAttribute("data-otf-element-id") === source.payload.elementId,
+      );
+      if (existing.length > 1) return failure("created_identity_collision", false);
+      try {
+        element = applyCreateElementOperation(deps.document, source, snapshotStore).element;
+      } catch (error) {
+        return failure(error instanceof Error ? error.message : "create_apply_failed", false);
+      }
+      const existingNode = deps.visualModel.get(source.payload.elementId);
+      const adopted = existingNode
+        ? (deps.visualModel.cache(source.payload.elementId, element), source.payload.elementId)
+        : deps.visualModel.adopt(element);
+      if (!adopted) {
+        element.remove();
+        return failure("create_adoption_failed", true);
+      }
+      nodeId = adopted;
+      const identity = deps.visualModel.durableIdentityOf(adopted);
+      if (!identity || adopted !== source.payload.elementId) {
+        element.remove();
+        return failure("create_identity_failed", true);
+      }
+      operation = freezeCommittedOperation({ ...source, target: { nodeId: adopted, signature: identity.signature }, status: "approved" });
+      if (!useSessionNodeId && source.target.nodeId) replayBindings.set(source.target.nodeId, { nodeId: adopted, element });
     } else {
       if (!signature) return failure("missing_signature", false);
       const rebound = !useSessionNodeId && source.target.nodeId ? replayBindings.get(source.target.nodeId) : null;
@@ -284,6 +311,7 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         else if (operation.type === "crop") applyCropOperation(element, operation, snapshotStore);
         else if (operation.type === "style") applyStyleOperation(element, operation, snapshotStore);
         else if (operation.type === "text") applyTextOperation(element, operation, snapshotStore);
+        else if (operation.type === "zIndex") applyLayerToHost(element, operation.payload.layer, snapshotStore);
         else return failure("unsupported_transaction_operation", false);
       } catch (error) {
         rollback(element, snapshot);
@@ -309,15 +337,30 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     })();
     const textOk = operation.type !== "text" || renderedVisibleText(element) === operation.payload.value.replace(/[\t\n\f\r ]+/g, " ").trim();
     const cropOk = operation.type !== "crop" || element.getAttribute("data-otf-crop") === JSON.stringify(operation.payload);
-    const geometryOk = operation.type === "resize" || operation.type === "duplicate" ? rectsNear(actual, expectedRect) : true;
+    const geometryOk = operation.type === "resize" || operation.type === "duplicate" || operation.type === "createElement"
+      ? rectsNear(actual, expected ?? (operation.type === "createElement" ? operation.payload.rect : expectedRect))
+      : true;
+    const identitySignature = operation.target.signature ?? signature;
     const identityOk = operation.type === "duplicate"
       ? Array.from(deps.document.querySelectorAll("[data-otf-clone-id]")).filter(
         (candidate) => candidate.getAttribute("data-otf-clone-id") === operation.payload.cloneId,
       ).length === 1
-      : Boolean(signature && verifyIdentity(nodeId, { signature }, element));
+      : operation.type === "createElement"
+        ? Array.from(deps.document.querySelectorAll("[data-otf-element-id]:not([data-otf-preview])")).filter(
+          (candidate) => candidate.getAttribute("data-otf-element-id") === operation.payload.elementId,
+        ).length === 1
+      : Boolean(identitySignature && verifyIdentity(nodeId, { signature: identitySignature }, element));
     if (!element.isConnected || !identityOk || !hiddenOk || !rotateOk || !styleOk || !textOk || !cropOk || !geometryOk) {
       if (snapshot) rollback(element, snapshot); else element.remove();
-      return failure("operation_verification_failed", true, { ok: false, expected: expectedRect, actual });
+      const reason = !element.isConnected ? "disconnected"
+        : !identityOk ? "identity"
+        : !geometryOk ? "geometry"
+        : !styleOk ? "style"
+        : !textOk ? "text"
+        : !rotateOk ? "rotate"
+        : !cropOk ? "crop"
+        : "hidden";
+      return failure(`operation_verification_failed:${reason}`, true, { ok: false, expected: expectedRect, actual });
     }
     if (captureEffect && nodeId) genericEffects.set(operation.id, {
       nodeId,
@@ -635,8 +678,9 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       if (operation.type !== "move" && operation.type !== "zIndex") {
         const effect = genericEffects.get(operation.id);
         if (!effect) return failure("missing_operation_effect", false);
-        if (operation.type === "duplicate") {
+        if (operation.type === "duplicate" || operation.type === "createElement") {
           effect.element.remove();
+          deps.visualModel.invalidate(effect.nodeId);
           const box = operation.metadata?.affectedRect ?? { x: 0, y: 0, width: 0, height: 0 };
           return { ok: true, operation, verification: { ok: true, expected: box, actual: box } };
         }
@@ -649,8 +693,8 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         return { ok: true, operation, verification: { ok: true, expected: box, actual: box } };
       }
       if (operation.type === "zIndex") {
-        const effect = layerEffects.get(operation.id);
-        if (!effect) {
+        const effect = layerEffects.get(operation.id) ?? genericEffects.get(operation.id);
+        if (!effect?.snapshot) {
           return failure("missing_layer_effect", false);
         }
         const restored = rollback(effect.element, effect.snapshot);
@@ -722,7 +766,7 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
 
     reapplyCommitted(operation) {
       if (operation.type === "move") return this.replayMove(operation);
-      if (operation.type === "zIndex") return this.replayLayer(operation);
+      if (operation.type === "zIndex" && !genericEffects.has(operation.id)) return this.replayLayer(operation);
       return applyGeneric(operation, operation.metadata?.finalRect ?? operation.metadata?.affectedRect, true);
     },
 

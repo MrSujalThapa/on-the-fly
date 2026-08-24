@@ -86,6 +86,10 @@ export function operationTargetKey(operation: EditorOperation): string | null {
     return `clone:${operation.payload.cloneId}`;
   }
 
+  if (operation.type === "createElement") {
+    return `created:${operation.payload.elementId}`;
+  }
+
   const signature = operation.target.signature;
   const helperId = extractHelperIdFromSignature(signature);
   if (helperId) {

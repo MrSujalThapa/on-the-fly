@@ -1,4 +1,5 @@
 import { isLocalAgentAvailable } from "../shared/build-flags.js";
+import { pageKeyFromUrl } from "../content/page-identity.js";
 import {
   type EditModeStatus,
   OTF_MESSAGE,
@@ -105,22 +106,9 @@ function renderUi(): void {
   toggleButton.className = "primary is-enable";
 }
 
-function derivePageKeyFromUrl(url: string | undefined): string | null {
-  if (!url) {
-    return null;
-  }
-
-  try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return null;
-  }
-}
-
 async function loadPageOperationCount(): Promise<number | null> {
   const tab = await getActiveTab();
-  const pageKey = derivePageKeyFromUrl(tab?.url);
+  const pageKey = pageKeyFromUrl(tab?.url ?? "");
   if (!pageKey) {
     return null;
   }

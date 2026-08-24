@@ -22,6 +22,10 @@ export function isExtensionRoot(element: Element): boolean {
     return true;
   }
 
+  if (element.closest("[data-otf-preview]") !== null) {
+    return true;
+  }
+
   return element.closest(`#${OTF_ROOT_HOST_ID}`) !== null;
 }
 

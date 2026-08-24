@@ -1,7 +1,13 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, type BrowserContext } from "@playwright/test";
 import { DIST_DIR, REAL_PROFILE_DIR, VIEWPORT } from "./constants.js";
+
+function clearUnpackedExtensionRuntimeCache(profileDir: string): void {
+  for (const relative of ["Default/Service Worker", "Default/Extension Scripts", "Default/Extension State"]) {
+    rmSync(join(profileDir, relative), { recursive: true, force: true });
+  }
+}
 
 export function assertRuntimeV2Dist(): string {
   const manifestPath = join(DIST_DIR, "manifest.json");
@@ -31,6 +37,7 @@ export async function launchRealSiteContext(options?: {
   headless?: boolean;
 }): Promise<BrowserContext> {
   const distDir = assertRuntimeV2Dist();
+  clearUnpackedExtensionRuntimeCache(REAL_PROFILE_DIR);
   const headless = options?.headless === true;
   const args = [...extensionLaunchArgs(distDir)];
   if (headless) {

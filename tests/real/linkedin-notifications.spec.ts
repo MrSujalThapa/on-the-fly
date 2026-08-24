@@ -628,7 +628,7 @@ test.describe("LinkedIn notifications RL1–RL4", () => {
       });
       db.close();
       return new TextEncoder().encode(JSON.stringify(rows)).byteLength;
-    }, await page.evaluate(() => `${location.origin}${location.pathname}`));
+    }, await page.evaluate(() => `${location.origin}${location.pathname.replace(/\/+$/u, "") || "/"}`));
     console.log(`[RL14] checkpointBytes=${String(checkpointBytes)}`);
   });
 

@@ -120,7 +120,7 @@ export async function loadPersistedOperations(
   page: Page,
 ): Promise<Array<Record<string, unknown>>> {
   const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
-  const pageKey = await page.evaluate(() => `${location.origin}${location.pathname}`);
+  const pageKey = await page.evaluate(() => `${location.origin}${location.pathname.replace(/\/+$/u, "") || "/"}`);
   return worker.evaluate(async (key) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open("on_the_fly_v1");

@@ -77,6 +77,11 @@ describe("page identity", () => {
     vi.restoreAllMocks();
   });
 
+  it("treats a trailing slash as the same page key", () => {
+    const document = createDocumentAt("https://example.com/notifications/", "<main></main>");
+    expect(computeDocumentPageKey(document)).toBe("https://example.com/notifications");
+  });
+
   it("notifies on pushState, replaceState, and popstate pathname changes", () => {
     const document = createDocumentAt("https://example.com/page-a", "<main></main>");
     const identity = createPageIdentity(document);

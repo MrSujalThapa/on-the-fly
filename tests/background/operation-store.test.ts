@@ -108,13 +108,40 @@ describe("OperationStore", () => {
     expect(await store.loadOperations(PAGE_KEY)).toEqual([]);
   });
 
-  it("still persists approved operations through the save path", async () => {
+  it("replaces and reloads createElement operations", async () => {
     const store = createStore();
-    const saved = await store.saveOperations(PAGE_KEY, [moveOp("approved", 1, 1)]);
-
-    expect(saved.saved).toBe(1);
-    expect(saved.skipped).toBe(0);
-    expect((await store.loadOperations(PAGE_KEY)).map((op) => op.id)).toEqual(["approved"]);
+    const operation = {
+      id: "create-1",
+      type: "createElement" as const,
+      pageKey: PAGE_KEY,
+      target: {
+        nodeId: "el-1",
+        signature: {
+          cssPath: '[data-otf-element-id="el-1"]',
+          tagName: "button",
+          classList: [],
+          datasetFingerprint: "otfElementId=el-1",
+          boundingBoxHint: createEmptyBoundingBoxHint(),
+          identityVersion: 2,
+        },
+      },
+      payload: {
+        elementId: "el-1",
+        kind: "button" as const,
+        rect: { x: 8, y: 8, width: 120, height: 40 },
+        content: { text: "Button" },
+        appearance: { fill: "#ffffff" },
+      },
+      createdAt: 1,
+      source: "manual" as const,
+      status: "approved" as const,
+    };
+    await store.replacePageOperations(PAGE_KEY, [operation]);
+    const loaded = await store.loadOperations(PAGE_KEY);
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]?.type).toBe("createElement");
+    if (loaded[0]?.type !== "createElement") return;
+    expect(loaded[0].payload.elementId).toBe("el-1");
   });
 
   it("rejects an invalid replacement without changing the acknowledged checkpoint", async () => {

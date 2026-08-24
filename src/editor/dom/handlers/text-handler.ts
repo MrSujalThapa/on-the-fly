@@ -1,6 +1,8 @@
 import type { TextOperation } from "../../operations.js";
 import type { ElementSnapshotStore } from "../element-snapshot.js";
 import type { AppliedDomEffect } from "../types.js";
+import { applyCreatedPrimaryText, createdPrimaryText } from "../../create/render-created-element.js";
+import { OTF_ELEMENT_ID_ATTR } from "../../create/created-element.js";
 
 function collectTextNodes(element: HTMLElement): Text[] {
   const walker = element.ownerDocument.createTreeWalker(element, NodeFilter.SHOW_TEXT);
@@ -17,6 +19,9 @@ function isVisibleTextNode(node: Text): boolean {
 }
 
 export function renderedVisibleText(element: HTMLElement): string {
+  const created = createdPrimaryText(element);
+  if (created !== null) return created;
+  if (element instanceof HTMLInputElement) return element.placeholder.trim();
   let value = "";
   for (const node of collectTextNodes(element)) {
     if (isVisibleTextNode(node)) value += node.data;
@@ -30,6 +35,12 @@ export function applyTextOperation(
   snapshotStore: ElementSnapshotStore,
 ): AppliedDomEffect["changes"] {
   snapshotStore.captureIfNeeded(element);
+  if (element.hasAttribute(OTF_ELEMENT_ID_ATTR)) {
+    const previousValue = createdPrimaryText(element) ?? "";
+    if (applyCreatedPrimaryText(element, operation.payload.value)) {
+      return [{ kind: "text", previousValue }];
+    }
+  }
   const previousValue = element.textContent;
   const nodes = collectTextNodes(element);
   const previousTextNodes = nodes.map((node) => node.data);
@@ -49,6 +60,9 @@ export function revertTextChange(
   element: HTMLElement,
   change: Extract<AppliedDomEffect["changes"][number], { kind: "text" }>,
 ): void {
+  if (element.hasAttribute(OTF_ELEMENT_ID_ATTR) && applyCreatedPrimaryText(element, change.previousValue)) {
+    return;
+  }
   if (!change.previousTextNodes) {
     element.textContent = change.previousValue;
     return;

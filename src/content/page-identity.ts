@@ -17,15 +17,29 @@ interface HistoryPatch {
 const historyPatches = new WeakMap<object, HistoryPatch>();
 
 /**
- * Page identity is origin + pathname. Query and hash are ignored so existing
- * saved keys stay compatible with static multi-page sites.
+ * Page identity is origin + pathname. Query, hash, and trailing slashes are
+ * ignored so saved keys stay compatible with static multi-page sites and
+ * hosts that toggle a final slash on reload.
  */
 export function computeDocumentPageKey(root: Document): PageKey {
   const location = root.defaultView?.location;
   if (location) {
-    return `${location.origin}${location.pathname}`;
+    return `${location.origin}${normalizePathname(location.pathname)}`;
   }
   return "otf://unknown";
+}
+
+export function pageKeyFromUrl(url: string): PageKey | null {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${normalizePathname(parsed.pathname)}`;
+  } catch {
+    return null;
+  }
+}
+
+function normalizePathname(pathname: string): string {
+  return pathname.replace(/\/+$/u, "") || "/";
 }
 
 export function createPageIdentity(root: Document): PageIdentity {

@@ -501,6 +501,27 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     isLassoChooserOpen() {
       return toolbar?.isLassoChooserOpen() ?? false;
     },
+    toggleMoreMenu() {
+      toolbar?.toggleMoreMenu();
+    },
+    closeMoreMenu() {
+      return toolbar?.closeMoreMenu() ?? false;
+    },
+    setMoreWrapEnabled(enabled) {
+      toolbar?.setMoreWrapEnabled(enabled);
+    },
+    openComponentPalette(options) {
+      toolbar?.openComponentPalette(options);
+    },
+    closeComponentPalette() {
+      return toolbar?.closeComponentPalette() ?? false;
+    },
+    isComponentPaletteOpen() {
+      return toolbar?.isComponentPaletteOpen() ?? false;
+    },
+    setPaletteSampling(sampling) {
+      toolbar?.setPaletteSampling(sampling);
+    },
     setLassoDiagnostics(stats) {
       if (!host) return;
       if (stats) host.setAttribute("data-otf-freeform-stats", JSON.stringify(stats));

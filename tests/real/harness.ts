@@ -249,7 +249,7 @@ export async function loadSanitizedOperations(
   page: Page,
 ): Promise<Array<Record<string, unknown>>> {
   const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
-  const pageKey = await page.evaluate(() => `${location.origin}${location.pathname}`);
+  const pageKey = await page.evaluate(() => `${location.origin}${location.pathname.replace(/\/+$/u, "") || "/"}`);
   const rows = await worker.evaluate(async (key) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open("on_the_fly_v1");
@@ -283,7 +283,7 @@ export async function loadSanitizedOperations(
 
 export async function clearPageOperations(context: BrowserContext, page: Page): Promise<void> {
   const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
-  const pageKey = await page.evaluate(() => `${location.origin}${location.pathname}`);
+  const pageKey = await page.evaluate(() => `${location.origin}${location.pathname.replace(/\/+$/u, "") || "/"}`);
   await worker.evaluate(async (key) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open("on_the_fly_v1");

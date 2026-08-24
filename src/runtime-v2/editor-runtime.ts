@@ -10,6 +10,7 @@ import type { VisualModel } from "./visual-model.js";
 import type { IntendedRect } from "./placement-engine.js";
 import type { RuntimeSelection, RuntimeVirtualGroup } from "./runtime-selection.js";
 import type { CropOperation, StyleProperty } from "../editor/operations.js";
+import type { CreatedElementAppearance, CreatedElementContent, CreatedElementKind } from "../editor/create/created-element.js";
 
 export interface PersistResult {
   readonly ok: boolean;
@@ -45,6 +46,16 @@ export interface EditorRuntime {
   selectRect(rect: IntendedRect, mode: "add" | "replace"): RuntimeSelection;
   selectPolygon(points: readonly { x: number; y: number }[], mode: "add" | "replace"): RuntimeSelection;
   armLasso(mode: "rectangle" | "freeform"): void;
+  sampleAppearance(element?: HTMLElement | null): CreatedElementAppearance | null;
+  createElement(input: {
+    kind: CreatedElementKind;
+    rect: IntendedRect;
+    appearance?: CreatedElementAppearance;
+    content?: CreatedElementContent;
+    elementId?: string;
+  }): ExecutionResult;
+  createContainerAroundSelection(): BatchExecutionResult;
+  armCreate(kind: CreatedElementKind, appearance?: CreatedElementAppearance | null): void;
   clearSelection(): void;
   getSelection(): RuntimeSelection;
   selectedNodeIds(): readonly VisualNodeId[];

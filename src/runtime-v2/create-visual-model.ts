@@ -27,7 +27,9 @@ function capabilitiesFor(role: VisualRole): VisualCapabilities {
 }
 
 function cloneEntityRoot(element: HTMLElement): HTMLElement {
-  return element.closest<HTMLElement>("[data-otf-clone-id]") ?? element;
+  return element.closest<HTMLElement>("[data-otf-element-id]")
+    ?? element.closest<HTMLElement>("[data-otf-clone-id]")
+    ?? element;
 }
 
 function withNodeId(result: VisualResolveResult, nodeId: VisualNodeId): VisualResolveResult {
@@ -82,7 +84,7 @@ export function createVisualModel(root: Document): VisualModel {
     }
 
     for (const [nodeId, node] of nodes) {
-      if (nodeId === binding.getAttribute("data-otf-clone-id")) continue;
+      if (nodeId === binding.getAttribute("data-otf-clone-id") || nodeId === binding.getAttribute("data-otf-element-id")) continue;
       const prior = readCache(nodeId);
       if (prior) continue;
       const resolved = resolveDurableIdentity(root, node.durableIdentity);
@@ -92,10 +94,22 @@ export function createVisualModel(root: Document): VisualModel {
       }
     }
 
+    const createdId = binding.getAttribute("data-otf-element-id")?.trim();
     const cloneId = binding.getAttribute("data-otf-clone-id")?.trim();
-    const id = cloneId || nextNodeId();
-    const cloneBinding = cloneId ? readCache(cloneId) : null;
-    if (cloneBinding && cloneBinding !== binding) return null;
+    const id = createdId || cloneId || nextNodeId();
+    const ownedBinding = (createdId ?? cloneId) ? readCache(id) : null;
+    if (
+      ownedBinding &&
+      ownedBinding !== binding &&
+      ownedBinding.isConnected &&
+      ownedBinding.ownerDocument.contains(ownedBinding)
+    ) {
+      return null;
+    }
+    if ((createdId || cloneId) && nodes.has(id)) {
+      writeCache(id, binding);
+      return id;
+    }
     const node: VisualNode = {
       id,
       durableIdentity: buildDurableIdentity(binding, root),
@@ -150,7 +164,15 @@ export function createVisualModel(root: Document): VisualModel {
       if (!element.isConnected || isExtensionRoot(element)) {
         return null;
       }
-      return materialize(discoverFromElement(cloneEntityRoot(element)));
+      const binding = cloneEntityRoot(element);
+      const discovered = discoverFromElement(binding);
+      if (discovered) {
+        return materialize(discovered);
+      }
+      if (binding.getAttribute("data-otf-element-id") || binding.getAttribute("data-otf-clone-id")) {
+        return upsertNode(binding, "unit", null);
+      }
+      return null;
     },
     get(id) {
       return nodes.get(id) ?? null;

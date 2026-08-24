@@ -148,6 +148,7 @@ function parseDatasetFingerprint(value: string | undefined): Array<[string, stri
 }
 
 export function buildDurableIdentity(element: HTMLElement, root: ParentNode): DurableVisualIdentity {
+  const createdId = element.getAttribute("data-otf-element-id")?.trim();
   const cloneId = element.getAttribute("data-otf-clone-id")?.trim();
   const signature = buildPersistableElementSignature(element, { root });
   const uniquePath = buildUniqueCssPath(element, root);
@@ -155,14 +156,25 @@ export function buildDurableIdentity(element: HTMLElement, root: ParentNode): Du
   const hrefAttr = descendantHref(element);
   const nameAttr = element.getAttribute("name")?.trim();
   const src = descendantSrc(element);
+  const ownedSelector = createdId
+    ? `[data-otf-element-id="${createdId.replace(/"/g, "\\\"")}"]`
+    : cloneId
+      ? `[data-otf-clone-id="${cloneId.replace(/"/g, "\\\"")}"]`
+      : uniquePath;
   return {
     signature: {
       ...signature,
-      cssPath: cloneId ? `[data-otf-clone-id="${cloneId.replace(/"/g, "\\\"")}"]` : uniquePath,
+      cssPath: ownedSelector,
       identityVersion: IDENTITY_VERSION,
       siblingOrdinal: siblingOrdinal(element),
       siblingCount: siblingCount(element),
-      ...(cloneId ? { datasetFingerprint: `otfCloneId=${cloneId}` } : data ? { datasetFingerprint: data } : {}),
+      ...(createdId
+        ? { datasetFingerprint: `otfElementId=${createdId}` }
+        : cloneId
+          ? { datasetFingerprint: `otfCloneId=${cloneId}` }
+          : data
+            ? { datasetFingerprint: data }
+            : {}),
       ...(hrefAttr ? { hrefAttr } : {}),
       ...(nameAttr ? { nameAttr } : {}),
       ...(src && !signature.srcFingerprint ? { srcFingerprint: src } : {}),

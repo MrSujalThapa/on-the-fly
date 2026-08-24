@@ -1,3 +1,4 @@
+import { isCreatedElementKind } from "../create/created-element.js";
 import {
   formatAllowedHelperRoles,
   isHelperObjectRole,
@@ -406,6 +407,31 @@ function validatePayload(operation: EditorOperation, errors: string[], codes: Va
       }
       if (!isRecord(operation.payload.styleSnapshot)) {
         errors.push("duplicate.styleSnapshot must be an object");
+        codes.push("invalid_payload");
+      }
+      break;
+    case "createElement":
+      if (!isNonEmptyString(operation.payload.elementId)) {
+        errors.push("createElement.elementId is required");
+        codes.push("invalid_payload");
+      }
+      if (!isCreatedElementKind(operation.payload.kind)) {
+        errors.push("createElement.kind is invalid");
+        codes.push("invalid_payload");
+      }
+      if (!isRecord(operation.payload.rect) ||
+        !isFiniteNumber(operation.payload.rect.x) ||
+        !isFiniteNumber(operation.payload.rect.y) ||
+        !isFiniteNumber(operation.payload.rect.width) ||
+        !isFiniteNumber(operation.payload.rect.height) ||
+        operation.payload.rect.width <= 0 ||
+        operation.payload.rect.height <= 0
+      ) {
+        errors.push("createElement.rect must be a positive geometry");
+        codes.push("invalid_payload");
+      }
+      if (!isRecord(operation.payload.content) || !isRecord(operation.payload.appearance)) {
+        errors.push("createElement.content and appearance must be objects");
         codes.push("invalid_payload");
       }
       break;

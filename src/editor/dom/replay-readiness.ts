@@ -4,7 +4,7 @@ import { matchElementBySignature } from "./signature-matcher.js";
 const DEFAULT_MAX_FRAMES = 120;
 
 function operationCreatesTarget(operation: EditorOperation): boolean {
-  return operation.type === "insertHelperObject" || operation.type === "duplicate";
+  return operation.type === "insertHelperObject" || operation.type === "duplicate" || operation.type === "createElement";
 }
 
 export function canResolveOperationTarget(

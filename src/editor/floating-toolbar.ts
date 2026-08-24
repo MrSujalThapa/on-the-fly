@@ -63,7 +63,7 @@ const COMMAND_LAYOUT: Array<{ id: string; tool: string; label: string; at: numbe
   { id: "lasso", tool: "lasso", label: "Lasso", at: 0.54 },
   { id: "undo", tool: "undo", label: "Undo", at: 0.66 },
   { id: "redo", tool: "redo", label: "Redo", at: 0.78 },
-  { id: "more", tool: "more", label: "More (coming soon)", at: 0.9 },
+  { id: "more", tool: "more", label: "More", at: 0.9 },
 ];
 
 const TOOL_ICONS: Record<string, string> = {
@@ -87,9 +87,14 @@ export class FloatingToolbar {
   private stylePanelEl: HTMLElement | null = null;
   private textEditorEl: HTMLElement | null = null;
   private lassoChooserEl: HTMLElement | null = null;
+  private moreMenuEl: HTMLElement | null = null;
+  private paletteEl: HTMLElement | null = null;
   private styleOpen = false;
   private textEditorOpen = false;
   private lassoChooserOpen = false;
+  private moreMenuOpen = false;
+  private wrapEnabled = false;
+  private paletteOpen = false;
   private toolbarWasDragged = false;
   private panelWasDragged = false;
   private styleAnchorButton: HTMLButtonElement | null = null;
@@ -112,7 +117,7 @@ export class FloatingToolbar {
 
     const staleUi = Array.from(
       this.shadowRoot.querySelectorAll<HTMLElement>(
-        '[data-otf-ui="toolbar"], [data-otf-ui="style-panel"], [data-otf-ui="text-editor"], [data-otf-ui="lasso-chooser"]',
+        '[data-otf-ui="toolbar"], [data-otf-ui="style-panel"], [data-otf-ui="text-editor"], [data-otf-ui="lasso-chooser"], [data-otf-ui="more-menu"], [data-otf-ui="component-palette"]',
       ),
     );
     if (staleUi.length > 0) {
@@ -153,7 +158,22 @@ export class FloatingToolbar {
     this.lassoChooserEl.innerHTML = createLassoChooserMarkup();
     this.wireLassoChooser();
 
-    this.shadowRoot.append(this.toolbarEl, this.stylePanelEl, this.textEditorEl, this.lassoChooserEl);
+    this.moreMenuEl = document.createElement("div");
+    this.moreMenuEl.className = "otf-more-menu";
+    this.moreMenuEl.setAttribute("data-otf-ui", "more-menu");
+    this.moreMenuEl.setAttribute("role", "menu");
+    this.moreMenuEl.hidden = true;
+    this.moreMenuEl.innerHTML = createMoreMenuMarkup();
+    this.wireMoreMenu();
+
+    this.paletteEl = document.createElement("div");
+    this.paletteEl.className = "otf-component-palette";
+    this.paletteEl.setAttribute("data-otf-ui", "component-palette");
+    this.paletteEl.hidden = true;
+    this.paletteEl.innerHTML = createComponentPaletteMarkup();
+    this.wireComponentPalette();
+
+    this.shadowRoot.append(this.toolbarEl, this.stylePanelEl, this.textEditorEl, this.lassoChooserEl, this.moreMenuEl, this.paletteEl);
   }
 
   unmount(): void {
@@ -165,13 +185,19 @@ export class FloatingToolbar {
     this.stylePanelEl?.remove();
     this.textEditorEl?.remove();
     this.lassoChooserEl?.remove();
+    this.moreMenuEl?.remove();
+    this.paletteEl?.remove();
     this.toolbarEl = null;
     this.stylePanelEl = null;
     this.textEditorEl = null;
     this.lassoChooserEl = null;
+    this.moreMenuEl = null;
+    this.paletteEl = null;
     this.styleOpen = false;
     this.textEditorOpen = false;
     this.lassoChooserOpen = false;
+    this.moreMenuOpen = false;
+    this.paletteOpen = false;
     this.lastAnchor = null;
   }
 
@@ -243,6 +269,8 @@ export class FloatingToolbar {
     this.closeStylePanel();
     this.closeTextEditor(true);
     this.closeLassoChooser();
+    this.closeMoreMenu();
+    this.closeComponentPalette();
     this.lastAnchor = null;
   }
 
@@ -274,6 +302,8 @@ export class FloatingToolbar {
         return;
       }
       this.closeLassoChooser();
+      this.closeMoreMenu();
+      this.closeComponentPalette();
       this.styleAnchorButton =
         this.toolbarEl.querySelector<HTMLButtonElement>('[data-command-id="style-panel"]') ?? null;
       this.panelWasDragged = false;
@@ -349,6 +379,8 @@ export class FloatingToolbar {
       return;
     }
     this.closeLassoChooser();
+    this.closeMoreMenu();
+    this.closeComponentPalette();
 
     this.textEditorEl.replaceChildren();
     const textarea = document.createElement("textarea");
@@ -432,6 +464,8 @@ export class FloatingToolbar {
     }
     if (this.styleOpen) this.closeStylePanel();
     if (this.textEditorOpen) this.closeTextEditor(true);
+    this.closeMoreMenu();
+    this.closeComponentPalette();
     if (!this.lassoChooserEl || !this.toolbarEl || this.toolbarEl.hidden) return;
     this.lassoChooserEl.hidden = false;
     this.lassoChooserOpen = true;
@@ -449,6 +483,83 @@ export class FloatingToolbar {
 
   isLassoChooserOpen(): boolean {
     return this.lassoChooserOpen;
+  }
+
+  toggleMoreMenu(): void {
+    if (this.moreMenuOpen) {
+      this.closeMoreMenu();
+      return;
+    }
+    if (this.styleOpen) this.closeStylePanel();
+    if (this.textEditorOpen) this.closeTextEditor(true);
+    this.closeLassoChooser();
+    this.closeComponentPalette();
+    if (!this.moreMenuEl || !this.toolbarEl || this.toolbarEl.hidden) return;
+    this.setMoreWrapEnabled(this.wrapEnabled);
+    this.moreMenuEl.hidden = false;
+    this.moreMenuOpen = true;
+    this.positionAnchoredChrome(this.moreMenuEl, "more");
+    this.syncOutsideListener();
+  }
+
+  closeMoreMenu(): boolean {
+    if (!this.moreMenuOpen) return false;
+    this.moreMenuOpen = false;
+    if (this.moreMenuEl) this.moreMenuEl.hidden = true;
+    this.syncOutsideListener();
+    return true;
+  }
+
+  setMoreWrapEnabled(enabled: boolean): void {
+    this.wrapEnabled = enabled;
+    const wrap = this.moreMenuEl?.querySelector<HTMLButtonElement>('[data-more-action="wrap-selection"]');
+    if (wrap) wrap.disabled = !enabled;
+  }
+
+  openComponentPalette(options: { canSample: boolean; sampling: boolean; wrapEnabled: boolean }): void {
+    if (this.styleOpen) this.closeStylePanel();
+    if (this.textEditorOpen) this.closeTextEditor(true);
+    this.closeLassoChooser();
+    this.closeMoreMenu();
+    if (!this.paletteEl || !this.toolbarEl || this.toolbarEl.hidden) return;
+    this.paletteEl.hidden = false;
+    this.paletteOpen = true;
+    this.setPaletteSampling(options.sampling);
+    const sampleRow = this.paletteEl.querySelector<HTMLElement>(".otf-palette-sample");
+    if (sampleRow) sampleRow.hidden = !options.canSample;
+    this.positionAnchoredChrome(this.paletteEl, "more");
+    this.syncOutsideListener();
+  }
+
+  closeComponentPalette(): boolean {
+    if (!this.paletteOpen) return false;
+    this.paletteOpen = false;
+    if (this.paletteEl) this.paletteEl.hidden = true;
+    this.syncOutsideListener();
+    return true;
+  }
+
+  isComponentPaletteOpen(): boolean {
+    return this.paletteOpen;
+  }
+
+  setPaletteSampling(sampling: boolean): void {
+    if (!this.paletteEl) return;
+    for (const button of Array.from(this.paletteEl.querySelectorAll<HTMLButtonElement>("[data-palette-style]"))) {
+      button.setAttribute("aria-pressed", String(button.getAttribute("data-palette-style") === (sampling ? "sampled" : "default")));
+    }
+  }
+
+  private positionAnchoredChrome(element: HTMLElement, commandId: string): void {
+    if (!this.toolbarEl) return;
+    const button = this.toolbarEl.querySelector<HTMLButtonElement>(`[data-command-id="${commandId}"]`);
+    const rect = button?.getBoundingClientRect();
+    if (!rect) return;
+    const width = Math.min(element.getBoundingClientRect().width || 320, 340);
+    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
+    const top = rect.bottom + 10;
+    element.style.left = `${String(left)}px`;
+    element.style.top = `${String(Math.min(top, Math.max(8, window.innerHeight - 280)))}px`;
   }
 
   private renderToolbarStructure(): void {
@@ -533,6 +644,47 @@ export class FloatingToolbar {
           this.closeLassoChooser();
           this.callbacks.onCommand(`lasso-${mode}`);
         }
+      });
+    }
+  }
+
+  private wireMoreMenu(): void {
+    if (!this.moreMenuEl) return;
+    this.moreMenuEl.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    for (const button of Array.from(this.moreMenuEl.querySelectorAll<HTMLButtonElement>("[data-more-action]"))) {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const action = button.getAttribute("data-more-action");
+        this.closeMoreMenu();
+        if (action) this.callbacks.onCommand(action);
+      });
+    }
+  }
+
+  private wireComponentPalette(): void {
+    if (!this.paletteEl) return;
+    this.paletteEl.addEventListener("pointerdown", (event) => {
+      event.stopPropagation();
+    });
+    for (const button of Array.from(this.paletteEl.querySelectorAll<HTMLButtonElement>("[data-create-kind]"))) {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const kind = button.getAttribute("data-create-kind");
+        this.closeComponentPalette();
+        if (kind) this.callbacks.onCommand(`create-${kind}`);
+      });
+    }
+    for (const button of Array.from(this.paletteEl.querySelectorAll<HTMLButtonElement>("[data-palette-style]"))) {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const mode = button.getAttribute("data-palette-style");
+        this.callbacks.onCommand(mode === "sampled" ? "palette-style-sampled" : "palette-style-default");
       });
     }
   }
@@ -986,13 +1138,15 @@ export class FloatingToolbar {
         return;
       }
       this.closeLassoChooser();
+      this.closeMoreMenu();
+      this.closeComponentPalette();
       this.closeStylePanel();
     };
     window.addEventListener("pointerdown", this.outsidePointerListener, true);
   }
 
   private syncOutsideListener(): void {
-    if (this.styleOpen || this.lassoChooserOpen) this.attachOutsideListener();
+    if (this.styleOpen || this.lassoChooserOpen || this.moreMenuOpen || this.paletteOpen) this.attachOutsideListener();
     else this.detachOutsideListener();
   }
 
@@ -1065,6 +1219,42 @@ function createLassoChooserMarkup(): string {
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 15c2.2-4 4.2 3 7-1 2.4-3.4 3.4 4.2 6.2.4 1.4-1.8 2.8-3.2 3.8-3.8"/></svg>
       Freeform
     </button>
+  `;
+}
+
+function createMoreMenuMarkup(): string {
+  return `
+    <button type="button" class="otf-more-option" role="menuitem" data-more-action="add-element">Add element…</button>
+    <button type="button" class="otf-more-option" role="menuitem" data-more-action="wrap-selection">Container around selection</button>
+  `;
+}
+
+function createComponentPaletteMarkup(): string {
+  const icon = (kind: string): string => {
+    if (kind === "rectangle") return '<rect x="5" y="7" width="14" height="10" rx="1.5"/>';
+    if (kind === "circle") return '<circle cx="12" cy="12" r="6"/>';
+    if (kind === "divider") return '<path d="M4 12h16"/>';
+    if (kind === "text") return '<path d="M5 7V5h14v2M12 5v14M8 19h8"/>';
+    if (kind === "heading") return '<path d="M6 5v14M18 5v14M6 12h12"/>';
+    if (kind === "button") return '<rect x="4" y="8" width="16" height="8" rx="2"/><path d="M8 12h8"/>';
+    if (kind === "input") return '<rect x="3" y="8" width="18" height="8" rx="2"/><path d="M6 12h6"/>';
+    if (kind === "search") return '<circle cx="11" cy="11" r="4"/><path d="M16 16l3 3"/>';
+    if (kind === "badge") return '<rect x="4" y="8" width="16" height="8" rx="4"/>';
+    if (kind === "container") return '<rect x="4" y="5" width="16" height="14" rx="2"/>';
+    if (kind === "card") return '<rect x="5" y="6" width="14" height="12" rx="2"/><path d="M8 10h8M8 13h5"/>';
+    return '<rect x="3" y="7" width="18" height="10" rx="1"/><path d="M6 12h6"/>';
+  };
+  const item = (kind: string, label: string): string =>
+    `<button type="button" class="otf-palette-item" data-create-kind="${kind}"><svg viewBox="0 0 24 24" aria-hidden="true">${icon(kind)}</svg><span>${label}</span></button>`;
+  return `
+    <div class="otf-palette-sample" hidden>
+      <span>Style</span>
+      <button type="button" data-palette-style="default" aria-pressed="true">Default</button>
+      <button type="button" data-palette-style="sampled" aria-pressed="false">Use selected style</button>
+    </div>
+    <div class="otf-palette-group"><div class="otf-palette-title">Basic</div>${item("rectangle", "Rectangle")}${item("circle", "Circle")}${item("divider", "Divider")}${item("text", "Text")}${item("heading", "Heading")}</div>
+    <div class="otf-palette-group"><div class="otf-palette-title">Controls</div>${item("button", "Button")}${item("input", "Input")}${item("search", "Search Bar")}${item("badge", "Badge / Pill")}</div>
+    <div class="otf-palette-group"><div class="otf-palette-title">Structure</div>${item("container", "Container")}${item("card", "Card")}${item("header", "Header / Navbar")}</div>
   `;
 }
 
@@ -1365,6 +1555,72 @@ const CURVED_TOOLBAR_CSS = `
     stroke-linejoin: round;
     flex: none;
   }
+  .otf-more-menu,
+  .otf-component-palette {
+    position: fixed;
+    z-index: 4;
+    padding: 6px;
+    border-radius: 12px;
+    background: radial-gradient(circle at top left, rgba(255,255,255,0.88), transparent 45%), linear-gradient(145deg, #f6f1e6 0%, #e8dfcf 100%);
+    border: 1px solid rgba(255,255,255,0.65);
+    box-shadow: 0 16px 36px rgba(0,0,0,0.36), inset 0 1px 0 rgba(255,255,255,0.9);
+    color: #202020;
+    pointer-events: auto;
+  }
+  .otf-more-menu { width: 220px; }
+  .otf-component-palette { width: 320px; max-height: min(420px, calc(100vh - 24px)); overflow: auto; }
+  .otf-more-menu[hidden],
+  .otf-component-palette[hidden] { display: none; }
+  .otf-more-option,
+  .otf-palette-item {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font: 600 13px/1.2 Inter, ui-sans-serif, system-ui, sans-serif;
+    cursor: pointer;
+    text-align: left;
+  }
+  .otf-more-option:hover,
+  .otf-palette-item:hover { background: rgba(0,0,0,0.08); }
+  .otf-palette-item svg {
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    fill: none;
+    flex: none;
+  }
+  .otf-palette-title {
+    padding: 8px 10px 4px;
+    font: 700 11px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0.62;
+  }
+  .otf-palette-sample {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px 10px;
+    font: 600 12px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  }
+  .otf-palette-sample button {
+    border: 1px solid rgba(32,32,32,0.12);
+    background: rgba(255,255,255,0.55);
+    border-radius: 999px;
+    padding: 4px 8px;
+    font: 600 11px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+    cursor: pointer;
+  }
+  .otf-palette-sample button[aria-pressed="true"] { background: #202020; color: #f6f1e6; }
   .otf-style-panel {
     position: fixed;
     left: 0;

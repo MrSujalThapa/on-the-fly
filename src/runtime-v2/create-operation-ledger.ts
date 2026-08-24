@@ -56,6 +56,16 @@ export function createOperationLedger(): OperationLedger {
       entries.push(...operations.map((operation) => ({ operation, transactionId })));
       cursor = entries.length;
     },
+    coalesceLastCommits(count: number): void {
+      if (count < 2 || cursor < count) return;
+      const start = cursor - count;
+      const transactionId = entries[start]?.transactionId;
+      if (!transactionId) return;
+      for (let index = start; index < cursor; index += 1) {
+        const entry = entries[index];
+        if (entry) entries[index] = { operation: entry.operation, transactionId };
+      }
+    },
     peekUndo(): EditorOperation | null {
       if (cursor <= 0) {
         return null;

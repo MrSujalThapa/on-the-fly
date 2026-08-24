@@ -26,6 +26,8 @@ const ALLOWED_PREFIXES = [
   "src/editor/measurement/",
   "src/editor/transform/",
   "src/editor/duplicate/",
+  "src/editor/create/",
+  "src/editor/style/",
   "src/editor/persistence/",
   "src/editor/dom/handlers/",
   "src/editor/dom/types.ts",

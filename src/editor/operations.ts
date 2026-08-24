@@ -1,3 +1,9 @@
+import type {
+  CreatedElementAppearance,
+  CreatedElementContent,
+  CreatedElementKind,
+  CreatedElementRect,
+} from "./create/created-element.js";
 import type { EditorTarget } from "./editor-target.js";
 import type { ElementSignature } from "./element-signature.js";
 import type { HelperObjectRole } from "./helper-object-contract.js";
@@ -243,6 +249,17 @@ export type DuplicateOperation = OperationBase<
   }
 >;
 
+export type CreateElementOperation = OperationBase<
+  "createElement",
+  {
+    elementId: string;
+    kind: CreatedElementKind;
+    rect: CreatedElementRect;
+    content: CreatedElementContent;
+    appearance: CreatedElementAppearance;
+  }
+>;
+
 export type EditorOperation =
   | StyleOperation
   | TextOperation
@@ -256,7 +273,8 @@ export type EditorOperation =
   | UngroupOperation
   | InsertImageOperation
   | InsertHelperObjectOperation
-  | DuplicateOperation;
+  | DuplicateOperation
+  | CreateElementOperation;
 
 export const OPERATION_TYPES = [
   "style",
@@ -272,6 +290,7 @@ export const OPERATION_TYPES = [
   "insertImage",
   "insertHelperObject",
   "duplicate",
+  "createElement",
 ] as const;
 
 export type EditorOperationType = (typeof OPERATION_TYPES)[number];

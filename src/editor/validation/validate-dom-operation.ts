@@ -20,7 +20,7 @@ export function validateOperationForDom(operation: EditorOperation): OperationVa
     );
   }
 
-  if (operation.type !== "insertHelperObject" && !operation.target.signature) {
+  if (operation.type !== "insertHelperObject" && operation.type !== "createElement" && !operation.target.signature) {
     return createOperationValidationFailure(
       ["target.signature is required for dom operations"],
       ["missing_target"],

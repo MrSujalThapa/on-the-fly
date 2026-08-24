@@ -22,6 +22,8 @@ export interface OperationLedger {
   /** After a successful verified mutation. Truncates the redo tail. */
   commit(operation: EditorOperation): void;
   commitBatch(operations: readonly EditorOperation[]): void;
+  /** Merge the last N commits into one undo/redo transaction. */
+  coalesceLastCommits(count: number): void;
   peekUndo(): EditorOperation | null;
   peekRedo(): EditorOperation | null;
   peekUndoTransaction(): readonly EditorOperation[];

@@ -15,6 +15,13 @@ export interface OverlayCoordinator {
   toggleLassoChooser(): void;
   closeLassoChooser(): boolean;
   isLassoChooserOpen(): boolean;
+  toggleMoreMenu(): void;
+  closeMoreMenu(): boolean;
+  setMoreWrapEnabled(enabled: boolean): void;
+  openComponentPalette(options: { canSample: boolean; sampling: boolean; wrapEnabled: boolean }): void;
+  closeComponentPalette(): boolean;
+  isComponentPaletteOpen(): boolean;
+  setPaletteSampling(sampling: boolean): void;
   setLassoDiagnostics(stats: Record<string, number> | null): void;
   refreshFromLiveGeometry(): void;
   clear(): void;

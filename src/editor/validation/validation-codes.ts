@@ -30,6 +30,7 @@ export const SUPPORTED_DOM_OPERATION_TYPES = [
   "rotate",
   "insertHelperObject",
   "duplicate",
+  "createElement",
 ] as const;
 
 export type SupportedDomOperationType = (typeof SUPPORTED_DOM_OPERATION_TYPES)[number];

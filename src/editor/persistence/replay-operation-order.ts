@@ -2,6 +2,7 @@ import type { EditorOperation } from "../operations.js";
 
 const REPLAY_TYPE_ORDER: Record<string, number> = {
   insertHelperObject: 10,
+  createElement: 15,
   duplicate: 20,
   move: 30,
   resize: 40,

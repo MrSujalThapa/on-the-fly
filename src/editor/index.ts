@@ -45,6 +45,7 @@ export type {
   HideOperation,
   InsertHelperObjectOperation,
   InsertImageOperation,
+  CreateElementOperation,
   MoveOperation,
   OperationBase,
   OperationSource,

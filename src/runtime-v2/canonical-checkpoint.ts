@@ -1,4 +1,4 @@
-import type { CropOperation, DuplicateOperation, EditorOperation, HideOperation, MoveOperation, ResizeOperation, RotateOperation, StyleOperation, TextOperation, ZIndexOperation } from "../editor/operations.js";
+import type { CreateElementOperation, CropOperation, DuplicateOperation, EditorOperation, HideOperation, MoveOperation, ResizeOperation, RotateOperation, StyleOperation, TextOperation, ZIndexOperation } from "../editor/operations.js";
 import { freezeCommittedOperation } from "./freeze-operation.js";
 import { identifyingContent, isGeneratedIdentityValue } from "./visual-identity.js";
 import { validateOperation } from "../editor/validation/validate-operation.js";
@@ -8,6 +8,7 @@ export type CanonicalCheckpoint =
   | { readonly ok: false; readonly error: string };
 
 const CLONE_DATA_PREFIX = "otfCloneId=";
+const CREATED_DATA_PREFIX = "otfElementId=";
 
 function cloneIdFromOperation(operation: EditorOperation): string | null {
   if (operation.type === "duplicate") return operation.payload.cloneId;
@@ -15,6 +16,15 @@ function cloneIdFromOperation(operation: EditorOperation): string | null {
   const dataset = signature?.datasetFingerprint;
   if (dataset?.startsWith(CLONE_DATA_PREFIX)) return dataset.slice(CLONE_DATA_PREFIX.length) || null;
   const cssMatch = /\[data-otf-clone-id=["']([^"']+)["']\]/u.exec(signature?.cssPath ?? "");
+  return cssMatch?.[1] ?? null;
+}
+
+function createdIdFromOperation(operation: EditorOperation): string | null {
+  if (operation.type === "createElement") return operation.payload.elementId;
+  const signature = operation.target.signature;
+  const dataset = signature?.datasetFingerprint;
+  if (dataset?.startsWith(CREATED_DATA_PREFIX)) return dataset.slice(CREATED_DATA_PREFIX.length) || null;
+  const cssMatch = /\[data-otf-element-id=["']([^"']+)["']\]/u.exec(signature?.cssPath ?? "");
   return cssMatch?.[1] ?? null;
 }
 
@@ -171,16 +181,27 @@ export function projectCanonicalCheckpoint(
   operations: readonly EditorOperation[],
 ): CanonicalCheckpoint {
   const duplicates = new Map<string, DuplicateOperation>();
+  const created = new Map<string, CreateElementOperation>();
   for (const operation of operations) {
     if (operation.status !== "approved") return { ok: false, error: `invalid_operation_status:${operation.id}:${operation.status}` };
-    if (operation.type !== "duplicate") continue;
-    const cloneId = operation.payload.cloneId;
-    if (duplicates.has(cloneId)) return { ok: false, error: `duplicate_clone_creation:${cloneId}` };
-    if (operation.target.nodeId !== cloneId) return { ok: false, error: `clone_creation_target_mismatch:${cloneId}` };
-    duplicates.set(cloneId, operation);
+    if (operation.type === "duplicate") {
+      const cloneId = operation.payload.cloneId;
+      if (duplicates.has(cloneId)) return { ok: false, error: `duplicate_clone_creation:${cloneId}` };
+      if (operation.target.nodeId !== cloneId) return { ok: false, error: `clone_creation_target_mismatch:${cloneId}` };
+      duplicates.set(cloneId, operation);
+      continue;
+    }
+    if (operation.type === "createElement") {
+      const elementId = operation.payload.elementId;
+      if (created.has(elementId)) return { ok: false, error: `duplicate_element_creation:${elementId}` };
+      if (operation.target.nodeId !== elementId) return { ok: false, error: `created_target_mismatch:${elementId}` };
+      created.set(elementId, operation);
+    }
   }
   const sessionKeys = new Map<string, string>();
   const checkpointKey = (operation: EditorOperation): string | null => {
+    const createdId = createdIdFromOperation(operation);
+    if (createdId) return created.has(createdId) ? `created:${createdId}` : null;
     const cloneId = cloneIdFromOperation(operation);
     if (cloneId) return duplicates.has(cloneId) ? `clone:${cloneId}` : null;
     const durable = durableMoveKey(operation as MoveOperation);
@@ -203,8 +224,12 @@ export function projectCanonicalCheckpoint(
   const rest: EditorOperation[] = [];
 
   for (const operation of operations) {
-    if (operation.type === "duplicate") {
+    if (operation.type === "duplicate" || operation.type === "createElement") {
       continue;
+    }
+    const referencedCreated = createdIdFromOperation(operation);
+    if (referencedCreated && !created.has(referencedCreated)) {
+      return { ok: false, error: `created_effect_missing_creation:${referencedCreated}:${operation.id}:${operation.type}` };
     }
     const referencedClone = cloneIdFromOperation(operation);
     if (referencedClone && !duplicates.has(referencedClone)) {
@@ -325,6 +350,7 @@ export function projectCanonicalCheckpoint(
     });
   });
   const projected = [
+      ...sortEntries(created.entries()),
       ...sortEntries(duplicates.entries()),
       ...rest.slice().sort((a, b) => a.type.localeCompare(b.type) || (a.target.nodeId ?? "").localeCompare(b.target.nodeId ?? "") || a.id.localeCompare(b.id)),
       ...canonicalMoves,

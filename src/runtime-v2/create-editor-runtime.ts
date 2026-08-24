@@ -1,5 +1,18 @@
-import type { CropOperation, DuplicateOperation, EditorOperation, MoveOperation, ResizeOperation, StyleProperty, ZIndexOperation } from "../editor/operations.js";
+import type { CreateElementOperation, CropOperation, DuplicateOperation, EditorOperation, MoveOperation, ResizeOperation, StyleProperty, ZIndexOperation } from "../editor/operations.js";
 import type { GroupId, VisualNodeId } from "../editor/ids.js";
+import { COMPONENT_DEFINITIONS } from "../editor/create/component-definitions.js";
+import {
+  isCreatedElementKind,
+  OTF_ELEMENT_ID_ATTR,
+  OTF_PREVIEW_ATTR,
+  type CreatedElementAppearance,
+  type CreatedElementContent,
+  type CreatedElementKind,
+} from "../editor/create/created-element.js";
+import { resolvePlacementRect, unionRectWithPadding } from "../editor/create/placement-geometry.js";
+import { defaultAppearance, renderCreatedElement } from "../editor/create/render-created-element.js";
+import { appearanceForFamily, sampleAppearance } from "../editor/create/sample-appearance.js";
+import { BACK_LAYER, MANAGED_Z_INDEX_BASELINE, parseLayer } from "../editor/transform/layer-order.js";
 import { computeDocumentPageKey } from "../content/page-identity.js";
 import {
   loadPageOperations,
@@ -25,11 +38,12 @@ import type { NormalizedPointer } from "./input-router.js";
 import { rectFromElement, rectsNear } from "./geometry.js";
 import type { BatchExecutionResult, ExecutionResult } from "./operation-executor.js";
 import type { IntendedRect } from "./placement-engine.js";
+import { freezeCommittedOperation } from "./freeze-operation.js";
 import { identityConsistent, summarizeIdentity } from "./visual-identity.js";
 import { isResolvedVisual } from "./visual-model.js";
 import { projectCanonicalCheckpoint } from "./canonical-checkpoint.js";
 import { buildDuplicateFromClipboardEntry } from "../editor/duplicate/duplicate-element.js";
-import { buildCropOperation, buildHideOperation, buildMoveOperation, buildResizeOperation, buildRotateOperation, buildStyleOperation, buildTextOperation } from "../editor/transform/operation-factory.js";
+import { buildCropOperation, buildHideOperation, buildMoveOperation, buildResizeOperation, buildRotateOperation, buildStyleOperation, buildTextOperation, buildZIndexOperation } from "../editor/transform/operation-factory.js";
 import { applyStoredTransformState, applyStoredTransformStateToRect, readStoredTransformState, writeStoredTransformState } from "../editor/dom/element-snapshot.js";
 import { localSizeForRotatedBounds, resizeRectFromCorner, rotatePointAroundCenter, rotatedMemberRect, scaleRects, type ResizeCorner } from "./editor-parity-geometry.js";
 import {
@@ -108,7 +122,13 @@ interface FreeformLassoGesture {
   additive: boolean;
 }
 
-type PointerGesture = MovingGesture | LassoGesture | FreeformLassoGesture;
+interface CreateGesture {
+  kind: "create";
+  startPointer: { x: number; y: number };
+  preview: HTMLElement | null;
+}
+
+type PointerGesture = MovingGesture | LassoGesture | FreeformLassoGesture | CreateGesture;
 type ArmedLassoMode = "rectangle" | "freeform" | null;
 
 interface TransformPreviewTarget {
@@ -173,6 +193,16 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   let groupCounter = 0;
   let gesture: PointerGesture | null = null;
   let armedLassoMode: ArmedLassoMode = null;
+  let armedCreate: { kind: CreatedElementKind; appearance: CreatedElementAppearance } | null = null;
+  let paletteSampling = false;
+  const wrapSessions = new Map<string, {
+    priorGroups: Map<GroupId, RuntimeVirtualGroup>;
+    priorGroupByMember: Map<VisualNodeId, GroupId>;
+    priorGroupCounter: number;
+    priorAtoms: readonly SelectionAtom[];
+    memberIds: readonly VisualNodeId[];
+    containerId: VisualNodeId;
+  }>();
   let transformGesture: TransformGesture | null = null;
   let ignoreMutations = false;
   const releaseMutationIgnore = (): void => {
@@ -358,6 +388,16 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     ignoreMutations = true;
     try {
       for (const operation of checkpoint.operations) {
+        if (operation.type === "createElement" || operation.type === "duplicate") {
+          const selector = operation.type === "createElement"
+            ? `[data-otf-element-id="${operation.payload.elementId}"]`
+            : `[data-otf-clone-id="${operation.payload.cloneId}"]`;
+          if (!root.querySelector(selector)) {
+            const result = executor.replayOperation(operation);
+            logV2("reapply-create", { owner: "EXECUTION", ok: result.ok, id: operation.id, error: result.ok ? undefined : result.error });
+          }
+          continue;
+        }
         if (!["move", "resize", "rotate", "zIndex", "hide", "style", "text", "crop"].includes(operation.type)) {
           continue;
         }
@@ -455,12 +495,85 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   };
 
   const cancelGesture = (): void => {
+    if (gesture?.kind === "create") gesture.preview?.remove();
     restorePreview();
     gesture = null;
     armedLassoMode = null;
+    armedCreate = null;
     overlays.clearLasso();
     overlays.refreshFromLiveGeometry();
     refreshToolbar();
+  };
+
+  const closeCreateChrome = (): void => {
+    overlays.closeMoreMenu();
+    overlays.closeComponentPalette();
+    overlays.closeLassoChooser();
+  };
+
+  const sampledAppearanceFor = (kind: CreatedElementKind): CreatedElementAppearance => {
+    if (!paletteSampling) return defaultAppearance(kind);
+    const selected = singleSelectedElement();
+    if (!selected) return defaultAppearance(kind);
+    return { ...defaultAppearance(kind), ...appearanceForFamily(sampleAppearance(selected.element), COMPONENT_DEFINITIONS[kind].styleFamily) };
+  };
+
+  const updateCreatePreview = (kind: CreatedElementKind, appearance: CreatedElementAppearance, rect: IntendedRect, preview: HTMLElement | null): HTMLElement => {
+    const node = preview ?? renderCreatedElement(root, { elementId: "preview", kind, rect, appearance });
+    if (!preview) {
+      node.setAttribute(OTF_PREVIEW_ATTR, "true");
+      node.style.pointerEvents = "none";
+      node.style.opacity = "0.92";
+      root.body.append(node);
+    }
+    const view = root.defaultView;
+    node.style.left = `${String(rect.x + (view?.scrollX ?? 0))}px`;
+    node.style.top = `${String(rect.y + (view?.scrollY ?? 0))}px`;
+    node.style.width = `${String(rect.width)}px`;
+    node.style.height = `${String(rect.height)}px`;
+    return node;
+  };
+
+  const commitCreatedElement = (
+    kind: CreatedElementKind,
+    rect: IntendedRect,
+    appearance: CreatedElementAppearance,
+    sourceCommand = "create-element",
+    extras?: { content?: CreatedElementContent; elementId?: string },
+  ): ExecutionResult => {
+    const elementId = extras?.elementId ?? nextOperationId("el");
+    const definition = COMPONENT_DEFINITIONS[kind];
+    const operation: CreateElementOperation = {
+      id: nextOperationId("create"),
+      type: "createElement",
+      pageKey: pageKey(),
+      target: { nodeId: elementId },
+      payload: {
+        elementId,
+        kind,
+        rect,
+        content: {
+          ...(definition.defaultText ? { text: definition.defaultText } : {}),
+          ...(definition.defaultPlaceholder ? { placeholder: definition.defaultPlaceholder } : {}),
+          ...extras?.content,
+        },
+        appearance,
+      },
+      createdAt: Date.now(),
+      source: "manual",
+      status: "approved",
+      metadata: { sourceCommand, affectedRect: rect, finalRect: rect },
+    };
+    ignoreMutations = true;
+    const result = executor.executeTransaction({ operations: [operation], expectedRects: new Map([[operation.id, rect]]) });
+    releaseMutationIgnore();
+    if (!result.ok) return result;
+    const created = result.operations[0];
+    const nodeId = created?.target.nodeId;
+    if (nodeId) setSelection(selectionFromAtoms([atomForNode(nodeId)], "click"));
+    refreshSave();
+    overlays.refreshFromLiveGeometry();
+    return { ok: true, operation: created ?? operation, verification: result.verifications[0] ?? { ok: true, expected: rect, actual: rect } };
   };
 
   const effectRoots = (nodeIds: readonly VisualNodeId[]): VisualNodeId[] => {
@@ -487,6 +600,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   };
 
   const textSurface = (element: HTMLElement): HTMLElement | null => {
+    if (element.hasAttribute(OTF_ELEMENT_ID_ATTR)) {
+      const kind = element.getAttribute("data-otf-component-kind");
+      return isCreatedElementKind(kind) && COMPONENT_DEFINITIONS[kind].textCapable ? element : null;
+    }
     const full = renderedVisibleText(element);
     if (!full) return null;
     const hasUnsafeMedia = Boolean(element.querySelector("img, video, input, textarea, select, [contenteditable=true]"));
@@ -579,8 +696,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       { id: "lasso", enabled: true },
       { id: "undo", enabled: ledger.canUndo() },
       { id: "redo", enabled: ledger.canRedo() },
-      { id: "more", enabled: false },
-    ], { "crop-mode": cropMode, "style-panel": stylePanelOpen, "text-edit": textEditorOpen, "lasso": armedLassoMode !== null });
+      { id: "more", enabled: true },
+    ], { "crop-mode": cropMode, "style-panel": stylePanelOpen, "text-edit": textEditorOpen, "lasso": armedLassoMode !== null, "more": Boolean(armedCreate) });
+    overlays.setMoreWrapEnabled(hasSelection);
   };
 
   const initialTransformState = (element: HTMLElement): StoredTransformState => {
@@ -822,6 +940,14 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       overlays.closeLassoChooser();
       return;
     }
+    if (overlays.closeMoreMenu() || overlays.closeComponentPalette()) {
+      return;
+    }
+    if (armedCreate) {
+      const preview = updateCreatePreview(armedCreate.kind, armedCreate.appearance, resolvePlacementRect(armedCreate.kind, event.clientX, event.clientY, event.clientX, event.clientY), null);
+      gesture = { kind: "create", startPointer: { x: event.clientX, y: event.clientY }, preview };
+      return;
+    }
     if (armedLassoMode === "rectangle") {
       gesture = {
         kind: "lasso",
@@ -900,6 +1026,12 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       overlays.showLasso(normalizeRect(gesture.startPointer.x, gesture.startPointer.y, event.clientX, event.clientY));
       return;
     }
+    if (gesture.kind === "create" && armedCreate) {
+      const rect = resolvePlacementRect(armedCreate.kind, gesture.startPointer.x, gesture.startPointer.y, event.clientX, event.clientY);
+      gesture.preview = updateCreatePreview(armedCreate.kind, armedCreate.appearance, rect, gesture.preview);
+      return;
+    }
+    if (gesture.kind !== "move") return;
     if (gesture.targets.some((target) => !target.element.isConnected)) {
       cancelGesture();
       return;
@@ -916,6 +1048,18 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     const active = gesture;
     const dx = event.clientX - active.startPointer.x;
     const dy = event.clientY - active.startPointer.y;
+    if (active.kind === "create") {
+      const armed = armedCreate;
+      active.preview?.remove();
+      gesture = null;
+      armedCreate = null;
+      if (armed) {
+        const rect = resolvePlacementRect(armed.kind, active.startPointer.x, active.startPointer.y, event.clientX, event.clientY);
+        commitCreatedElement(armed.kind, rect, armed.appearance);
+      }
+      refreshToolbar();
+      return;
+    }
     if (active.kind === "freeform") {
       const rawCount = active.points.length;
       const polygon = simplifyPolygon(active.points);
@@ -1015,12 +1159,13 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return;
     }
     if (event.key === "Escape") {
-      if (overlays.closeLassoChooser()) {
+      if (overlays.closeComponentPalette() || overlays.closeMoreMenu() || overlays.closeLassoChooser()) {
         event.preventDefault();
         return;
       }
-      if (armedLassoMode && !gesture) {
+      if ((armedLassoMode || armedCreate) && !gesture) {
         armedLassoMode = null;
+        armedCreate = null;
         refreshToolbar();
         event.preventDefault();
         return;
@@ -1253,6 +1398,115 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       overlays.closeLassoChooser();
       armedLassoMode = mode;
       refreshToolbar();
+    },
+    sampleAppearance(element) {
+      const source = element ?? singleSelectedElement()?.element ?? null;
+      return source ? sampleAppearance(source) : null;
+    },
+    createElement(input) {
+      const appearance = input.appearance ?? defaultAppearance(input.kind);
+      return commitCreatedElement(input.kind, input.rect, appearance, "create-element", {
+        ...(input.content ? { content: input.content } : {}),
+        ...(input.elementId ? { elementId: input.elementId } : {}),
+      });
+    },
+    armCreate(kind, appearance) {
+      closeCreateChrome();
+      armedCreate = { kind, appearance: appearance ?? sampledAppearanceFor(kind) };
+      refreshToolbar();
+    },
+    createContainerAroundSelection() {
+      const members = selectedIds();
+      if (members.length === 0) return { ok: false, error: "empty_selection", rolledBack: false };
+      const measured = [...visualModel.measure(members).values()];
+      const rect = unionRectWithPadding(measured, 16);
+      if (!rect) return { ok: false, error: "missing_union", rolledBack: false };
+      const priorGroups = new Map(groups);
+      const priorGroupByMember = new Map(groupByMember);
+      const priorGroupCounter = groupCounter;
+      const priorAtoms = selection.atoms;
+      const cursorBefore = ledger.cursor;
+      const restorePriorSelection = (): void => {
+        groups = new Map(priorGroups);
+        groupByMember = new Map(priorGroupByMember);
+        groupCounter = priorGroupCounter;
+        setSelection(priorAtoms.length > 0 ? selectionFromAtoms([...priorAtoms], "click") : emptySelection());
+      };
+      const rollbackWrap = (): void => {
+        while (ledger.cursor > cursorBefore) runtime.undo();
+        restorePriorSelection();
+      };
+      const created = commitCreatedElement("container", rect, defaultAppearance("container"), "container-around-selection");
+      if (!created.ok) return created;
+      const containerId = created.operation.target.nodeId;
+      if (!containerId) {
+        rollbackWrap();
+        return { ok: false, error: "create_missing_id", rolledBack: true };
+      }
+      const inPlaceLayer = (nodeId: VisualNodeId, layer: number): ZIndexOperation | null => {
+        const element = visualModel.bind(nodeId);
+        const identity = visualModel.durableIdentityOf(nodeId);
+        if (!element || !identity) return null;
+        const previous = parseLayer(element.style.zIndex || element.ownerDocument.defaultView?.getComputedStyle(element).zIndex);
+        const drafted = buildZIndexOperation(
+          { nodeId, signature: identity.signature, rect: rectFromElement(element) },
+          layer,
+          previous,
+          { pageKey: pageKey(), sourceCommand: "container-around-selection" },
+          element,
+        );
+        return freezeCommittedOperation({
+          ...drafted,
+          status: "approved" as const,
+          target: { nodeId, signature: identity.signature },
+          metadata: { ...drafted.metadata, sourceCommand: "container-around-selection" },
+        });
+      };
+      const layerOps = [
+        inPlaceLayer(containerId, BACK_LAYER),
+        ...members.map((memberId, index) => inPlaceLayer(memberId, MANAGED_Z_INDEX_BASELINE + 1 + index)),
+      ].filter((operation): operation is ZIndexOperation => Boolean(operation));
+      if (layerOps.length > 0) {
+        ignoreMutations = true;
+        const layered = executor.executeTransaction({ operations: layerOps });
+        releaseMutationIgnore();
+        if (!layered.ok) {
+          rollbackWrap();
+          return layered;
+        }
+      }
+      const coversMembers = (): boolean => {
+        const containerEl = visualModel.bind(containerId);
+        if (!containerEl) return false;
+        return members.some((memberId) => {
+          const member = visualModel.bind(memberId);
+          if (!member) return false;
+          const box = member.getBoundingClientRect();
+          const stack = root.elementsFromPoint(box.x + box.width / 2, box.y + box.height / 2)
+            .filter((node): node is HTMLElement => node instanceof HTMLElement && !isExtensionRoot(node));
+          const containerAt = stack.indexOf(containerEl);
+          const memberAt = stack.findIndex((node) => node === member || member.contains(node));
+          return containerAt >= 0 && (memberAt < 0 || containerAt < memberAt);
+        });
+      };
+      if (coversMembers()) {
+        rollbackWrap();
+        return { ok: false, error: "wrap_covers_members", rolledBack: true };
+      }
+      ledger.coalesceLastCommits(ledger.cursor - cursorBefore);
+      setSelection(selectionFromAtoms([...members, containerId].map(atomForNode), "click"));
+      runtime.groupSelection();
+      wrapSessions.set(transactionKey(ledger.peekUndoTransaction()), {
+        priorGroups,
+        priorGroupByMember,
+        priorGroupCounter,
+        priorAtoms,
+        memberIds: members,
+        containerId,
+      });
+      refreshSave();
+      overlays.refreshFromLiveGeometry();
+      return { ok: true, operations: [created.operation], verifications: [created.verification] };
     },
     clearSelection() {
       setSelection(emptySelection());
@@ -1609,7 +1863,13 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const result = executor.revertCommittedBatch(operations);
       releaseMutationIgnore();
       if (result.ok) {
-        if (operations.every((operation) => operation.type === "duplicate")) {
+        const wrap = wrapSessions.get(transactionKey(operations));
+        if (wrap) {
+          groups = new Map(wrap.priorGroups);
+          groupByMember = new Map(wrap.priorGroupByMember);
+          groupCounter = wrap.priorGroupCounter;
+          setSelection(wrap.priorAtoms.length > 0 ? selectionFromAtoms([...wrap.priorAtoms], "click") : emptySelection());
+        } else if (operations.every((operation) => operation.type === "duplicate" || operation.type === "createElement")) {
           removeGroupsContaining(new Set(operations.map((operation) => operation.target.nodeId).filter((id): id is VisualNodeId => Boolean(id))));
           runtime.clearSelection();
         }
@@ -1630,6 +1890,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       releaseMutationIgnore();
       if (result.ok) {
         ledger.confirmRedoTransaction();
+        const wrap = wrapSessions.get(transactionKey(operations));
+        if (wrap) {
+          setSelection(selectionFromAtoms([...wrap.memberIds, wrap.containerId].map(atomForNode), "click"));
+          runtime.groupSelection();
+        }
         const partitions = pastePartitions.get(transactionKey(operations));
         if (partitions) {
           const cloneIds = result.operations.map((operation) => operation.target.nodeId).filter((id): id is VisualNodeId => Boolean(id));
@@ -1666,50 +1931,42 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         }
         const projection = JSON.parse(JSON.stringify(checkpoint.operations)) as EditorOperation[];
         const cloneCreations = projection.filter((operation): operation is DuplicateOperation => operation.type === "duplicate");
+        const createdOps = projection.filter((operation): operation is CreateElementOperation => operation.type === "createElement");
         const liveCloneCounts = new Map<string, number>();
         for (const element of Array.from(root.querySelectorAll<HTMLElement>("[data-otf-clone-id]"))) {
           const cloneId = element.getAttribute("data-otf-clone-id");
           if (cloneId) liveCloneCounts.set(cloneId, (liveCloneCounts.get(cloneId) ?? 0) + 1);
         }
+        const liveCreatedCounts = new Map<string, number>();
+        for (const element of Array.from(root.querySelectorAll<HTMLElement>("[data-otf-element-id]:not([data-otf-preview])"))) {
+          const elementId = element.getAttribute("data-otf-element-id");
+          if (elementId) liveCreatedCounts.set(elementId, (liveCreatedCounts.get(elementId) ?? 0) + 1);
+        }
         const creationIds = new Set(cloneCreations.map((operation) => operation.payload.cloneId));
+        const createdIds = new Set(createdOps.map((operation) => operation.payload.elementId));
         const invalidLiveClone = [...liveCloneCounts].find(([cloneId, count]) => count !== 1 || !creationIds.has(cloneId));
         const missingLiveClone = cloneCreations.find((operation) => liveCloneCounts.get(operation.payload.cloneId) !== 1);
-        if (invalidLiveClone || missingLiveClone) {
+        const invalidLiveCreated = [...liveCreatedCounts].find(([elementId, count]) => count !== 1 || !createdIds.has(elementId));
+        const missingLiveCreated = createdOps.find((operation) => liveCreatedCounts.get(operation.payload.elementId) !== 1);
+        if (invalidLiveClone || missingLiveClone || invalidLiveCreated || missingLiveCreated) {
           const error = invalidLiveClone
             ? `live_clone_identity_invalid:${invalidLiveClone[0]}:${String(invalidLiveClone[1])}`
-            : `live_clone_missing:${missingLiveClone?.payload.cloneId ?? "unknown"}`;
+            : missingLiveClone
+              ? `live_clone_missing:${missingLiveClone.payload.cloneId}`
+              : invalidLiveCreated
+                ? `live_created_identity_invalid:${invalidLiveCreated[0]}:${String(invalidLiveCreated[1])}`
+                : `live_created_missing:${missingLiveCreated?.payload.elementId ?? "unknown"}`;
           logV2("save", { owner: "IDENTITY", checkpointRevision, checkpointCount: projection.length, error, storageCalled: false });
           return { ok: false, error, failureKind: "IDENTITY" };
         }
-        const persistedRevisionBefore = ledger.persistedRevision;
-        const identities = projection.map((operation) =>
-          operation.target.signature
-            ? summarizeIdentity({ signature: operation.target.signature })
-            : "missing",
-        );
         const persist = await replacePageOperations(pageKey(), projection);
         logV2("save", {
-          owner: persist.ok ? "PERSISTENCE" : "PERSISTENCE",
-          pageKey: pageKey(),
-          ledgerRevision: ledger.cursor,
-          persistedRevisionBefore,
-          checkpointCount: projection.length,
-          checkpointRevision,
-          serializedBytes: new TextEncoder().encode(JSON.stringify(projection)).byteLength,
-          cloneEntityCount: cloneCreations.length,
-          hostEntityCount: new Set(projection.flatMap((operation) => {
-            const signature = operation.target.signature;
-            return operation.type !== "duplicate" && !creationIds.has(operation.target.nodeId ?? "") && signature
-              ? [summarizeIdentity({ signature })]
-              : [];
-          })).size,
-          perPropertyCounts: Object.fromEntries(["duplicate", "move", "resize", "rotate", "crop", "style", "text", "zIndex", "hide"].map((type) => [type, projection.filter((operation) => operation.type === type).length])),
-          cloneCreationIds: cloneCreations.map((operation) => operation.payload.cloneId),
-          storageCalled: true,
-          operationIds: projection.map((operation) => operation.id),
-          identities,
           writeOk: persist.ok,
-          error: persist.ok ? undefined : persist.error,
+          stored: persist.operationCount ?? null,
+          err: persist.error ?? "",
+          count: projection.length,
+          pageKey: pageKey(),
+          perPropertyCounts: Object.fromEntries(["createElement", "duplicate", "move", "resize", "rotate", "crop", "style", "text", "zIndex", "hide"].map((type) => [type, projection.filter((operation) => operation.type === type).length])),
         });
         if (!persist.ok) {
           return {
@@ -1754,7 +2011,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         logV2("replay-skipped-active-edit", { owner: "LEDGER", generation, startingRevision, dirty: ledger.isDirty() });
         return { ok: true, applied: 0, unresolved: 0, failed: 0 };
       }
-      const superseded = (): boolean => generation !== replayGeneration || started || ledger.cursor !== startingRevision;
+      // Edit mode may turn on while this replay is awaiting load. Do not abort
+      // an in-flight replay just because `started` flipped; that dropped
+      // createElement/duplicate reconstruction after a live-page reload.
+      const superseded = (): boolean => generation !== replayGeneration || ledger.cursor !== startingRevision;
       await waitForDocumentReady(root);
       const loaded = await loadPageOperations(pageKey());
       if (superseded()) {
@@ -1770,18 +2030,31 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         Number(a.payload.detached) - Number(b.payload.detached));
       const layers = toApply.filter(isLayerOperation);
       const duplicates = toApply.filter((operation): operation is DuplicateOperation => operation.type === "duplicate");
+      const created = toApply.filter((operation): operation is CreateElementOperation => operation.type === "createElement");
       const effects = toApply.filter((operation) =>
         operation.type === "resize" || operation.type === "rotate" || operation.type === "crop" ||
         operation.type === "style" || operation.type === "text" || operation.type === "hide");
-      if (duplicates.length > 0 && root.readyState !== "complete") {
+      if ((duplicates.length > 0 || created.length > 0) && root.readyState !== "complete") {
         await new Promise<void>((resolve) => {
           root.defaultView?.addEventListener("load", () => { resolve(); }, { once: true });
           root.defaultView?.setTimeout(resolve, 2_000);
         });
       }
       if (superseded()) return { ok: true, applied: 0, unresolved: 0, failed: 0 };
-      const duplicateResults = duplicates.map((operation) => executor.replayOperation(operation));
-      await waitForReplayTargets(root, [...moves, ...effects, ...layers], {
+      const ownedNodeIds = new Set([
+        ...created.map((operation) => operation.payload.elementId),
+        ...duplicates.map((operation) => operation.payload.cloneId),
+      ]);
+      const isOwnedOperation = (operation: EditorOperation): boolean => {
+        const nodeId = operation.target.nodeId;
+        const dataset = operation.target.signature?.datasetFingerprint ?? "";
+        return Boolean(nodeId && ownedNodeIds.has(nodeId))
+          || dataset.startsWith("otfElementId=")
+          || dataset.startsWith("otfCloneId=");
+      };
+      // Wait for the host page to finish hydrating before inserting OTF-owned
+      // nodes. Applying creates first let SPA reconstruction drop them.
+      await waitForReplayTargets(root, [...moves, ...effects, ...layers].filter((operation) => !isOwnedOperation(operation)), {
         maxFrames: 240,
         canResolve: (operation) => Boolean(
           operation.target.signature &&
@@ -1792,13 +2065,15 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         logV2("replay-superseded", { owner: "LEDGER", generation, startingRevision, currentRevision: ledger.cursor });
         return { ok: true, applied: 0, unresolved: 0, failed: 0 };
       }
+      const createdResults = created.map((operation) => executor.replayOperation(operation));
+      const duplicateResults = duplicates.map((operation) => executor.replayOperation(operation));
       let applied = 0;
       let unresolved = 0;
       let failed = 0;
       let failureKind: ReplayResult["failureKind"];
-      for (const result of duplicateResults) {
+      for (const result of [...createdResults, ...duplicateResults]) {
         if (result.ok) applied += 1;
-        else { failed += 1; failureKind = "EXECUTION"; logV2("replay-duplicate-failed", { error: result.error }); }
+        else { failed += 1; failureKind = "EXECUTION"; logV2("replay-create-failed", { error: result.error, expected: result.verification?.expected, actual: result.verification?.actual }); }
       }
       ignoreMutations = true;
       logV2("replay-start", {
@@ -1924,14 +2199,53 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       if (commandId === "lasso") {
         if (stylePanelOpen) { stylePanelOpen = false; cancelStylePreview(); overlays.closeStylePanel(); }
         if (textEditorOpen) { textEditorOpen = false; overlays.closeTextEditor(true); }
+        closeCreateChrome();
         overlays.toggleLassoChooser();
         refreshToolbar();
         return;
       }
       if (commandId === "lasso-rectangle") { runtime.armLasso("rectangle"); return; }
       if (commandId === "lasso-freeform") { runtime.armLasso("freeform"); return; }
+      if (commandId === "more") {
+        if (stylePanelOpen) { stylePanelOpen = false; cancelStylePreview(); overlays.closeStylePanel(); }
+        if (textEditorOpen) { textEditorOpen = false; overlays.closeTextEditor(true); }
+        overlays.closeLassoChooser();
+        overlays.closeComponentPalette();
+        overlays.toggleMoreMenu();
+        refreshToolbar();
+        return;
+      }
+      if (commandId === "add-element") {
+        overlays.openComponentPalette({
+          canSample: selectedIds().length === 1,
+          sampling: paletteSampling && selectedIds().length === 1,
+          wrapEnabled: selectedIds().length > 0,
+        });
+        return;
+      }
+      if (commandId === "wrap-selection") {
+        runtime.createContainerAroundSelection();
+        return;
+      }
+      if (commandId === "palette-style-sampled") {
+        paletteSampling = true;
+        overlays.setPaletteSampling(true);
+        return;
+      }
+      if (commandId === "palette-style-default") {
+        paletteSampling = false;
+        overlays.setPaletteSampling(false);
+        return;
+      }
+      if (commandId.startsWith("create-")) {
+        const kind = commandId.slice("create-".length);
+        if (isCreatedElementKind(kind)) runtime.armCreate(kind, sampledAppearanceFor(kind));
+        return;
+      }
       if (commandId === "style-panel") {
         overlays.closeLassoChooser();
+        overlays.closeMoreMenu();
+        overlays.closeComponentPalette();
         stylePanelOpen = !stylePanelOpen;
         if (stylePanelOpen) overlays.openStylePanel(stylePanelValues());
         else { cancelStylePreview(); overlays.closeStylePanel(); }
@@ -1940,6 +2254,8 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       }
       if (commandId === "text-edit") {
         overlays.closeLassoChooser();
+        overlays.closeMoreMenu();
+        overlays.closeComponentPalette();
         const selected = singleSelectedElement();
         const surface = selected ? textSurface(selected.element) : null;
         if (!surface) return;
@@ -1950,6 +2266,8 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       }
       if (commandId === "crop-mode") {
         overlays.closeLassoChooser();
+        overlays.closeMoreMenu();
+        overlays.closeComponentPalette();
         cropMode = !cropMode;
         const selected = singleSelectedElement();
         const subject = selected && cropMode ? resolveCropSubject(selected.element) : null;
