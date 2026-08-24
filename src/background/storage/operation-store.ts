@@ -111,8 +111,15 @@ export class OperationStore {
     pageKey: PageKey,
     operations: EditorOperation[],
   ): Promise<{ totalCount: number; trimmed: number }> {
-    const valid = operations.filter(isPersistableOperation);
-    return this.replacePageOperationsInternal(pageKey, valid);
+    const invalid = operations.find((operation) => !isPersistableOperation(operation));
+    if (invalid) {
+      const validation = validateOperation(invalid);
+      throw new Error(`invalid_checkpoint_operation:${invalid.id}:${validation.errors.join("|") || invalid.status}`);
+    }
+    if (operations.length > MAX_OPERATIONS_PER_PAGE) {
+      throw new Error(`checkpoint_operation_limit_exceeded:${String(operations.length)}:${String(MAX_OPERATIONS_PER_PAGE)}`);
+    }
+    return this.replacePageOperationsInternal(pageKey, operations);
   }
 
   /**

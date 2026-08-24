@@ -1,10 +1,22 @@
 import type { DuplicateOperation, EditorOperation, HideOperation, MoveOperation, ResizeOperation, RotateOperation, ZIndexOperation } from "../editor/operations.js";
 import { freezeCommittedOperation } from "./freeze-operation.js";
 import { identifyingContent, isGeneratedIdentityValue } from "./visual-identity.js";
+import { validateOperation } from "../editor/validation/validate-operation.js";
 
 export type CanonicalCheckpoint =
   | { readonly ok: true; readonly operations: EditorOperation[] }
   | { readonly ok: false; readonly error: string };
+
+const CLONE_DATA_PREFIX = "otfCloneId=";
+
+function cloneIdFromOperation(operation: EditorOperation): string | null {
+  if (operation.type === "duplicate") return operation.payload.cloneId;
+  const signature = operation.target.signature;
+  const dataset = signature?.datasetFingerprint;
+  if (dataset?.startsWith(CLONE_DATA_PREFIX)) return dataset.slice(CLONE_DATA_PREFIX.length) || null;
+  const cssMatch = /\[data-otf-clone-id=["']([^"']+)["']\]/u.exec(signature?.cssPath ?? "");
+  return cssMatch?.[1] ?? null;
+}
 
 function isMoveOperation(value: EditorOperation): value is MoveOperation {
   return value.type === "move";
@@ -138,8 +150,19 @@ function composeFinalState<T extends ResizeOperation | RotateOperation | HideOpe
 export function projectCanonicalCheckpoint(
   operations: readonly EditorOperation[],
 ): CanonicalCheckpoint {
+  const duplicates = new Map<string, DuplicateOperation>();
+  for (const operation of operations) {
+    if (operation.status !== "approved") return { ok: false, error: `invalid_operation_status:${operation.id}:${operation.status}` };
+    if (operation.type !== "duplicate") continue;
+    const cloneId = operation.payload.cloneId;
+    if (duplicates.has(cloneId)) return { ok: false, error: `duplicate_clone_creation:${cloneId}` };
+    if (operation.target.nodeId !== cloneId) return { ok: false, error: `clone_creation_target_mismatch:${cloneId}` };
+    duplicates.set(cloneId, operation);
+  }
   const sessionKeys = new Map<string, string>();
   const checkpointKey = (operation: MoveOperation | ZIndexOperation): string | null => {
+    const cloneId = cloneIdFromOperation(operation);
+    if (cloneId) return duplicates.has(cloneId) ? `clone:${cloneId}` : null;
     const durable = durableMoveKey(operation);
     if (!durable) return null;
     const nodeId = operation.target.nodeId;
@@ -154,13 +177,15 @@ export function projectCanonicalCheckpoint(
   const resizes = new Map<string, ResizeOperation>();
   const rotates = new Map<string, RotateOperation>();
   const hides = new Map<string, HideOperation>();
-  const duplicates = new Map<string, DuplicateOperation>();
   const rest: EditorOperation[] = [];
 
   for (const operation of operations) {
     if (operation.type === "duplicate") {
-      duplicates.set(operation.payload.cloneId, operation);
       continue;
+    }
+    const referencedClone = cloneIdFromOperation(operation);
+    if (referencedClone && !duplicates.has(referencedClone)) {
+      return { ok: false, error: `clone_effect_missing_creation:${referencedClone}:${operation.id}:${operation.type}:${operation.target.nodeId ?? "missing"}:known=${[...duplicates.keys()].sort().join(",") || "none"}` };
     }
     if (operation.type === "resize" || operation.type === "rotate" || operation.type === "hide") {
       const key = checkpointKey(operation as ResizeOperation & MoveOperation);
@@ -201,7 +226,8 @@ export function projectCanonicalCheckpoint(
       ),
     );
     if (group && group.continuity !== continuity && !sameAdoptedNode) {
-      return { ok: false, error: "move_durable_identity_collision" };
+      const priorNodeIds = [...new Set(group.operations.map((candidate) => candidate.target.nodeId ?? "missing"))].join(",");
+      return { ok: false, error: `move_durable_identity_collision:${key}:${group.continuity}:${continuity}:${priorNodeIds}:${operation.target.nodeId ?? "missing"}` };
     }
     if (group) {
       group.operations.push(operation);
@@ -241,9 +267,10 @@ export function projectCanonicalCheckpoint(
       metadata: { ...move.metadata, finalRect, affectedRect: finalRect },
     }));
   }
-  const canonicalMoves = [...canonicalMovesByKey.values()]
-    .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-  const canonicalResizes = [...resizes.entries()].map(([key, resize]) => {
+  const sortEntries = <T>(entries: Iterable<readonly [string, T]>): T[] =>
+    [...entries].sort(([left], [right]) => left.localeCompare(right)).map(([, value]) => value);
+  const canonicalMoves = sortEntries(canonicalMovesByKey.entries());
+  const canonicalResizes = [...resizes.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([key, resize]) => {
     const placementRect = canonicalMovesByKey.get(key)?.metadata?.finalRect;
     const sizeRect = resize.metadata?.finalRect ?? resize.metadata?.affectedRect;
     if (!placementRect || !sizeRect) return resize;
@@ -258,16 +285,18 @@ export function projectCanonicalCheckpoint(
       metadata: { ...resize.metadata, finalRect, affectedRect: finalRect },
     });
   });
-  return {
-    ok: true,
-    operations: [
-      ...duplicates.values(),
-      ...rest,
+  const projected = [
+      ...sortEntries(duplicates.entries()),
+      ...rest.slice().sort((a, b) => a.type.localeCompare(b.type) || (a.target.nodeId ?? "").localeCompare(b.target.nodeId ?? "") || a.id.localeCompare(b.id)),
       ...canonicalMoves,
       ...canonicalResizes,
-      ...rotates.values(),
-      ...hides.values(),
-      ...layers.values(),
-    ],
-  };
+      ...sortEntries(rotates.entries()),
+      ...sortEntries(layers.entries()),
+      ...sortEntries(hides.entries()),
+    ];
+  for (const operation of projected) {
+    const validation = validateOperation(operation);
+    if (!validation.ok) return { ok: false, error: `invalid_checkpoint_operation:${operation.id}:${validation.errors.join("|")}` };
+  }
+  return { ok: true, operations: projected };
 }

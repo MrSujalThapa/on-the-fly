@@ -116,6 +116,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
   setSave(state: {
     visible: boolean;
     status?: "idle" | "saving" | "saved" | "failed";
+    error?: string;
     onSave?: () => void;
   }): void;
 } {
@@ -410,6 +411,8 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     setSave(state) {
       saveHandler = state.onSave ?? null;
       host?.setAttribute("data-otf-save-status", state.status ?? "idle");
+      if (state.error) host?.setAttribute("data-otf-save-error", state.error);
+      else host?.removeAttribute("data-otf-save-error");
       if (saveButton) {
         saveButton.hidden = !state.visible;
         saveButton.textContent = state.status === "saving"

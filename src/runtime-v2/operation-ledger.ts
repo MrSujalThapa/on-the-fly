@@ -32,6 +32,6 @@ export interface OperationLedger {
   confirmRedo(): EditorOperation | null;
   confirmUndoTransaction(): readonly EditorOperation[];
   confirmRedoTransaction(): readonly EditorOperation[];
-  markPersisted(): void;
+  markPersisted(revision?: number): void;
   hydratePersisted(operations: readonly EditorOperation[]): void;
 }

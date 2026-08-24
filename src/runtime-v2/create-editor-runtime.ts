@@ -148,7 +148,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   let pasteCounter = 0;
   const pastePartitions = new Map<string, readonly (readonly number[])[]>();
   let operationCounter = 0;
+  let replayGeneration = 0;
   let saveStatus: "idle" | "saving" | "saved" | "failed" = "idle";
+  let lastSaveError: string | undefined;
 
   const pageKey = (): string => computeDocumentPageKey(root);
 
@@ -159,6 +161,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     overlays.setSave({
       visible: ledger.isDirty() || saveStatus !== "idle",
       status: saveStatus,
+      ...(lastSaveError ? { error: lastSaveError } : {}),
       onSave: () => {
         void runtime.save();
       },
@@ -261,9 +264,14 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   };
 
   const reapplyActive = (): void => {
+    const checkpoint = projectCanonicalCheckpoint(ledger.activeOperations());
+    if (!checkpoint.ok) {
+      logV2("reapply-checkpoint-failed", { owner: "LEDGER", error: checkpoint.error });
+      return;
+    }
     ignoreMutations = true;
     try {
-      for (const operation of ledger.activeOperations()) {
+      for (const operation of checkpoint.operations) {
         if (!isMoveOperation(operation) && !isLayerOperation(operation)) {
           continue;
         }
@@ -1201,9 +1209,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         return saveInFlight;
       }
       saveStatus = "saving";
+      lastSaveError = undefined;
       refreshSave();
       const pending = (async (): Promise<PersistResult> => {
         const active = ledger.activeOperations();
+        const checkpointRevision = ledger.cursor;
         const checkpoint = projectCanonicalCheckpoint(active);
         if (!checkpoint.ok) {
           logV2("save", {
@@ -1219,6 +1229,22 @@ export function createEditorRuntime(root: Document): EditorRuntime {
           };
         }
         const projection = JSON.parse(JSON.stringify(checkpoint.operations)) as EditorOperation[];
+        const cloneCreations = projection.filter((operation): operation is DuplicateOperation => operation.type === "duplicate");
+        const liveCloneCounts = new Map<string, number>();
+        for (const element of Array.from(root.querySelectorAll<HTMLElement>("[data-otf-clone-id]"))) {
+          const cloneId = element.getAttribute("data-otf-clone-id");
+          if (cloneId) liveCloneCounts.set(cloneId, (liveCloneCounts.get(cloneId) ?? 0) + 1);
+        }
+        const creationIds = new Set(cloneCreations.map((operation) => operation.payload.cloneId));
+        const invalidLiveClone = [...liveCloneCounts].find(([cloneId, count]) => count !== 1 || !creationIds.has(cloneId));
+        const missingLiveClone = cloneCreations.find((operation) => liveCloneCounts.get(operation.payload.cloneId) !== 1);
+        if (invalidLiveClone || missingLiveClone) {
+          const error = invalidLiveClone
+            ? `live_clone_identity_invalid:${invalidLiveClone[0]}:${String(invalidLiveClone[1])}`
+            : `live_clone_missing:${missingLiveClone?.payload.cloneId ?? "unknown"}`;
+          logV2("save", { owner: "IDENTITY", checkpointRevision, checkpointCount: projection.length, error, storageCalled: false });
+          return { ok: false, error, failureKind: "IDENTITY" };
+        }
         const persistedRevisionBefore = ledger.persistedRevision;
         const identities = projection.map((operation) =>
           operation.target.signature
@@ -1232,6 +1258,18 @@ export function createEditorRuntime(root: Document): EditorRuntime {
           ledgerRevision: ledger.cursor,
           persistedRevisionBefore,
           checkpointCount: projection.length,
+          checkpointRevision,
+          serializedBytes: new TextEncoder().encode(JSON.stringify(projection)).byteLength,
+          cloneEntityCount: cloneCreations.length,
+          hostEntityCount: new Set(projection.flatMap((operation) => {
+            const signature = operation.target.signature;
+            return operation.type !== "duplicate" && !creationIds.has(operation.target.nodeId ?? "") && signature
+              ? [summarizeIdentity({ signature })]
+              : [];
+          })).size,
+          perPropertyCounts: Object.fromEntries(["duplicate", "move", "resize", "rotate", "zIndex", "hide"].map((type) => [type, projection.filter((operation) => operation.type === type).length])),
+          cloneCreationIds: cloneCreations.map((operation) => operation.payload.cloneId),
+          storageCalled: true,
           operationIds: projection.map((operation) => operation.id),
           identities,
           writeOk: persist.ok,
@@ -1244,13 +1282,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
             failureKind: "PERSISTENCE",
           };
         }
-        const currentCheckpoint = projectCanonicalCheckpoint(ledger.activeOperations());
-        if (
-          currentCheckpoint.ok &&
-          JSON.stringify(currentCheckpoint.operations) === JSON.stringify(projection)
-        ) {
-          ledger.markPersisted();
-        }
+        ledger.markPersisted(checkpointRevision);
         return { ok: true };
       })();
       const tracked = pending.catch((error: unknown): PersistResult => ({
@@ -1262,6 +1294,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       try {
         const result = await tracked;
         saveStatus = result.ok ? "saved" : "failed";
+        lastSaveError = result.ok ? undefined : result.error ?? "save_failed";
         if (result.ok) {
           root.defaultView?.setTimeout(() => {
             if (saveStatus === "saved") {
@@ -1279,8 +1312,19 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       }
     },
     async replay(): Promise<ReplayResult> {
+      const generation = ++replayGeneration;
+      const startingRevision = ledger.cursor;
+      if (started || ledger.isDirty()) {
+        logV2("replay-skipped-active-edit", { owner: "LEDGER", generation, startingRevision, dirty: ledger.isDirty() });
+        return { ok: true, applied: 0, unresolved: 0, failed: 0 };
+      }
+      const superseded = (): boolean => generation !== replayGeneration || started || ledger.cursor !== startingRevision;
       await waitForDocumentReady(root);
       const loaded = await loadPageOperations(pageKey());
+      if (superseded()) {
+        logV2("replay-superseded", { owner: "LEDGER", generation, startingRevision, currentRevision: ledger.cursor });
+        return { ok: true, applied: 0, unresolved: 0, failed: 0 };
+      }
       const checkpoint = projectCanonicalCheckpoint(loaded);
       const toApply = checkpoint.ok ? checkpoint.operations : loaded;
       // Reconstruct ancestor-controlled layout before promoting independent
@@ -1297,6 +1341,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
           root.defaultView?.setTimeout(resolve, 2_000);
         });
       }
+      if (superseded()) return { ok: true, applied: 0, unresolved: 0, failed: 0 };
       const duplicateResults = duplicates.map((operation) => executor.replayOperation(operation));
       await waitForReplayTargets(root, [...moves, ...effects, ...layers], {
         maxFrames: 240,
@@ -1305,6 +1350,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
           isResolvedVisual(visualModel.resolveIdentity({ signature: operation.target.signature })),
         ),
       });
+      if (superseded()) {
+        logV2("replay-superseded", { owner: "LEDGER", generation, startingRevision, currentRevision: ledger.cursor });
+        return { ok: true, applied: 0, unresolved: 0, failed: 0 };
+      }
       let applied = 0;
       let unresolved = 0;
       let failed = 0;
@@ -1390,6 +1439,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         } else { failed += 1; failureKind = "EXECUTION"; }
       }
       releaseMutationIgnore();
+      if (superseded()) {
+        logV2("replay-hydrate-superseded", { owner: "LEDGER", generation, startingRevision, currentRevision: ledger.cursor });
+        return { ok: false, applied, unresolved, failed: failed + 1, failureKind: "LEDGER" };
+      }
       ledger.hydratePersisted(toApply);
       const ok = unresolved === 0 && failed === 0;
       logV2("replay", {

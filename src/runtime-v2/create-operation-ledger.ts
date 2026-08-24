@@ -100,8 +100,8 @@ export function createOperationLedger(): OperationLedger {
       cursor += operations.length;
       return operations;
     },
-    markPersisted(): void {
-      persistedRevision = cursor;
+    markPersisted(revision = cursor): void {
+      persistedRevision = revision;
     },
     hydratePersisted(operations: readonly EditorOperation[]): void {
       entries.splice(0, entries.length, ...operations.map((operation) => ({

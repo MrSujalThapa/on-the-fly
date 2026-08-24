@@ -26,6 +26,10 @@ function capabilitiesFor(role: VisualRole): VisualCapabilities {
   return { movable: role === "unit" || role === "collection" || role === "section" };
 }
 
+function cloneEntityRoot(element: HTMLElement): HTMLElement {
+  return element.closest<HTMLElement>("[data-otf-clone-id]") ?? element;
+}
+
 function withNodeId(result: VisualResolveResult, nodeId: VisualNodeId): VisualResolveResult {
   return { ...result, nodeId };
 }
@@ -61,7 +65,7 @@ export function createVisualModel(root: Document): VisualModel {
     binding: HTMLElement,
     role: VisualRole,
     parentId: VisualNodeId | null,
-  ): VisualNodeId => {
+  ): VisualNodeId | null => {
     const existingId = liveIds.get(binding);
     const existing = existingId ? nodes.get(existingId) : undefined;
     if (existing) {
@@ -77,7 +81,10 @@ export function createVisualModel(root: Document): VisualModel {
       return existing.id;
     }
 
-    const id = nextNodeId();
+    const cloneId = binding.getAttribute("data-otf-clone-id")?.trim();
+    const id = cloneId || nextNodeId();
+    const cloneBinding = cloneId ? readCache(cloneId) : null;
+    if (cloneBinding && cloneBinding !== binding) return null;
     const node: VisualNode = {
       id,
       durableIdentity: buildDurableIdentity(binding, root),
@@ -114,7 +121,7 @@ export function createVisualModel(root: Document): VisualModel {
       parentId = upsertNode(discovery.parentBinding, discovery.parentRole, null);
     }
     const id = upsertNode(discovery.binding, discovery.role, parentId);
-    if (parentId) {
+    if (parentId && id) {
       linkChild(parentId, id);
     }
     return id;
@@ -122,7 +129,9 @@ export function createVisualModel(root: Document): VisualModel {
 
   return {
     pick(clientX, clientY) {
-      const stack = root.elementsFromPoint(clientX, clientY);
+      const stack = root.elementsFromPoint(clientX, clientY).map((element) =>
+        element instanceof HTMLElement ? cloneEntityRoot(element) : element,
+      ).filter((element, index, all) => all.indexOf(element) === index);
       const usable = stack.filter((node) => !(node instanceof Element) || !isExtensionRoot(node));
       return materialize(discoverFromPath(usable));
     },
@@ -130,7 +139,7 @@ export function createVisualModel(root: Document): VisualModel {
       if (!element.isConnected || isExtensionRoot(element)) {
         return null;
       }
-      return materialize(discoverFromElement(element));
+      return materialize(discoverFromElement(cloneEntityRoot(element)));
     },
     get(id) {
       return nodes.get(id) ?? null;
@@ -221,6 +230,15 @@ export function createVisualModel(root: Document): VisualModel {
         return withNodeId(resolved, existingId);
       }
       const reboundId = upsertNode(resolved.element, "unit", null);
+      if (!reboundId) {
+        return {
+          kind: "ambiguous",
+          nodeId: null,
+          identity: resolved.identity,
+          candidateCount: 2,
+          evidence: { ...resolved.evidence, strategy: "ambiguous", candidateCount: 2, reason: "duplicate_clone_id" },
+        };
+      }
       return withNodeId(resolved, reboundId);
     },
     cache(id, element) {
