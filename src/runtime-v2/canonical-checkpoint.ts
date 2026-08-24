@@ -1,4 +1,4 @@
-import type { EditorOperation, MoveOperation, ZIndexOperation } from "../editor/operations.js";
+import type { DuplicateOperation, EditorOperation, HideOperation, MoveOperation, ResizeOperation, RotateOperation, ZIndexOperation } from "../editor/operations.js";
 import { freezeCommittedOperation } from "./freeze-operation.js";
 import { identifyingContent, isGeneratedIdentityValue } from "./visual-identity.js";
 
@@ -117,6 +117,20 @@ function composeMove(group: MoveOperation[]): MoveOperation {
   return freezeCommittedOperation(composed);
 }
 
+function composeFinalState<T extends ResizeOperation | RotateOperation | HideOperation>(first: T, last: T): T {
+  const originalRect = first.metadata?.originalRect ?? last.metadata?.originalRect;
+  const finalRect = last.metadata?.finalRect ?? last.metadata?.affectedRect;
+  return freezeCommittedOperation({
+    ...last,
+    target: first.target,
+    metadata: {
+      ...last.metadata,
+      ...(originalRect ? { originalRect } : {}),
+      ...(finalRect ? { finalRect, affectedRect: finalRect } : {}),
+    },
+  });
+}
+
 /**
  * Session history stays on the ledger. Persistence stores this canonical
  * projection: one final MOVE per durable target.
@@ -137,9 +151,32 @@ export function projectCanonicalCheckpoint(
   };
   const moves = new Map<string, { continuity: string; operations: MoveOperation[] }>();
   const layers = new Map<string, ZIndexOperation>();
+  const resizes = new Map<string, ResizeOperation>();
+  const rotates = new Map<string, RotateOperation>();
+  const hides = new Map<string, HideOperation>();
+  const duplicates = new Map<string, DuplicateOperation>();
   const rest: EditorOperation[] = [];
 
   for (const operation of operations) {
+    if (operation.type === "duplicate") {
+      duplicates.set(operation.payload.cloneId, operation);
+      continue;
+    }
+    if (operation.type === "resize" || operation.type === "rotate" || operation.type === "hide") {
+      const key = checkpointKey(operation as ResizeOperation & MoveOperation);
+      if (!key) return { ok: false, error: `${operation.type}_missing_durable_identity` };
+      if (operation.type === "resize") {
+        const first = resizes.get(key);
+        resizes.set(key, first ? composeFinalState(first, operation) : operation);
+      } else if (operation.type === "rotate") {
+        const first = rotates.get(key);
+        rotates.set(key, first ? composeFinalState(first, operation) : operation);
+      } else {
+        const first = hides.get(key);
+        hides.set(key, first ? composeFinalState(first, operation) : operation);
+      }
+      continue;
+    }
     if (isLayerOperation(operation)) {
       const key = checkpointKey(operation);
       if (!key) {
@@ -178,6 +215,14 @@ export function projectCanonicalCheckpoint(
     .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   return {
     ok: true,
-    operations: [...rest, ...canonicalMoves, ...layers.values()],
+    operations: [
+      ...duplicates.values(),
+      ...rest,
+      ...canonicalMoves,
+      ...resizes.values(),
+      ...rotates.values(),
+      ...hides.values(),
+      ...layers.values(),
+    ],
   };
 }

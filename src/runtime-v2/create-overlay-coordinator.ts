@@ -20,6 +20,7 @@ const SAVE_BUTTON_CLASS = "otf-save-button";
 const OUTLINE_CLASS = "otf-selection-outline";
 const MEMBER_OUTLINE_CLASS = "otf-selection-member-outline";
 const LASSO_CLASS = "otf-lasso";
+const HANDLE_CLASS = "otf-transform-handle";
 
 function serializeRect(rect: IntendedRect): string {
   return `${String(rect.x)},${String(rect.y)},${String(rect.width)},${String(rect.height)}`;
@@ -98,6 +99,13 @@ function overlayStyles(doc: Document): HTMLStyleElement {
       background: rgba(37, 99, 235, 0.08);
       pointer-events: none;
     }
+    .${HANDLE_CLASS} { position: absolute; width: 10px; height: 10px; box-sizing: border-box; border: 2px solid currentColor; background: white; color: #2563eb; border-radius: 50%; pointer-events: auto; }
+    .otf-overlay-layer[data-selection-kind="group"] .${HANDLE_CLASS} { color: #7c3aed; }
+    .${HANDLE_CLASS}[data-handle="resize-nw"] { left: -6px; top: -6px; cursor: nwse-resize; }
+    .${HANDLE_CLASS}[data-handle="resize-ne"] { right: -6px; top: -6px; cursor: nesw-resize; }
+    .${HANDLE_CLASS}[data-handle="resize-sw"] { left: -6px; bottom: -6px; cursor: nesw-resize; }
+    .${HANDLE_CLASS}[data-handle="resize-se"] { right: -6px; bottom: -6px; cursor: nwse-resize; }
+    .${HANDLE_CLASS}[data-handle="rotate"] { left: 50%; top: -28px; transform: translateX(-50%); cursor: grab; }
   `;
   return style;
 }
@@ -122,6 +130,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
   let outline: HTMLElement | null = null;
   let memberOutlines: HTMLElement[] = [];
   let lasso: HTMLElement | null = null;
+  let handlePointerDown: ((kind: "resize-nw" | "resize-ne" | "resize-sw" | "resize-se" | "rotate", event: PointerEvent) => void) | null = null;
   let rafId = 0;
   let mode: InputMode = "edit";
   const scrollCleanups: Array<() => void> = [];
@@ -157,6 +166,17 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       outline = deps.document.createElement("div");
       outline.className = OUTLINE_CLASS;
       layer.append(outline);
+      for (const kind of ["resize-nw", "resize-ne", "resize-sw", "resize-se", "rotate"] as const) {
+        const handle = deps.document.createElement("div");
+        handle.className = HANDLE_CLASS;
+        handle.dataset.handle = kind;
+        handle.addEventListener("pointerdown", (event) => {
+          event.preventDefault(); event.stopPropagation();
+          handle.setPointerCapture(event.pointerId);
+          handlePointerDown?.(kind, event);
+        });
+        outline.append(handle);
+      }
     }
     outline.setAttribute("data-selection-kind", layer.getAttribute("data-selection-kind") ?? "selection");
     position(outline, rect);
@@ -339,6 +359,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       selected = [];
       painted = null;
       saveHandler = null;
+      handlePointerDown = null;
     },
     showSelection(nodeIds: readonly VisualNodeId[], kind = "selection") {
       selected = nodeIds;
@@ -378,6 +399,9 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     },
     selectionOutlineRect() {
       return measureSelected().union;
+    },
+    setHandlePointerDown(handler) {
+      handlePointerDown = handler;
     },
     setMode(next: InputMode) {
       mode = next;

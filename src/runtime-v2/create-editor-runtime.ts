@@ -1,4 +1,4 @@
-import type { EditorOperation, MoveOperation, ZIndexOperation } from "../editor/operations.js";
+import type { DuplicateOperation, EditorOperation, MoveOperation, ResizeOperation, ZIndexOperation } from "../editor/operations.js";
 import type { GroupId, VisualNodeId } from "../editor/ids.js";
 import { computeDocumentPageKey } from "../content/page-identity.js";
 import {
@@ -23,6 +23,10 @@ import type { IntendedRect } from "./placement-engine.js";
 import { summarizeIdentity } from "./visual-identity.js";
 import { isResolvedVisual } from "./visual-model.js";
 import { projectCanonicalCheckpoint } from "./canonical-checkpoint.js";
+import { buildDuplicateFromClipboardEntry } from "../editor/duplicate/duplicate-element.js";
+import { buildHideOperation, buildMoveOperation, buildResizeOperation, buildRotateOperation } from "../editor/transform/operation-factory.js";
+import { readStoredTransformState } from "../editor/dom/element-snapshot.js";
+import { resizeRectFromCorner, rotatedMemberRect, scaleRects, type ResizeCorner } from "./editor-parity-geometry.js";
 import {
   buildLassoSampleGrid,
   LASSO_THRESHOLD_PX,
@@ -68,6 +72,12 @@ interface LassoGesture {
 
 type PointerGesture = MovingGesture | LassoGesture;
 
+interface ClipboardSnapshot {
+  copiedAt: number;
+  items: readonly DuplicateOperation[];
+  groupPartitions: readonly (readonly number[])[];
+}
+
 function isMoveOperation(value: { type: string }): value is MoveOperation {
   return value.type === "move";
 }
@@ -112,6 +122,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   let previousUserSelect = "";
   let resizeObserver: ResizeObserver | null = null;
   let saveInFlight: Promise<PersistResult> | null = null;
+  let clipboard: ClipboardSnapshot | null = null;
+  let pasteCounter = 0;
+  const pastePartitions = new Map<string, readonly (readonly number[])[]>();
+  let operationCounter = 0;
   let saveStatus: "idle" | "saving" | "saved" | "failed" = "idle";
 
   const pageKey = (): string => computeDocumentPageKey(root);
@@ -142,6 +156,35 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   };
 
   const selectedIds = (): VisualNodeId[] => flattenSelection(selection, groups);
+
+  const nextOperationId = (kind: string): string => {
+    operationCounter += 1;
+    return `otf-${kind}-${Date.now().toString(36)}-${operationCounter.toString(36)}`;
+  };
+
+  const transactionKey = (operations: readonly EditorOperation[]): string => operations.map((operation) => operation.id).join("|");
+
+  const removeGroupsContaining = (memberIds: ReadonlySet<VisualNodeId>): void => {
+    groups = new Map([...groups].filter(([, group]) => !group.memberIds.some((id) => memberIds.has(id))));
+    groupByMember = new Map([...groups].flatMap(([groupId, group]) => group.memberIds.map((id) => [id, groupId] as const)));
+  };
+
+  const restorePasteGroups = (cloneIds: readonly VisualNodeId[], partitions: readonly (readonly number[])[]): SelectionAtom[] => {
+    const atoms: SelectionAtom[] = cloneIds.map((nodeId) => ({ kind: "node", nodeId }));
+    for (const partition of partitions) {
+      const members = partition.map((index) => cloneIds[index]).filter((id): id is VisualNodeId => Boolean(id));
+      if (members.length < 2) continue;
+      const groupId: GroupId = `otf-group-${(++groupCounter).toString(36)}`;
+      groups.set(groupId, { id: groupId, memberIds: members });
+      for (const member of members) groupByMember.set(member, groupId);
+      for (let index = atoms.length - 1; index >= 0; index -= 1) {
+        const atom = atoms[index];
+        if (atom?.kind === "node" && members.includes(atom.nodeId)) atoms.splice(index, 1);
+      }
+      atoms.push({ kind: "group", groupId });
+    }
+    return atoms;
+  };
 
   const observeSelected = (): void => {
     resizeObserver?.disconnect();
@@ -285,7 +328,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     return x >= rect.x && y >= rect.y && x <= rect.x + rect.width && y <= rect.y + rect.height;
   };
 
-  const movementRoots = (nodeIds: readonly VisualNodeId[]): VisualNodeId[] => {
+  const effectRoots = (nodeIds: readonly VisualNodeId[]): VisualNodeId[] => {
     if (new Set(nodeIds).size !== nodeIds.length) return [];
     const selectedSet = new Set(nodeIds);
     return nodeIds.filter((nodeId) => {
@@ -301,7 +344,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   };
 
   const beginMoveGesture = (event: NormalizedPointer): boolean => {
-    const roots = movementRoots(selectedIds());
+    const roots = effectRoots(selectedIds());
     const targets: PreviewTarget[] = [];
     const elements = new Set<HTMLElement>();
     for (const nodeId of roots) {
@@ -445,6 +488,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   };
 
   const onKeyDown = (event: KeyboardEvent): void => {
+    const keyboardTarget = event.target instanceof HTMLElement ? event.target : null;
+    const textEntry = keyboardTarget && (
+      keyboardTarget.matches("input, textarea, select") || keyboardTarget.isContentEditable
+    );
+    if (textEntry) return;
     if (event.key === "Escape") {
       if (gesture) {
         cancelGesture();
@@ -460,6 +508,27 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return;
     }
     const modifier = event.ctrlKey || event.metaKey;
+    if (modifier && event.key.toLowerCase() === "c") {
+      if (runtime.copySelection()) event.preventDefault();
+      return;
+    }
+    if (modifier && event.key.toLowerCase() === "v") {
+      const result = runtime.pasteClipboard();
+      if (result.ok) event.preventDefault();
+      return;
+    }
+    if (modifier && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      if (event.shiftKey) runtime.redo(); else runtime.undo();
+      return;
+    }
+    if (modifier && event.key.toLowerCase() === "y") {
+      event.preventDefault(); runtime.redo(); return;
+    }
+    if (event.key === "Delete" || event.key === "Backspace") {
+      if (selectedIds().length > 0) { event.preventDefault(); runtime.deleteSelection(); }
+      return;
+    }
     if (modifier && event.key.toLowerCase() === "g") {
       event.preventDefault();
       if (event.shiftKey) runtime.ungroupSelection();
@@ -575,6 +644,24 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         ownerHolder.current = new DisposableOwner();
       }
       overlays.mount();
+      overlays.setHandlePointerDown((kind, startEvent) => {
+        const startRect = runtime.measureSelection();
+        const view = root.defaultView;
+        if (!startRect || !view) return;
+        const start = { x: startEvent.clientX, y: startEvent.clientY };
+        const center = { x: startRect.x + startRect.width / 2, y: startRect.y + startRect.height / 2 };
+        const onUp = (event: PointerEvent): void => {
+          view.removeEventListener("pointerup", onUp, true);
+          if (kind === "rotate") {
+            const initial = Math.atan2(start.y - center.y, start.x - center.x);
+            const final = Math.atan2(event.clientY - center.y, event.clientX - center.x);
+            runtime.rotateSelection((final - initial) * 180 / Math.PI);
+          } else {
+            runtime.resizeSelection(resizeRectFromCorner(startRect, kind.slice(-2) as ResizeCorner, event.clientX - start.x, event.clientY - start.y));
+          }
+        };
+        view.addEventListener("pointerup", onUp, true);
+      });
       refreshSave();
       applyUserSelect(true);
       owner().add(() => {
@@ -709,8 +796,140 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       }
       return members;
     },
+    copySelection() {
+      const roots = effectRoots(selectedIds());
+      const items: DuplicateOperation[] = [];
+      const rootIndex = new Map<VisualNodeId, number>();
+      for (const nodeId of roots) {
+        const element = visualModel.bind(nodeId);
+        const identity = visualModel.durableIdentityOf(nodeId);
+        const measured = visualModel.measure([nodeId]).get(nodeId);
+        if (!element || !identity || !measured) return false;
+        const built = buildDuplicateFromClipboardEntry({
+          element,
+          target: { nodeId, signature: identity.signature, rect: measured },
+        }, pageKey(), `clipboard-${nodeId}`, -1);
+        if (!built) return false;
+        items.push(JSON.parse(JSON.stringify(built.operation)) as DuplicateOperation);
+        rootIndex.set(nodeId, items.length - 1);
+      }
+      if (items.length === 0) return false;
+      const groupPartitions = selection.atoms.flatMap((atom) => {
+        if (atom.kind !== "group") return [];
+        const group = groups.get(atom.groupId);
+        if (!group) return [];
+        const indices = group.memberIds.map((id) => rootIndex.get(id)).filter((index): index is number => index !== undefined);
+        return indices.length > 1 ? [indices] : [];
+      });
+      clipboard = Object.freeze({ copiedAt: Date.now(), items: Object.freeze(items), groupPartitions: Object.freeze(groupPartitions) });
+      pasteCounter = 0;
+      return true;
+    },
+    pasteClipboard() {
+      if (!clipboard) return { ok: false, error: "clipboard_empty", rolledBack: false };
+      pasteCounter += 1;
+      const offset = 20 * pasteCounter;
+      const operations = clipboard.items.map((template): DuplicateOperation => {
+        const cloneId = nextOperationId("clone");
+        const pastedRect = {
+          x: template.payload.anchorLeft - (root.defaultView?.scrollX ?? 0) + offset,
+          y: template.payload.anchorTop - (root.defaultView?.scrollY ?? 0) + offset,
+          width: template.payload.anchorWidth,
+          height: template.payload.anchorHeight,
+        };
+        return {
+          ...JSON.parse(JSON.stringify(template)) as DuplicateOperation,
+          id: nextOperationId("duplicate"),
+          target: { ...template.target, nodeId: cloneId },
+          payload: { ...template.payload, cloneId, offsetDx: offset, offsetDy: offset },
+          createdAt: Date.now(),
+          status: "approved",
+          metadata: { ...template.metadata, originalRect: pastedRect, finalRect: pastedRect, affectedRect: pastedRect },
+        };
+      });
+      const expected = new Map(operations.map((operation) => [operation.id, {
+        x: operation.payload.anchorLeft - (root.defaultView?.scrollX ?? 0) + operation.payload.offsetDx,
+        y: operation.payload.anchorTop - (root.defaultView?.scrollY ?? 0) + operation.payload.offsetDy,
+        width: operation.payload.anchorWidth,
+        height: operation.payload.anchorHeight,
+      }]));
+      const result = executor.executeTransaction({ operations, expectedRects: expected });
+      if (!result.ok) return result;
+      const cloneIds = result.operations.map((operation) => operation.target.nodeId).filter((id): id is VisualNodeId => Boolean(id));
+      pastePartitions.set(transactionKey(result.operations), clipboard.groupPartitions);
+      const nextAtoms = restorePasteGroups(cloneIds, clipboard.groupPartitions);
+      setSelection(selectionFromAtoms(nextAtoms, clipboard.groupPartitions.length ? "group" : "click"));
+      refreshSave();
+      return result;
+    },
+    deleteSelection() {
+      const roots = effectRoots(selectedIds());
+      const operations = roots.flatMap((nodeId) => {
+        const element = visualModel.bind(nodeId);
+        const identity = visualModel.durableIdentityOf(nodeId);
+        const measured = visualModel.measure([nodeId]).get(nodeId);
+        if (!element || !identity || !measured) return [];
+        const operation = buildHideOperation({ nodeId, signature: identity.signature, rect: measured }, true, { pageKey: pageKey(), sourceCommand: "delete" }, element.style.display || getComputedStyle(element).display, element);
+        return [{ ...operation, id: nextOperationId("hide"), status: "approved" as const, target: { nodeId, signature: identity.signature }, metadata: { ...operation.metadata, originalRect: measured, finalRect: measured, affectedRect: measured } }];
+      });
+      if (operations.length !== roots.length) return { ok: false, error: "delete_target_unresolved", rolledBack: false };
+      const result = executor.executeTransaction({ operations });
+      if (result.ok) { runtime.clearSelection(); refreshSave(); }
+      return result;
+    },
+    resizeSelection(targetRect) {
+      const roots = effectRoots(selectedIds());
+      const measured = visualModel.measure(roots);
+      const rects = roots.map((id) => measured.get(id)).filter((rect): rect is IntendedRect => Boolean(rect));
+      const startUnion = unionRects(rects);
+      if (!startUnion || rects.length !== roots.length) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
+      const targets = scaleRects(startUnion, targetRect, rects);
+      const operations: ResizeOperation[] = [];
+      for (const [index, nodeId] of roots.entries()) {
+        const identity = visualModel.durableIdentityOf(nodeId);
+        const current = rects[index];
+        const target = targets[index];
+        if (!identity || !current || !target) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
+        const drafted = buildResizeOperation({ nodeId, signature: identity.signature, rect: current }, { width: target.width, height: target.height, mode: "box" }, { pageKey: pageKey(), sourceCommand: "resize" });
+        operations.push({ ...drafted, id: nextOperationId("resize"), status: "approved", target: { nodeId, signature: identity.signature }, metadata: { ...drafted.metadata, originalRect: current, finalRect: target, affectedRect: target } });
+      }
+      const expected = new Map(operations.map((operation) => [operation.id, operation.metadata?.finalRect ?? targetRect]));
+      const result = executor.executeTransaction({ operations, expectedRects: expected });
+      if (result.ok) { renderSelection(); refreshSave(); }
+      return result;
+    },
+    rotateSelection(degrees) {
+      const roots = effectRoots(selectedIds());
+      const measured = visualModel.measure(roots);
+      const rects = roots.map((id) => measured.get(id)).filter((rect): rect is IntendedRect => Boolean(rect));
+      const union = unionRects(rects);
+      if (!union || rects.length !== roots.length) return { ok: false, error: "rotate_target_unresolved", rolledBack: false };
+      const operations: EditorOperation[] = [];
+      const expected = new Map<string, IntendedRect>();
+      for (const [index, nodeId] of roots.entries()) {
+        const identity = visualModel.durableIdentityOf(nodeId);
+        const current = rects[index];
+        const element = visualModel.bind(nodeId);
+        if (!identity || !current || !element) return { ok: false, error: "rotate_target_unresolved", rolledBack: false };
+        const target = rotatedMemberRect(current, union, degrees);
+        const dx = target.x - current.x;
+        const dy = target.y - current.y;
+        if (Math.hypot(dx, dy) > 0.01) {
+          const plan = placement.planMove({ element, currentRect: current, dx, dy });
+          const move = buildMoveOperation({ nodeId, signature: identity.signature, rect: current }, dx, dy, { pageKey: pageKey(), sourceCommand: "rotate:move" });
+          const committed: MoveOperation = { ...move, id: nextOperationId("move"), status: "approved", payload: { ...move.payload, ...plan.payload }, metadata: { ...move.metadata, originalRect: current, finalRect: plan.expectedRect, affectedRect: plan.expectedRect } };
+          operations.push(committed); expected.set(committed.id, plan.expectedRect);
+        }
+        const existing = readStoredTransformState(element)?.rotate ?? 0;
+        const rotate = buildRotateOperation({ nodeId, signature: identity.signature, rect: target }, existing + degrees, { pageKey: pageKey(), sourceCommand: "rotate" });
+        operations.push({ ...rotate, id: nextOperationId("rotate"), status: "approved", target: { nodeId, signature: identity.signature }, metadata: { ...rotate.metadata, originalRect: current, finalRect: target, affectedRect: target } });
+      }
+      const result = executor.executeTransaction({ operations, expectedRects: expected });
+      if (result.ok) { renderSelection(); refreshSave(); }
+      return result;
+    },
     moveSelection(dx, dy): BatchExecutionResult {
-      const roots = movementRoots(selectedIds());
+      const roots = effectRoots(selectedIds());
       ignoreMutations = true;
       const result = executor.executeMoveBatch({ nodeIds: roots, dx, dy, pageKey: pageKey() });
       releaseMutationIgnore();
@@ -763,8 +982,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return result;
     },
     undo() {
-      const operations = ledger.peekUndoTransaction().filter((operation): operation is MoveOperation | ZIndexOperation =>
-        isMoveOperation(operation) || isLayerOperation(operation));
+      const operations = [...ledger.peekUndoTransaction()];
       if (operations.length === 0) {
         return { ok: false, error: "nothing_to_undo", rolledBack: false };
       }
@@ -772,6 +990,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const result = executor.revertCommittedBatch(operations);
       releaseMutationIgnore();
       if (result.ok) {
+        if (operations.every((operation) => operation.type === "duplicate")) {
+          removeGroupsContaining(new Set(operations.map((operation) => operation.target.nodeId).filter((id): id is VisualNodeId => Boolean(id))));
+          runtime.clearSelection();
+        }
         ledger.confirmUndoTransaction();
       }
       refreshSave();
@@ -779,8 +1001,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return result;
     },
     redo() {
-      const operations = ledger.peekRedoTransaction().filter((operation): operation is MoveOperation | ZIndexOperation =>
-        isMoveOperation(operation) || isLayerOperation(operation));
+      const operations = [...ledger.peekRedoTransaction()];
       if (operations.length === 0) {
         return { ok: false, error: "nothing_to_redo", rolledBack: false };
       }
@@ -789,6 +1010,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       releaseMutationIgnore();
       if (result.ok) {
         ledger.confirmRedoTransaction();
+        const partitions = pastePartitions.get(transactionKey(operations));
+        if (partitions) {
+          const cloneIds = result.operations.map((operation) => operation.target.nodeId).filter((id): id is VisualNodeId => Boolean(id));
+          setSelection(selectionFromAtoms(restorePasteGroups(cloneIds, partitions), partitions.length ? "group" : "click"));
+        }
       }
       refreshSave();
       overlays.refreshFromLiveGeometry();
@@ -887,7 +1113,16 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const moves = toApply.filter(isMoveOperation).sort((a, b) =>
         Number(a.payload.detached) - Number(b.payload.detached));
       const layers = toApply.filter(isLayerOperation);
-      await waitForReplayTargets(root, toApply, {
+      const duplicates = toApply.filter((operation): operation is DuplicateOperation => operation.type === "duplicate");
+      const effects = toApply.filter((operation) => operation.type === "resize" || operation.type === "rotate" || operation.type === "hide");
+      if (duplicates.length > 0 && root.readyState !== "complete") {
+        await new Promise<void>((resolve) => {
+          root.defaultView?.addEventListener("load", () => { resolve(); }, { once: true });
+          root.defaultView?.setTimeout(resolve, 2_000);
+        });
+      }
+      const duplicateResults = duplicates.map((operation) => executor.replayOperation(operation));
+      await waitForReplayTargets(root, [...moves, ...effects, ...layers], {
         maxFrames: 240,
         canResolve: (operation) => Boolean(
           operation.target.signature &&
@@ -898,6 +1133,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       let unresolved = 0;
       let failed = 0;
       let failureKind: ReplayResult["failureKind"];
+      for (const result of duplicateResults) {
+        if (result.ok) applied += 1;
+        else { failed += 1; failureKind = "EXECUTION"; logV2("replay-duplicate-failed", { error: result.error }); }
+      }
       ignoreMutations = true;
       logV2("replay-start", {
         owner: "LEDGER",
@@ -945,6 +1184,12 @@ export function createEditorRuntime(root: Document): EditorRuntime {
           failureKind = "EXECUTION";
         }
       }
+      for (const operation of effects) {
+        const result = executor.replayOperation(operation);
+        if (result.ok) applied += 1;
+        else if (result.error === "unresolved_target" || result.error === "ambiguous_target") { unresolved += 1; failureKind = "IDENTITY"; }
+        else { failed += 1; failureKind = "EXECUTION"; }
+      }
       for (const operation of layers) {
         const identity = operation.target.signature
           ? { signature: operation.target.signature }
@@ -969,7 +1214,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         } else { failed += 1; failureKind = "EXECUTION"; }
       }
       releaseMutationIgnore();
-      ledger.hydratePersisted([...moves, ...layers]);
+      ledger.hydratePersisted(toApply);
       const ok = unresolved === 0 && failed === 0;
       logV2("replay", {
         owner: ok ? "LEDGER" : failureKind ?? "LEDGER",

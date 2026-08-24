@@ -13,5 +13,6 @@ export interface OverlayCoordinator {
   refreshFromLiveGeometry(): void;
   clear(): void;
   selectionOutlineRect(): IntendedRect | null;
+  setHandlePointerDown(handler: ((kind: "resize-nw" | "resize-ne" | "resize-sw" | "resize-se" | "rotate", event: PointerEvent) => void) | null): void;
   setMode(mode: InputMode): void;
 }

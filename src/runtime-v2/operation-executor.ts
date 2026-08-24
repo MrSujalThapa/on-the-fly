@@ -1,4 +1,4 @@
-import type { MoveOperation, ZIndexOperation } from "../editor/operations.js";
+import type { EditorOperation, MoveOperation, ZIndexOperation } from "../editor/operations.js";
 import type { LayerCommand } from "../editor/transform/layer-order.js";
 import type { PageKey, VisualNodeId } from "../editor/ids.js";
 import type { IntendedRect } from "./placement-engine.js";
@@ -11,7 +11,7 @@ export interface VisualVerification {
 
 export type ExecutionSuccess = {
   readonly ok: true;
-  readonly operation: MoveOperation | ZIndexOperation;
+  readonly operation: EditorOperation;
   readonly verification: VisualVerification;
 };
 
@@ -26,7 +26,7 @@ export type ExecutionResult = ExecutionSuccess | ExecutionFailure;
 
 export type BatchExecutionSuccess = {
   readonly ok: true;
-  readonly operations: readonly (MoveOperation | ZIndexOperation)[];
+  readonly operations: readonly EditorOperation[];
   readonly verifications: readonly VisualVerification[];
 };
 
@@ -38,6 +38,10 @@ export type BatchExecutionResult = BatchExecutionSuccess | ExecutionFailure;
  * On verify failure: rollback → explicit failure. Never silent sibling writes.
  */
 export interface OperationExecutor {
+  executeTransaction(input: {
+    operations: readonly EditorOperation[];
+    expectedRects?: ReadonlyMap<string, IntendedRect>;
+  }): BatchExecutionResult;
   executeMove(input: {
     nodeId: VisualNodeId;
     dx: number;
@@ -57,10 +61,11 @@ export interface OperationExecutor {
   }): ExecutionResult;
   replayMove(operation: MoveOperation): ExecutionResult;
   replayLayer(operation: ZIndexOperation): ExecutionResult;
-  revertCommitted(operation: MoveOperation | ZIndexOperation): ExecutionResult;
-  reapplyCommitted(operation: MoveOperation | ZIndexOperation): ExecutionResult;
-  revertCommittedBatch(operations: readonly (MoveOperation | ZIndexOperation)[]): BatchExecutionResult;
-  reapplyCommittedBatch(operations: readonly (MoveOperation | ZIndexOperation)[]): BatchExecutionResult;
+  replayOperation(operation: EditorOperation): ExecutionResult;
+  revertCommitted(operation: EditorOperation): ExecutionResult;
+  reapplyCommitted(operation: EditorOperation): ExecutionResult;
+  revertCommittedBatch(operations: readonly EditorOperation[]): BatchExecutionResult;
+  reapplyCommittedBatch(operations: readonly EditorOperation[]): BatchExecutionResult;
 }
 
 export const MOVE_GEOMETRY_TOLERANCE_PX = 3;

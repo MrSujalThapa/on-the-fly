@@ -50,6 +50,11 @@ export interface EditorRuntime {
   getGroup(groupId: GroupId): RuntimeVirtualGroup | null;
   groupSelection(): GroupId | null;
   ungroupSelection(): readonly VisualNodeId[];
+  copySelection(): boolean;
+  pasteClipboard(): BatchExecutionResult;
+  deleteSelection(): BatchExecutionResult;
+  resizeSelection(targetRect: IntendedRect): BatchExecutionResult;
+  rotateSelection(degrees: number): BatchExecutionResult;
   moveSelection(dx: number, dy: number): BatchExecutionResult;
   selectParent(): VisualNodeId | null;
   move(nodeId: VisualNodeId, dx: number, dy: number): ExecutionResult;

@@ -209,9 +209,11 @@ function sanitizeCloneTree(root: HTMLElement): void {
     node.remove();
   }
 
-  for (const element of Array.from(root.querySelectorAll("*"))) {
-    if (element instanceof HTMLElement) {
-      element.removeAttribute("id");
+  for (const element of [root, ...Array.from(root.querySelectorAll("*"))]) {
+    if (!(element instanceof HTMLElement)) continue;
+    element.removeAttribute("id");
+    for (const attribute of Array.from(element.attributes)) {
+      if (attribute.name.startsWith("data-otf-")) element.removeAttribute(attribute.name);
     }
   }
 }

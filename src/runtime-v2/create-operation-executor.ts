@@ -1,7 +1,10 @@
-import type { MoveOperation, ZIndexOperation } from "../editor/operations.js";
+import type { EditorOperation, MoveOperation, ZIndexOperation } from "../editor/operations.js";
 import type { PageKey } from "../editor/ids.js";
 import { validateOperation } from "../editor/validation/validate-operation.js";
-import { applyMoveOperation } from "../editor/dom/handlers/transform-handler.js";
+import { applyMoveOperation, applyResizeOperation, applyRotateOperation } from "../editor/dom/handlers/transform-handler.js";
+import { applyHideOperation } from "../editor/dom/handlers/hide-handler.js";
+import { applyDuplicateOperation } from "../editor/dom/handlers/duplicate-handler.js";
+import { readStoredTransformState } from "../editor/dom/element-snapshot.js";
 import { ElementSnapshotStore } from "../editor/dom/element-snapshot.js";
 import {
   captureElementDomSnapshot,
@@ -48,6 +51,13 @@ interface CapturedEffect {
   nodeId: VisualNodeId;
   snapshot: ElementDomSnapshot;
   originalRect: IntendedRect;
+}
+
+interface GenericEffect {
+  nodeId: VisualNodeId;
+  element: HTMLElement;
+  snapshot: ElementDomSnapshot | null;
+  originalRect: IntendedRect | null;
 }
 
 interface PreparedMove {
@@ -119,6 +129,7 @@ function buildVerifiedMove(
 export function createOperationExecutor(deps: OperationExecutorDeps): OperationExecutor {
   const snapshotStore = new ElementSnapshotStore();
   const effects = new Map<string, CapturedEffect>();
+  const genericEffects = new Map<string, GenericEffect>();
   const layerEffects = new Map<string, { element: HTMLElement; snapshot: ElementDomSnapshot }>();
 
   const resolveOrFail = (
@@ -214,7 +225,97 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     return { ok: true, operation: input.operation, verification };
   };
 
+  const applyGeneric = (
+    source: EditorOperation,
+    expected: IntendedRect | undefined,
+    captureEffect: boolean,
+  ): ExecutionResult => {
+    if (source.type === "move") return applyAndVerifyOperation(source, expected, captureEffect);
+    if (source.type === "zIndex") return failure("layer_requires_command", false);
+    let operation = source;
+    let element: HTMLElement;
+    let nodeId: VisualNodeId | null = operation.target.nodeId ?? null;
+    let snapshot: ElementDomSnapshot | null = null;
+    const signature = operation.target.signature;
+    if (operation.type === "duplicate") {
+      try {
+        element = applyDuplicateOperation(deps.document, operation, snapshotStore).element;
+      } catch (error) {
+        return failure(error instanceof Error ? error.message : "duplicate_apply_failed", false);
+      }
+      const adopted = deps.visualModel.adopt(element);
+      if (!adopted) {
+        element.remove();
+        return failure("duplicate_adoption_failed", true);
+      }
+      nodeId = adopted;
+      const identity = deps.visualModel.durableIdentityOf(adopted);
+      if (!identity) {
+        element.remove();
+        return failure("duplicate_identity_failed", true);
+      }
+      operation = freezeCommittedOperation({ ...operation, target: { nodeId: adopted, signature: identity.signature }, status: "approved" });
+    } else {
+      if (!signature) return failure("missing_signature", false);
+      const resolved = resolveOrFail(nodeId, { signature });
+      if ("error" in resolved) return resolved;
+      element = resolved.element;
+      nodeId = resolved.nodeId;
+      snapshot = captureElementDomSnapshot(element, deps.document);
+      try {
+        if (operation.type === "hide") applyHideOperation(element, operation, snapshotStore);
+        else if (operation.type === "resize") applyResizeOperation(element, operation, snapshotStore);
+        else if (operation.type === "rotate") applyRotateOperation(element, operation, snapshotStore);
+        else return failure("unsupported_transaction_operation", false);
+      } catch (error) {
+        rollback(element, snapshot);
+        return failure(error instanceof Error ? error.message : "apply_threw", true);
+      }
+    }
+    const actual = rectFromElement(element);
+    const expectedRect = expected ?? actual;
+    const hiddenOk = operation.type !== "hide" || (operation.payload.hidden ? element.style.display === "none" : element.style.display !== "none");
+    const rotateOk = operation.type !== "rotate" || readStoredTransformState(element)?.rotate === operation.payload.degrees;
+    const geometryOk = operation.type === "resize" || operation.type === "duplicate" ? rectsNear(actual, expectedRect) : true;
+    if (!element.isConnected || !hiddenOk || !rotateOk || !geometryOk) {
+      if (snapshot) rollback(element, snapshot); else element.remove();
+      return failure("operation_verification_failed", true, { ok: false, expected: expectedRect, actual });
+    }
+    if (captureEffect && nodeId) genericEffects.set(operation.id, { nodeId, element, snapshot, originalRect: snapshot ? operation.metadata?.originalRect ?? null : null });
+    return { ok: true, operation, verification: { ok: true, expected: expectedRect, actual } };
+  };
+
+  const applyAndVerifyOperation = (
+    operation: MoveOperation,
+    expected: IntendedRect | undefined,
+    captureEffect: boolean,
+  ): ExecutionResult => {
+    const signature = operation.target.signature;
+    if (!signature) return failure("missing_signature", false);
+    const identity = { signature };
+    const resolved = resolveOrFail(operation.target.nodeId ?? null, identity);
+    if ("error" in resolved) return resolved;
+    const target = expected ?? operation.metadata?.finalRect;
+    if (!target) return failure("missing_final_rect", false);
+    return applyAndVerify({ nodeId: resolved.nodeId, identity, element: resolved.element, operation, expected: target, commit: false, captureEffect });
+  };
+
   return {
+    executeTransaction(input): BatchExecutionResult {
+      if (input.operations.length === 0) return failure("empty_batch", false);
+      const applied: Array<{ operation: EditorOperation; result: ExecutionResult }> = [];
+      for (const operation of input.operations) {
+        const result = applyGeneric(operation, input.expectedRects?.get(operation.id), true);
+        if (!result.ok) {
+          for (const item of [...applied].reverse()) this.revertCommitted(item.result.ok ? item.result.operation : item.operation);
+          return failure(result.error, true, result.verification);
+        }
+        applied.push({ operation, result });
+      }
+      const committed = applied.map((item) => item.result.ok ? item.result.operation : item.operation);
+      deps.ledger.commitBatch(committed);
+      return { ok: true, operations: committed, verifications: applied.map((item) => item.result.ok ? item.result.verification : { ok: false, expected: {x:0,y:0,width:0,height:0}, actual:{x:0,y:0,width:0,height:0} }) };
+    },
     executeMove(input) {
       const identity = deps.visualModel.durableIdentityOf(input.nodeId);
       if (!identity) {
@@ -481,6 +582,18 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     },
 
     revertCommitted(operation) {
+      if (operation.type !== "move" && operation.type !== "zIndex") {
+        const effect = genericEffects.get(operation.id);
+        if (!effect) return failure("missing_operation_effect", false);
+        if (operation.type === "duplicate") {
+          effect.element.remove();
+          const box = operation.metadata?.affectedRect ?? { x: 0, y: 0, width: 0, height: 0 };
+          return { ok: true, operation, verification: { ok: true, expected: box, actual: box } };
+        }
+        if (!effect.snapshot || !rollback(effect.element, effect.snapshot)) return failure("rollback_failed", false);
+        const box = rectFromElement(effect.element);
+        return { ok: true, operation, verification: { ok: true, expected: box, actual: box } };
+      }
       if (operation.type === "zIndex") {
         const effect = layerEffects.get(operation.id);
         if (!effect) {
@@ -554,112 +667,47 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     },
 
     reapplyCommitted(operation) {
-      return operation.type === "move" ? this.replayMove(operation) : this.replayLayer(operation);
+      if (operation.type === "move") return this.replayMove(operation);
+      if (operation.type === "zIndex") return this.replayLayer(operation);
+      return applyGeneric(operation, operation.metadata?.finalRect ?? operation.metadata?.affectedRect, true);
+    },
+
+    replayOperation(operation) {
+      if (operation.type === "move") return this.replayMove(operation);
+      if (operation.type === "zIndex") return this.replayLayer(operation);
+      return applyGeneric(operation, operation.metadata?.finalRect ?? operation.metadata?.affectedRect, true);
     },
 
     revertCommittedBatch(operations): BatchExecutionResult {
       if (operations.length === 0) return failure("empty_batch", false);
-      const prepared: Array<{
-        operation: MoveOperation | ZIndexOperation;
-        element: HTMLElement;
-        currentSnapshot: ElementDomSnapshot;
-        committedSnapshot: ElementDomSnapshot;
-        expected: IntendedRect | null;
-        nodeId: VisualNodeId | null;
-        identity: DurableVisualIdentity;
-      }> = [];
-      for (const operation of operations) {
-        const identity = operation.target.signature ? { signature: operation.target.signature } : null;
-        if (!identity) return failure("missing_signature", false);
-        const moveEffect = operation.type === "move" ? effects.get(operation.id) : null;
-        const layerEffect = operation.type === "zIndex" ? layerEffects.get(operation.id) : null;
-        const resolved = resolveOrFail(moveEffect?.nodeId ?? operation.target.nodeId ?? null, identity);
-        if ("error" in resolved) return resolved;
-        const committedSnapshot = moveEffect?.snapshot ?? layerEffect?.snapshot;
-        if (!committedSnapshot) {
-          return failure(operation.type === "move" ? "missing_move_effect" : "missing_layer_effect", false);
-        }
-        prepared.push({
-          operation,
-          element: resolved.element,
-          currentSnapshot: captureElementDomSnapshot(resolved.element, deps.document),
-          committedSnapshot,
-          expected: operation.type === "move"
-            ? moveEffect?.originalRect ?? operation.metadata?.originalRect ?? null
-            : null,
-          nodeId: resolved.nodeId,
-          identity,
-        });
-      }
-
-      const restoreCurrentWorld = (): boolean => {
-        let restored = true;
-        for (const item of [...prepared].reverse()) {
-          restored = rollback(item.element, item.currentSnapshot) && restored;
-        }
-        return restored;
-      };
-
-      for (const item of [...prepared].reverse()) {
-        if (!rollback(item.element, item.committedSnapshot)) {
-          return failure("rollback_failed", restoreCurrentWorld());
-        }
-      }
-
+      const undone: EditorOperation[] = [];
       const verifications: VisualVerification[] = [];
-      for (const item of prepared) {
-        const actual = rectFromElement(item.element);
-        const expected = item.expected ?? actual;
-        const verification: VisualVerification = {
-          ok: rectsNear(actual, expected),
-          expected,
-          actual,
-        };
-        if (!verification.ok) {
-          return failure("undo_geometry_mismatch", restoreCurrentWorld(), verification);
+      for (const operation of [...operations].reverse()) {
+        const result = this.revertCommitted(operation);
+        if (!result.ok) {
+          for (const prior of undone.reverse()) this.reapplyCommitted(prior);
+          return failure(result.error, true, result.verification);
         }
-        if (!verifyIdentity(item.nodeId, item.identity, item.element)) {
-          return failure("identity_uncertain", restoreCurrentWorld(), verification);
-        }
-        verifications.push(verification);
+        undone.push(operation);
+        verifications.push(result.verification);
       }
-      return {
-        ok: true,
-        operations,
-        verifications,
-      };
+      return { ok: true, operations, verifications: verifications.reverse() };
     },
 
     reapplyCommittedBatch(operations): BatchExecutionResult {
       if (operations.length === 0) return failure("empty_batch", false);
-      const snapshots: Array<{ element: HTMLElement; snapshot: ElementDomSnapshot }> = [];
-      const previousEffects = new Map<string, CapturedEffect | undefined>();
-      for (const operation of operations) {
-        const identity = operation.target.signature ? { signature: operation.target.signature } : null;
-        if (!identity) return failure("missing_signature", false);
-        const resolved = resolveOrFail(operation.target.nodeId ?? null, identity);
-        if ("error" in resolved) return resolved;
-        snapshots.push({ element: resolved.element, snapshot: captureElementDomSnapshot(resolved.element, deps.document) });
-        if (operation.type === "move") previousEffects.set(operation.id, effects.get(operation.id));
-      }
-      const results: ExecutionResult[] = [];
+      const applied: EditorOperation[] = [];
+      const verifications: VisualVerification[] = [];
       for (const operation of operations) {
         const result = this.reapplyCommitted(operation);
         if (!result.ok) {
-          let rolledBack = true;
-          for (const item of [...snapshots].reverse()) rolledBack = rollback(item.element, item.snapshot) && rolledBack;
-          for (const [id, effect] of previousEffects) {
-            if (effect) effects.set(id, effect); else effects.delete(id);
-          }
-          return failure(result.error, rolledBack, result.verification);
+          for (const prior of [...applied].reverse()) this.revertCommitted(prior);
+          return failure(result.error, true, result.verification);
         }
-        results.push(result);
+        applied.push(result.operation);
+        verifications.push(result.verification);
       }
-      return {
-        ok: true,
-        operations,
-        verifications: results.map((result) => result.ok ? result.verification : undefined).filter((value): value is VisualVerification => Boolean(value)),
-      };
+      return { ok: true, operations: applied, verifications };
     },
   };
 }
