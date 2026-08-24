@@ -62,6 +62,7 @@ export interface OperationExecutor {
   replayMove(operation: MoveOperation): ExecutionResult;
   replayLayer(operation: ZIndexOperation): ExecutionResult;
   replayOperation(operation: EditorOperation): ExecutionResult;
+  reconcileOperation(operation: EditorOperation): ExecutionResult;
   revertCommitted(operation: EditorOperation): ExecutionResult;
   reapplyCommitted(operation: EditorOperation): ExecutionResult;
   revertCommittedBatch(operations: readonly EditorOperation[]): BatchExecutionResult;

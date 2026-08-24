@@ -81,6 +81,17 @@ export function createVisualModel(root: Document): VisualModel {
       return existing.id;
     }
 
+    for (const [nodeId, node] of nodes) {
+      if (nodeId === binding.getAttribute("data-otf-clone-id")) continue;
+      const prior = readCache(nodeId);
+      if (prior) continue;
+      const resolved = resolveDurableIdentity(root, node.durableIdentity);
+      if (resolved.kind === "resolved" && resolved.element === binding) {
+        writeCache(nodeId, binding);
+        return nodeId;
+      }
+    }
+
     const cloneId = binding.getAttribute("data-otf-clone-id")?.trim();
     const id = cloneId || nextNodeId();
     const cloneBinding = cloneId ? readCache(cloneId) : null;

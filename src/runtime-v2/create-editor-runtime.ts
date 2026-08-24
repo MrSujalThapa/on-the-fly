@@ -21,7 +21,7 @@ import type { NormalizedPointer } from "./input-router.js";
 import { rectFromElement, rectsNear } from "./geometry.js";
 import type { BatchExecutionResult, ExecutionResult } from "./operation-executor.js";
 import type { IntendedRect } from "./placement-engine.js";
-import { summarizeIdentity } from "./visual-identity.js";
+import { identityConsistent, summarizeIdentity } from "./visual-identity.js";
 import { isResolvedVisual } from "./visual-model.js";
 import { projectCanonicalCheckpoint } from "./canonical-checkpoint.js";
 import { buildDuplicateFromClipboardEntry } from "../editor/duplicate/duplicate-element.js";
@@ -272,7 +272,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     ignoreMutations = true;
     try {
       for (const operation of checkpoint.operations) {
-        if (!isMoveOperation(operation) && !isLayerOperation(operation)) {
+        if (!["move", "resize", "rotate", "zIndex", "hide"].includes(operation.type)) {
           continue;
         }
         const identity = operation.target.signature
@@ -284,7 +284,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         const cached = operation.target.nodeId
           ? visualModel.resolveNode(operation.target.nodeId)
           : null;
-        const resolved = cached && isResolvedVisual(cached)
+        const resolved = cached && isResolvedVisual(cached) && identityConsistent(cached.element, identity)
           ? cached
           : visualModel.resolveIdentity(identity);
         if (!isResolvedVisual(resolved)) {
@@ -296,8 +296,16 @@ export function createEditorRuntime(root: Document): EditorRuntime {
           });
           continue;
         }
+        const reboundOperation = resolved.nodeId
+          ? { ...operation, target: { ...operation.target, nodeId: resolved.nodeId } } as EditorOperation
+          : operation;
         if (isLayerOperation(operation)) {
-          executor.replayLayer(operation);
+          executor.replayLayer(reboundOperation as ZIndexOperation);
+          continue;
+        }
+        if (!isMoveOperation(operation)) {
+          const result = executor.reconcileOperation(reboundOperation);
+          logV2("reapply", { owner: "EXECUTION", ok: result.ok, id: operation.id, error: result.ok ? undefined : result.error });
           continue;
         }
         const expected = operation.metadata?.finalRect;
@@ -313,12 +321,25 @@ export function createEditorRuntime(root: Document): EditorRuntime {
           }
           continue;
         }
-        const result = executor.replayMove(operation);
+        const result = executor.replayMove(reboundOperation as MoveOperation);
         logV2("reapply", {
           owner: result.ok ? "EXECUTION" : "EXECUTION",
           ok: result.ok,
           id: operation.id,
           error: result.ok ? undefined : result.error,
+        });
+      }
+      for (const move of checkpoint.operations.filter(isMoveOperation)) {
+        const expected = move.metadata?.finalRect;
+        if (!expected || !move.target.signature) continue;
+        const resolved = visualModel.resolveIdentity({ signature: move.target.signature });
+        if (!isResolvedVisual(resolved)) continue;
+        const current = rectFromElement(resolved.element);
+        if (rectsNear(current, expected)) continue;
+        executor.replayMove({
+          ...move,
+          target: { ...move.target, ...(resolved.nodeId ? { nodeId: resolved.nodeId } : {}) },
+          payload: { ...move.payload, dx: expected.x - current.x, dy: expected.y - current.y },
         });
       }
     } finally {
@@ -976,22 +997,32 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     },
     copySelection() {
       const roots = effectRoots(selectedIds());
+      logV2("copy-start", { selectedIds: selectedIds(), roots });
       const items: DuplicateOperation[] = [];
       const rootIndex = new Map<VisualNodeId, number>();
       for (const nodeId of roots) {
         const element = visualModel.bind(nodeId);
         const identity = visualModel.durableIdentityOf(nodeId);
         const measured = visualModel.measure([nodeId]).get(nodeId);
-        if (!element || !identity || !measured) return false;
+        if (!element || !identity || !measured) {
+          logV2("copy-failed", { nodeId, element: Boolean(element), identity: Boolean(identity), measured: Boolean(measured) });
+          return false;
+        }
         const built = buildDuplicateFromClipboardEntry({
           element,
           target: { nodeId, signature: identity.signature, rect: measured },
         }, pageKey(), `clipboard-${nodeId}`, -1);
-        if (!built) return false;
+        if (!built) {
+          logV2("copy-failed", { nodeId, reason: "snapshot_rejected", tag: element.tagName, role: element.getAttribute("role") });
+          return false;
+        }
         items.push(JSON.parse(JSON.stringify(built.operation)) as DuplicateOperation);
         rootIndex.set(nodeId, items.length - 1);
       }
-      if (items.length === 0) return false;
+      if (items.length === 0) {
+        logV2("copy-failed", { reason: "no_effect_roots", selectedIds: selectedIds() });
+        return false;
+      }
       const groupPartitions = selection.atoms.flatMap((atom) => {
         if (atom.kind !== "group") return [];
         const group = groups.get(atom.groupId);
@@ -1032,7 +1063,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         height: operation.payload.anchorHeight,
       }]));
       const result = executor.executeTransaction({ operations, expectedRects: expected });
-      if (!result.ok) return result;
+      if (!result.ok) {
+        logV2("paste-failed", { error: result.error, result, operationIds: operations.map((operation) => operation.id) });
+        return result;
+      }
       const cloneIds = result.operations.map((operation) => operation.target.nodeId).filter((id): id is VisualNodeId => Boolean(id));
       pastePartitions.set(transactionKey(result.operations), clipboard.groupPartitions);
       const nextAtoms = restorePasteGroups(cloneIds, clipboard.groupPartitions);
@@ -1180,6 +1214,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         }
         ledger.confirmUndoTransaction();
       }
+      logV2("undo", { ok: result.ok, error: result.ok ? undefined : result.error, operationIds: operations.map((operation) => operation.id) });
       refreshSave();
       overlays.refreshFromLiveGeometry();
       return result;
@@ -1413,6 +1448,21 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         const result = executor.replayOperation(operation);
         if (result.ok) applied += 1;
         else if (result.error === "unresolved_target" || result.error === "ambiguous_target") { unresolved += 1; failureKind = "IDENTITY"; }
+        else { failed += 1; failureKind = "EXECUTION"; }
+      }
+      for (const move of moves) {
+        const expected = move.metadata?.finalRect;
+        if (!expected || !move.target.signature) continue;
+        const resolved = visualModel.resolveIdentity({ signature: move.target.signature });
+        if (!isResolvedVisual(resolved)) continue;
+        const current = rectFromElement(resolved.element);
+        if (rectsNear(current, expected)) continue;
+        const correction = executor.replayMove({
+          ...move,
+          target: { ...move.target, ...(resolved.nodeId ? { nodeId: resolved.nodeId } : {}) },
+          payload: { ...move.payload, dx: expected.x - current.x, dy: expected.y - current.y },
+        });
+        if (correction.ok) applied += 1;
         else { failed += 1; failureKind = "EXECUTION"; }
       }
       for (const operation of layers) {

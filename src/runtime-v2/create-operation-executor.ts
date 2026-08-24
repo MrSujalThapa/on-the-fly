@@ -693,6 +693,12 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       return applyGeneric(operation, operation.metadata?.finalRect ?? operation.metadata?.affectedRect, true, false);
     },
 
+    reconcileOperation(operation) {
+      if (operation.type === "move") return this.replayMove(operation);
+      if (operation.type === "zIndex") return this.replayLayer(operation);
+      return applyGeneric(operation, operation.metadata?.finalRect ?? operation.metadata?.affectedRect, false);
+    },
+
     revertCommittedBatch(operations): BatchExecutionResult {
       if (operations.length === 0) return failure("empty_batch", false);
       const undone: EditorOperation[] = [];

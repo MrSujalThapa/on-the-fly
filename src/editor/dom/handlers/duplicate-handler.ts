@@ -31,6 +31,9 @@ export function applyDuplicateOperation(
   element.setAttribute(OTF_CLONE_ATTR, operation.payload.cloneId);
   element.setAttribute(OTF_MANAGED_ATTR, "true");
   element.style.position = "absolute";
+  // Margins belong to the source's former layout context. Keeping them on a
+  // body-managed clone offsets its verified absolute box from left/top.
+  element.style.margin = "0";
   element.style.left = `${String(left)}px`;
   element.style.top = `${String(top)}px`;
   element.style.width = `${String(operation.payload.anchorWidth)}px`;
