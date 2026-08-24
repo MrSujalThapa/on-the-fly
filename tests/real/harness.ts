@@ -222,12 +222,24 @@ export function sanitizeOperations(rows: Array<Record<string, unknown>>): Array<
       row.target && typeof row.target === "object" && "identityVersion" in row.target
         ? row.target.identityVersion
         : null;
+    const target = row.target && typeof row.target === "object" ? row.target as Record<string, unknown> : null;
+    const signature = target?.signature && typeof target.signature === "object"
+      ? target.signature as Record<string, unknown>
+      : null;
     return {
       id: typeof row.id === "string" ? row.id : null,
       type: typeof row.type === "string" ? row.type : null,
       identityVersion,
       dx,
       dy,
+      nodeId: typeof target?.nodeId === "string" ? target.nodeId : null,
+      width: payload && typeof payload === "object" && "width" in payload ? payload.width : null,
+      height: payload && typeof payload === "object" && "height" in payload ? payload.height : null,
+      degrees: payload && typeof payload === "object" && "degrees" in payload ? payload.degrees : null,
+      detachedWidth: payload && typeof payload === "object" && "detachedWidth" in payload ? payload.detachedWidth : null,
+      detachedHeight: payload && typeof payload === "object" && "detachedHeight" in payload ? payload.detachedHeight : null,
+      cssPath: typeof signature?.cssPath === "string" ? signature.cssPath : null,
+      text: typeof signature?.textFingerprint === "string" ? signature.textFingerprint : null,
     };
   });
 }
