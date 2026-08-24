@@ -125,6 +125,43 @@ describe("Runtime V2 editor parity", () => {
     expect(name.style.color).toBe("");
   });
 
+  it("clears managed backgroundImage when applying a solid fill and undoes both in one step", () => {
+    const { document, root } = createTestDocument(`<section id="card">Card</section>`);
+    const card = byId(root, "card");
+    layoutManagedElement(card, { x: 0, y: 0, width: 200, height: 100 });
+    card.style.backgroundColor = "rgb(1, 2, 3)";
+    card.style.backgroundImage = "linear-gradient(white, black)";
+    const runtime = createEditorRuntime(document);
+    runtime.select(card);
+    expect(runtime.styleSelection(new Map([["backgroundImage", "linear-gradient(red, blue)"]])).ok).toBe(true);
+    expect(runtime.styleSelection(new Map([["backgroundColor", "rgb(0, 128, 0)"]])).ok).toBe(true);
+    expect(card.style.backgroundColor).toBe("rgb(0, 128, 0)");
+    expect(card.style.backgroundImage).toBe("none");
+    expect(runtime.ledger.peekUndoTransaction()).toHaveLength(2);
+    expect(runtime.undo().ok).toBe(true);
+    expect(card.style.backgroundImage).toContain("linear-gradient");
+    expect(runtime.undo().ok).toBe(true);
+    expect(card.style.backgroundColor).toBe("rgb(1, 2, 3)");
+    expect(card.style.backgroundImage).toContain("linear-gradient");
+  });
+
+  it("keeps a later gradient authoritative after a solid fill", () => {
+    const { document, root } = createTestDocument(`<section id="card">Card</section>`);
+    const card = byId(root, "card");
+    layoutManagedElement(card, { x: 0, y: 0, width: 200, height: 100 });
+    const runtime = createEditorRuntime(document);
+    runtime.select(card);
+    expect(runtime.styleSelection(new Map([["backgroundColor", "red"]])).ok).toBe(true);
+    expect(card.style.backgroundImage).toBe("none");
+    expect(runtime.styleSelection(new Map([["backgroundImage", "linear-gradient(red, blue)"]])).ok).toBe(true);
+    expect(card.style.backgroundImage).toContain("linear-gradient");
+    const checkpoint = projectCanonicalCheckpoint(runtime.ledger.activeOperations());
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) return;
+    const image = checkpoint.operations.find((operation) => operation.type === "style" && operation.payload.property === "backgroundImage");
+    expect(image?.type === "style" ? image.payload.value : "").toContain("linear-gradient");
+  });
+
   it("normalizes formatted text and preserves inline wrapper elements on commit", () => {
     const { document, root } = createTestDocument(`<span id="copy"> Learn   more <strong>about</strong>   Pages </span>`);
     const copy = byId(root, "copy");

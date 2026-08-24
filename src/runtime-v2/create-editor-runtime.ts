@@ -58,6 +58,15 @@ const STYLE_CSS_MAP: Record<StyleProperty, string> = {
 };
 const TEXT_STYLE_PROPERTIES = new Set<StyleProperty>(["color", "fontSize", "fontWeight", "textAlign"]);
 
+function exclusiveFillStyles(styles: ReadonlyMap<StyleProperty, string>): Map<StyleProperty, string> {
+  const next = new Map(styles);
+  if (!next.has("backgroundColor")) return next;
+  const image = next.get("backgroundImage")?.trim() ?? "";
+  if (image !== "" && image !== "none") return next;
+  next.set("backgroundImage", "none");
+  return next;
+}
+
 interface PreviewTarget {
   nodeId: VisualNodeId;
   element: HTMLElement;
@@ -459,12 +468,12 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       if (style === null) element.removeAttribute("style");
       else element.setAttribute("style", style);
     }
-    releaseMutationIgnore();
   };
 
   const cancelStylePreview = (): void => {
     restoreStylePreview();
     stylePreview = null;
+    releaseMutationIgnore();
     overlays.refreshFromLiveGeometry();
   };
 
@@ -476,6 +485,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     ignoreMutations = true;
     restoreStylePreview();
     stylePreview.pending.set(property, value);
+    if (property === "backgroundColor") stylePreview.pending.set("backgroundImage", "none");
     for (const element of targets) {
       if (!stylePreview.snapshots.has(element)) stylePreview.snapshots.set(element, element.getAttribute("style"));
       let originals = stylePreview.originals.get(element);
@@ -491,7 +501,6 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         }
       }
     }
-    releaseMutationIgnore();
     overlays.refreshFromLiveGeometry();
   };
 
@@ -972,7 +981,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       overlays.refreshFromLiveGeometry();
     });
     const observer = new MutationObserver((records) => {
-      if (ignoreMutations || gesture || transformGesture) {
+      if (ignoreMutations || gesture || transformGesture || stylePreview) {
         return;
       }
       const relevant = records.some((record) => {
@@ -1383,15 +1392,16 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     },
     styleSelection(styles): BatchExecutionResult {
       cancelStylePreview();
+      const pending = exclusiveFillStyles(styles);
       const roots = effectRoots(selectedIds());
-      if (roots.length === 0 || styles.size === 0) return { ok: false, error: "empty_style_transaction", rolledBack: false };
+      if (roots.length === 0 || pending.size === 0) return { ok: false, error: "empty_style_transaction", rolledBack: false };
       const operations: EditorOperation[] = [];
       for (const nodeId of roots) {
         const element = visualModel.bind(nodeId);
         const identity = visualModel.durableIdentityOf(nodeId);
         const rect = visualModel.measure([nodeId]).get(nodeId);
         if (!element || !identity || !rect) return { ok: false, error: "style_target_unresolved", rolledBack: false };
-        for (const [property, value] of styles) {
+        for (const [property, value] of pending) {
           const previousValue = getComputedStyle(element).getPropertyValue(STYLE_CSS_MAP[property]);
           const drafted = buildStyleOperation({ nodeId, signature: identity.signature, rect }, property, value, { pageKey: pageKey(), sourceCommand: "style" }, previousValue, element);
           const wantsSubtree = TEXT_STYLE_PROPERTIES.has(property) && textSurface(element) !== element;

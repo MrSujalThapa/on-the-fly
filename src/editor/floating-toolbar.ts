@@ -507,6 +507,9 @@ export class FloatingToolbar {
         }
         const value = binding.transform ? binding.transform(raw) : raw;
         this.callbacks.onStyleChange(binding.property, value);
+        if (binding.property === "backgroundColor") {
+          this.callbacks.onStyleChange("backgroundImage", "none");
+        }
       });
     }
 
@@ -732,7 +735,7 @@ export class FloatingToolbar {
     }
 
     const anchorRect = this.styleAnchorButton.getBoundingClientRect();
-    const width = 350;
+    const width = 310;
     let x = anchorRect.right + 18;
     let y = anchorRect.top - 36;
     x = clamp(x, 14, window.innerWidth - width - 14);
@@ -1229,10 +1232,12 @@ const CURVED_TOOLBAR_CSS = `
     left: 0;
     top: 0;
     z-index: 3;
-    width: min(350px, calc(100vw - 28px));
-    min-width: min(320px, calc(100vw - 28px));
-    max-width: 350px;
-    padding: 16px;
+    width: min(310px, calc(100vw - 24px));
+    min-width: min(280px, calc(100vw - 24px));
+    max-width: 310px;
+    max-height: min(620px, calc(100vh - 28px));
+    overflow-y: auto;
+    padding: 12px;
     border-radius: 8px;
     background: radial-gradient(circle at top left, rgba(255,255,255,0.88), transparent 45%), linear-gradient(145deg, #f6f1e6 0%, #e8dfcf 100%);
     border: 1px solid rgba(255,255,255,0.65);
@@ -1243,7 +1248,7 @@ const CURVED_TOOLBAR_CSS = `
     opacity: 0;
     pointer-events: none;
     transition: opacity 160ms ease, transform 160ms ease;
-    contain: layout style paint;
+    contain: layout style;
   }
   .otf-style-panel.is-open {
     opacity: 1;
@@ -1254,8 +1259,12 @@ const CURVED_TOOLBAR_CSS = `
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 14px;
-    padding-bottom: 10px;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    margin: -12px -12px 8px;
+    padding: 12px 12px 8px;
+    background: linear-gradient(145deg, #f6f1e6 0%, #e8dfcf 100%);
     border-bottom: 1px solid rgba(32,32,32,0.12);
     cursor: grab;
   }
@@ -1263,37 +1272,37 @@ const CURVED_TOOLBAR_CSS = `
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 16px;
+    font-size: 15px;
     font-weight: 760;
     line-height: 1.2;
   }
   .otf-style-panel-title-dot {
-    width: 9px;
-    height: 9px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: #202020;
     opacity: 0.8;
   }
   .otf-style-panel-close {
-    width: 30px;
-    height: 30px;
+    width: 26px;
+    height: 26px;
     border: 0;
     border-radius: 999px;
     background: rgba(0,0,0,0.075);
     color: #202020;
-    font-size: 22px;
+    font-size: 20px;
     line-height: 1;
     cursor: pointer;
   }
   .otf-style-panel-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    gap: 8px;
   }
   .otf-style-field {
     display: grid;
-    gap: 7px;
-    font-size: 12px;
+    gap: 4px;
+    font-size: 11px;
     font-weight: 700;
     line-height: 1.2;
     color: rgba(32,32,32,0.62);
@@ -1303,18 +1312,18 @@ const CURVED_TOOLBAR_CSS = `
   .otf-style-field input[type="color"] {
     width: 100%;
     min-width: 0;
-    height: 40px;
+    height: 32px;
     border: 1px solid rgba(32,32,32,0.16);
     border-radius: 8px;
     background: linear-gradient(180deg, rgba(255,255,255,0.56), rgba(255,255,255,0.32));
     color: #202020;
-    padding: 0 12px;
+    padding: 0 8px;
     font: inherit;
-    font-size: 15px;
+    font-size: 13px;
     font-weight: 650;
   }
   .otf-style-field input[type="color"] {
-    padding: 4px;
+    padding: 3px;
   }
   .otf-opacity-field input[type="range"] {
     width: 100%;
@@ -1326,25 +1335,25 @@ const CURVED_TOOLBAR_CSS = `
     color: #202020;
   }
   .otf-style-section {
-    margin-top: 12px;
-    padding-top: 12px;
+    margin-top: 10px;
+    padding-top: 10px;
     border-top: 1px solid rgba(32,32,32,0.12);
   }
   .otf-style-section-label {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 760;
     color: rgba(32,32,32,0.62);
-    margin-bottom: 8px;
+    margin-bottom: 6px;
   }
   .otf-gradient-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-    margin-bottom: 10px;
+    gap: 6px;
+    margin-bottom: 8px;
   }
   .otf-gradient-chip {
-    width: 34px;
-    height: 34px;
+    width: 24px;
+    height: 24px;
     border-radius: 999px;
     border: 1px solid rgba(32,32,32,0.16);
     cursor: pointer;
@@ -1361,14 +1370,14 @@ const CURVED_TOOLBAR_CSS = `
   .otf-style-field select {
     width: 100%;
     min-width: 0;
-    height: 40px;
+    height: 32px;
     border: 1px solid rgba(32,32,32,0.16);
     border-radius: 8px;
     background: linear-gradient(180deg, rgba(255,255,255,0.56), rgba(255,255,255,0.32));
     color: #202020;
-    padding: 0 12px;
+    padding: 0 8px;
     font: inherit;
-    font-size: 15px;
+    font-size: 13px;
     font-weight: 650;
   }
   .otf-shadow-intensity-field input[type="range"] {
@@ -1379,19 +1388,19 @@ const CURVED_TOOLBAR_CSS = `
     display: flex;
     justify-content: flex-end;
     gap: 8px;
-    margin-top: 14px;
-    padding-top: 12px;
+    margin-top: 10px;
+    padding-top: 8px;
     border-top: 1px solid rgba(32,32,32,0.12);
   }
   .otf-style-panel-actions button {
-    height: 34px;
-    min-width: 72px;
+    height: 32px;
+    min-width: 64px;
     border: 1px solid rgba(32,32,32,0.14);
     border-radius: 8px;
-    padding: 0 12px;
+    padding: 0 10px;
     background: rgba(255,255,255,0.48);
     color: #202020;
-    font: 700 13px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font: 700 12px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     cursor: pointer;
   }
   .otf-style-panel-actions button[data-style-apply] {
