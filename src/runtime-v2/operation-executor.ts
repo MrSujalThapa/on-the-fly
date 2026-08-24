@@ -24,6 +24,14 @@ export type ExecutionFailure = {
 
 export type ExecutionResult = ExecutionSuccess | ExecutionFailure;
 
+export type BatchExecutionSuccess = {
+  readonly ok: true;
+  readonly operations: readonly (MoveOperation | ZIndexOperation)[];
+  readonly verifications: readonly VisualVerification[];
+};
+
+export type BatchExecutionResult = BatchExecutionSuccess | ExecutionFailure;
+
 /**
  * The only Runtime V2 owner of host-page mutation for editor operations.
  * Transaction: resolve → snapshot → plan → apply → verify → commit ledger.
@@ -36,6 +44,12 @@ export interface OperationExecutor {
     dy: number;
     pageKey: PageKey;
   }): ExecutionResult;
+  executeMoveBatch(input: {
+    nodeIds: readonly VisualNodeId[];
+    dx: number;
+    dy: number;
+    pageKey: PageKey;
+  }): BatchExecutionResult;
   executeLayer(input: {
     nodeId: VisualNodeId;
     command: LayerCommand;
@@ -45,6 +59,8 @@ export interface OperationExecutor {
   replayLayer(operation: ZIndexOperation): ExecutionResult;
   revertCommitted(operation: MoveOperation | ZIndexOperation): ExecutionResult;
   reapplyCommitted(operation: MoveOperation | ZIndexOperation): ExecutionResult;
+  revertCommittedBatch(operations: readonly (MoveOperation | ZIndexOperation)[]): BatchExecutionResult;
+  reapplyCommittedBatch(operations: readonly (MoveOperation | ZIndexOperation)[]): BatchExecutionResult;
 }
 
 export const MOVE_GEOMETRY_TOLERANCE_PX = 3;

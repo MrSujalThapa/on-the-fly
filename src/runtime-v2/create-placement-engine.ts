@@ -44,6 +44,14 @@ function pageOffset(element: HTMLElement): { scrollX: number; scrollY: number } 
  */
 export function createPlacementEngine(): PlacementEngine {
   return {
+    isIndependent(element) {
+      return readExisting(element, {
+        element,
+        currentRect: { x: 0, y: 0, width: 0, height: 0 },
+        dx: 0,
+        dy: 0,
+      }).independent;
+    },
     planMove(request: MovePlacementRequest): MovePlacementPlan {
       const expected = translateRect(request.currentRect, request.dx, request.dy);
       const existing = readExisting(request.element, request);

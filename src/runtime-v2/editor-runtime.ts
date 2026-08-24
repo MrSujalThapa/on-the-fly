@@ -1,12 +1,14 @@
-import type { VisualNodeId } from "../editor/ids.js";
+import type { GroupId, VisualNodeId } from "../editor/ids.js";
 import type { LayerCommand } from "../editor/transform/layer-order.js";
-import type { ExecutionResult, OperationExecutor } from "./operation-executor.js";
+import type { BatchExecutionResult, ExecutionResult, OperationExecutor } from "./operation-executor.js";
 import type { OperationLedger } from "./operation-ledger.js";
 import type { OverlayCoordinator } from "./overlay-coordinator.js";
 import type { PlacementEngine } from "./placement-engine.js";
 import type { InputRouter } from "./input-router.js";
 import type { RuntimeLifecycle } from "./runtime-lifecycle.js";
 import type { VisualModel } from "./visual-model.js";
+import type { IntendedRect } from "./placement-engine.js";
+import type { RuntimeSelection, RuntimeVirtualGroup } from "./runtime-selection.js";
 
 export interface PersistResult {
   readonly ok: boolean;
@@ -38,11 +40,22 @@ export interface EditorRuntime {
   start(): void;
   stop(): void;
   select(element: HTMLElement): VisualNodeId | null;
+  toggleSelection(element: HTMLElement): VisualNodeId | null;
+  selectRect(rect: IntendedRect, mode: "add" | "replace"): RuntimeSelection;
+  clearSelection(): void;
+  getSelection(): RuntimeSelection;
+  selectedNodeIds(): readonly VisualNodeId[];
+  measureSelection(): IntendedRect | null;
+  measureGroup(groupId: GroupId): IntendedRect | null;
+  getGroup(groupId: GroupId): RuntimeVirtualGroup | null;
+  groupSelection(): GroupId | null;
+  ungroupSelection(): readonly VisualNodeId[];
+  moveSelection(dx: number, dy: number): BatchExecutionResult;
   selectParent(): VisualNodeId | null;
   move(nodeId: VisualNodeId, dx: number, dy: number): ExecutionResult;
   layer(nodeId: VisualNodeId, command: LayerCommand): ExecutionResult;
-  undo(): ExecutionResult;
-  redo(): ExecutionResult;
+  undo(): BatchExecutionResult;
+  redo(): BatchExecutionResult;
   save(): Promise<PersistResult>;
   replay(): Promise<ReplayResult>;
 }

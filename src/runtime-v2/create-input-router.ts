@@ -21,6 +21,7 @@ function normalize(event: PointerEvent): NormalizedPointer {
     clientY: event.clientY,
     pointerId: event.pointerId,
     button: event.button,
+    shiftKey: event.shiftKey,
     target: event.target,
   };
 }

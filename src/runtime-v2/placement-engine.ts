@@ -56,4 +56,5 @@ export interface MovePlacementPlan {
 /** Computes a plan. Must not write history, persistence, overlay, or mutate DOM. */
 export interface PlacementEngine {
   planMove(request: MovePlacementRequest): MovePlacementPlan;
+  isIndependent(element: HTMLElement): boolean;
 }

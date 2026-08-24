@@ -2,6 +2,7 @@ import type { EditorOperation } from "../editor/operations.js";
 
 export interface LedgerEntry {
   readonly operation: EditorOperation;
+  readonly transactionId: string;
 }
 
 /**
@@ -20,12 +21,17 @@ export interface OperationLedger {
   isDirty(): boolean;
   /** After a successful verified mutation. Truncates the redo tail. */
   commit(operation: EditorOperation): void;
+  commitBatch(operations: readonly EditorOperation[]): void;
   peekUndo(): EditorOperation | null;
   peekRedo(): EditorOperation | null;
+  peekUndoTransaction(): readonly EditorOperation[];
+  peekRedoTransaction(): readonly EditorOperation[];
   /** After a successful verified DOM revert. */
   confirmUndo(): EditorOperation | null;
   /** After a successful verified DOM reapplication. */
   confirmRedo(): EditorOperation | null;
+  confirmUndoTransaction(): readonly EditorOperation[];
+  confirmRedoTransaction(): readonly EditorOperation[];
   markPersisted(): void;
   hydratePersisted(operations: readonly EditorOperation[]): void;
 }

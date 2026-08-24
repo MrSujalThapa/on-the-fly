@@ -1,5 +1,5 @@
 import type { EditorOperation, MoveOperation, ZIndexOperation } from "../editor/operations.js";
-import type { VisualNodeId } from "../editor/ids.js";
+import type { GroupId, VisualNodeId } from "../editor/ids.js";
 import { computeDocumentPageKey } from "../content/page-identity.js";
 import {
   loadPageOperations,
@@ -18,15 +18,31 @@ import { DisposableOwner } from "./disposable-owner.js";
 import type { EditorRuntime, PersistResult, ReplayResult } from "./editor-runtime.js";
 import type { NormalizedPointer } from "./input-router.js";
 import { rectFromElement, rectsNear } from "./geometry.js";
-import type { ExecutionResult } from "./operation-executor.js";
+import type { BatchExecutionResult, ExecutionResult } from "./operation-executor.js";
 import type { IntendedRect } from "./placement-engine.js";
 import { summarizeIdentity } from "./visual-identity.js";
 import { isResolvedVisual } from "./visual-model.js";
 import { projectCanonicalCheckpoint } from "./canonical-checkpoint.js";
+import {
+  buildLassoSampleGrid,
+  LASSO_THRESHOLD_PX,
+  meaningfullyIntersects,
+  normalizeRect,
+} from "./lasso-selection.js";
+import {
+  emptySelection,
+  flattenSelection,
+  selectionFromAtoms,
+  toggleAtom,
+  unionRects,
+  type RuntimeSelection,
+  type RuntimeVirtualGroup,
+  type SelectionAtom,
+} from "./runtime-selection.js";
 
 const MOVE_THRESHOLD_PX = 3;
 
-interface MovingGesture {
+interface PreviewTarget {
   nodeId: VisualNodeId;
   element: HTMLElement;
   startPointer: { x: number; y: number };
@@ -34,6 +50,22 @@ interface MovingGesture {
   styleSnapshot: string | null;
   committedTransform: string;
 }
+
+interface MovingGesture {
+  kind: "move";
+  startPointer: { x: number; y: number };
+  targets: readonly PreviewTarget[];
+}
+
+interface LassoGesture {
+  kind: "lasso";
+  startPointer: { x: number; y: number };
+  shiftKey: boolean;
+  picked: VisualNodeId | null;
+  active: boolean;
+}
+
+type PointerGesture = MovingGesture | LassoGesture;
 
 function isMoveOperation(value: { type: string }): value is MoveOperation {
   return value.type === "move";
@@ -65,8 +97,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   const ownerHolder: { current: DisposableOwner } = { current: new DisposableOwner() };
   const owner = (): DisposableOwner => ownerHolder.current;
   let started = false;
-  let selected: VisualNodeId | null = null;
-  let gesture: MovingGesture | null = null;
+  let selection: RuntimeSelection = emptySelection();
+  const groups = new Map<GroupId, RuntimeVirtualGroup>();
+  const groupByMember = new Map<VisualNodeId, GroupId>();
+  let groupCounter = 0;
+  let gesture: PointerGesture | null = null;
   let ignoreMutations = false;
   const releaseMutationIgnore = (): void => {
     queueMicrotask(() => {
@@ -105,29 +140,55 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     html.style.userSelect = previousUserSelect;
   };
 
+  const selectedIds = (): VisualNodeId[] => flattenSelection(selection, groups);
+
   const observeSelected = (): void => {
     resizeObserver?.disconnect();
-    if (!selected) {
-      return;
-    }
-    const element = visualModel.bind(selected);
-    if (!element || !root.defaultView) {
-      return;
-    }
+    if (!root.defaultView) return;
     resizeObserver = new ResizeObserver(() => {
       overlays.refreshFromLiveGeometry();
     });
-    resizeObserver.observe(element);
+    for (const nodeId of selectedIds()) {
+      const element = visualModel.bind(nodeId);
+      if (element) resizeObserver.observe(element);
+    }
   };
 
-  const selectNode = (nodeId: VisualNodeId | null): void => {
-    selected = nodeId;
-    if (nodeId) {
-      overlays.showSelection([nodeId]);
-    } else {
-      overlays.clear();
-    }
+  const renderSelection = (): void => {
+    const ids = selectedIds();
+    if (ids.length > 0) overlays.showSelection(ids);
+    else overlays.clear();
     observeSelected();
+  };
+
+  const setSelection = (next: RuntimeSelection): void => {
+    selection = next;
+    renderSelection();
+  };
+
+  const atomForNode = (nodeId: VisualNodeId): SelectionAtom => {
+    const groupId = groupByMember.get(nodeId);
+    return groupId ? { kind: "group", groupId } : { kind: "node", nodeId };
+  };
+
+  const resolveLasso = (rect: IntendedRect): VisualNodeId[] => {
+    const seenElements = new Set<HTMLElement>();
+    const seenIds = new Set<VisualNodeId>();
+    const ids: VisualNodeId[] = [];
+    for (const point of buildLassoSampleGrid(rect)) {
+      for (const candidate of root.elementsFromPoint(point.x, point.y)) {
+        if (!(candidate instanceof HTMLElement) || seenElements.has(candidate) || isExtensionRoot(candidate)) continue;
+        seenElements.add(candidate);
+        const nodeId = visualModel.adopt(candidate);
+        const node = nodeId ? visualModel.get(nodeId) : null;
+        if (!nodeId || !node?.capabilities.movable || seenIds.has(nodeId)) continue;
+        const measured = visualModel.measure([nodeId]).get(nodeId);
+        if (!measured || measured.width <= 1 || measured.height <= 1 || !meaningfullyIntersects(measured, rect)) continue;
+        seenIds.add(nodeId);
+        ids.push(nodeId);
+      }
+    }
+    return ids;
   };
 
   const reapplyActive = (): void => {
@@ -186,36 +247,33 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     } finally {
       releaseMutationIgnore();
     }
-    if (selected) {
-      overlays.showSelection([selected]);
-    }
+    renderSelection();
   };
 
   const restorePreview = (): void => {
-    if (!gesture || !gesture.element.isConnected) {
-      return;
+    if (!gesture || gesture.kind !== "move") return;
+    for (const target of gesture.targets) {
+      if (!target.element.isConnected) continue;
+      if (target.styleSnapshot) target.element.setAttribute("style", target.styleSnapshot);
+      else target.element.removeAttribute("style");
     }
-    if (gesture.styleSnapshot) {
-      gesture.element.setAttribute("style", gesture.styleSnapshot);
-      return;
-    }
-    gesture.element.removeAttribute("style");
   };
 
   const applyPreview = (dx: number, dy: number): void => {
-    if (!gesture || !gesture.element.isConnected) {
-      return;
-    }
+    if (!gesture || gesture.kind !== "move") return;
     restorePreview();
     const extra = `translate(${String(dx)}px, ${String(dy)}px)`;
-    gesture.element.style.transform = gesture.committedTransform
-      ? `${gesture.committedTransform} ${extra}`
-      : extra;
+    for (const target of gesture.targets) {
+      target.element.style.transform = target.committedTransform
+        ? `${target.committedTransform} ${extra}`
+        : extra;
+    }
   };
 
   const cancelGesture = (): void => {
     restorePreview();
     gesture = null;
+    overlays.clearLasso();
     overlays.refreshFromLiveGeometry();
   };
 
@@ -223,63 +281,103 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     return x >= rect.x && y >= rect.y && x <= rect.x + rect.width && y <= rect.y + rect.height;
   };
 
-  const beginGesture = (
-    nodeId: VisualNodeId,
-    element: HTMLElement,
-    event: NormalizedPointer,
-  ): void => {
+  const movementRoots = (nodeIds: readonly VisualNodeId[]): VisualNodeId[] => {
+    const selectedSet = new Set(nodeIds);
+    return nodeIds.filter((nodeId) => {
+      const element = visualModel.bind(nodeId);
+      if (!element || placement.isIndependent(element)) return true;
+      let parentId = visualModel.parentOf(nodeId);
+      while (parentId) {
+        if (selectedSet.has(parentId)) return false;
+        parentId = visualModel.parentOf(parentId);
+      }
+      return true;
+    });
+  };
+
+  const beginMoveGesture = (event: NormalizedPointer): boolean => {
+    const roots = movementRoots(selectedIds());
+    const targets: PreviewTarget[] = [];
+    for (const nodeId of roots) {
+      const element = visualModel.bind(nodeId);
+      if (!element) return false;
+      targets.push({
+        nodeId,
+        element,
+        startPointer: { x: event.clientX, y: event.clientY },
+        startRect: rectFromElement(element),
+        styleSnapshot: element.getAttribute("style"),
+        committedTransform: element.style.transform,
+      });
+    }
     gesture = {
-      nodeId,
-      element,
+      kind: "move",
       startPointer: { x: event.clientX, y: event.clientY },
-      startRect: rectFromElement(element),
-      styleSnapshot: element.getAttribute("style"),
-      committedTransform: element.style.transform,
+      targets,
     };
+    return targets.length > 0;
   };
 
   const onPointerDown = (event: NormalizedPointer): void => {
     if (event.target instanceof Element && isExtensionRoot(event.target)) {
       return;
     }
-    const selectedElement = selected ? visualModel.bind(selected) : null;
-    if (
-      selected &&
-      selectedElement &&
-      pointInRect(event.clientX, event.clientY, rectFromElement(selectedElement))
-    ) {
-      beginGesture(selected, selectedElement, event);
+    const picked = visualModel.pick(event.clientX, event.clientY);
+    if (event.shiftKey) {
+      gesture = {
+        kind: "lasso",
+        startPointer: { x: event.clientX, y: event.clientY },
+        shiftKey: true,
+        picked,
+        active: false,
+      };
       return;
     }
 
-    const picked = visualModel.pick(event.clientX, event.clientY);
+    const measured = visualModel.measure(selectedIds());
+    const hitSelected = selectedIds().some((nodeId) => {
+      const rect = measured.get(nodeId);
+      return rect ? pointInRect(event.clientX, event.clientY, rect) : false;
+    });
+    if (hitSelected && beginMoveGesture(event)) return;
+
     if (picked) {
       const element = visualModel.bind(picked);
       if (!element) {
-        selectNode(null);
+        setSelection(emptySelection());
         return;
       }
-      selectNode(picked);
-      beginGesture(picked, element, event);
+      setSelection(selectionFromAtoms([atomForNode(picked)], "click"));
+      beginMoveGesture(event);
       return;
     }
 
-    selectNode(null);
+    gesture = {
+      kind: "lasso",
+      startPointer: { x: event.clientX, y: event.clientY },
+      shiftKey: false,
+      picked: null,
+      active: false,
+    };
   };
 
   const onPointerMove = (event: NormalizedPointer): void => {
     if (!gesture) {
       return;
     }
-    if (!gesture.element.isConnected) {
+    const dx = event.clientX - gesture.startPointer.x;
+    const dy = event.clientY - gesture.startPointer.y;
+    if (gesture.kind === "lasso") {
+      if (!gesture.active && Math.hypot(dx, dy) < LASSO_THRESHOLD_PX) return;
+      gesture.active = true;
+      overlays.showLasso(normalizeRect(gesture.startPointer.x, gesture.startPointer.y, event.clientX, event.clientY));
+      return;
+    }
+    if (gesture.targets.some((target) => !target.element.isConnected)) {
       cancelGesture();
       return;
     }
-    const dx = event.clientX - gesture.startPointer.x;
-    const dy = event.clientY - gesture.startPointer.y;
-    if (Math.hypot(dx, dy) < MOVE_THRESHOLD_PX) {
-      return;
-    }
+    if (Math.hypot(dx, dy) < MOVE_THRESHOLD_PX) return;
     applyPreview(dx, dy);
     overlays.refreshFromLiveGeometry();
   };
@@ -291,18 +389,33 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     const active = gesture;
     const dx = event.clientX - active.startPointer.x;
     const dy = event.clientY - active.startPointer.y;
+    if (active.kind === "lasso") {
+      gesture = null;
+      overlays.clearLasso();
+      if (!active.active && active.picked) {
+        setSelection(toggleAtom(selection, atomForNode(active.picked)));
+      } else if (active.active) {
+        runtime.selectRect(
+          normalizeRect(active.startPointer.x, active.startPointer.y, event.clientX, event.clientY),
+          active.shiftKey ? "add" : "replace",
+        );
+      } else if (!active.shiftKey) {
+        runtime.clearSelection();
+      }
+      return;
+    }
     restorePreview();
     gesture = null;
 
-    if (!active.element.isConnected || Math.hypot(dx, dy) < MOVE_THRESHOLD_PX) {
+    if (active.targets.some((target) => !target.element.isConnected) || Math.hypot(dx, dy) < MOVE_THRESHOLD_PX) {
       overlays.refreshFromLiveGeometry();
       refreshSave();
       return;
     }
 
     ignoreMutations = true;
-    const result = executor.executeMove({
-      nodeId: active.nodeId,
+    const result = executor.executeMoveBatch({
+      nodeIds: active.targets.map((target) => target.nodeId),
       dx,
       dy,
       pageKey: pageKey(),
@@ -313,12 +426,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       ok: result.ok,
       dx,
       dy,
-      nodeId: active.nodeId,
+      nodeIds: active.targets.map((target) => target.nodeId),
       error: result.ok ? undefined : result.error,
-      expected: result.verification?.expected,
-      actual: result.verification?.actual,
     });
-    selectNode(active.nodeId);
+    renderSelection();
     refreshSave();
     overlays.refreshFromLiveGeometry();
     if (!result.ok) {
@@ -331,7 +442,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       if (gesture) {
         cancelGesture();
       } else {
-        selectNode(null);
+        runtime.clearSelection();
       }
       event.preventDefault();
       return;
@@ -342,15 +453,22 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return;
     }
     const modifier = event.ctrlKey || event.metaKey;
+    if (modifier && event.key.toLowerCase() === "g") {
+      event.preventDefault();
+      if (event.shiftKey) runtime.ungroupSelection();
+      else runtime.groupSelection();
+      return;
+    }
     const bracketRight = event.code === "BracketRight" || event.key === "]" || event.key === "}";
     const bracketLeft = event.code === "BracketLeft" || event.key === "[" || event.key === "{";
     if (modifier && (bracketRight || bracketLeft)) {
       event.preventDefault();
-      if (selected) {
+      const primary = selection.primary;
+      if (primary?.kind === "node") {
         const command = bracketRight
           ? event.shiftKey ? "front" : "forward"
           : event.shiftKey ? "back" : "backward";
-        runtime.layer(selected, command);
+        runtime.layer(primary.nodeId, command);
       }
       return;
     }
@@ -467,7 +585,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
           overlays.setMode(mode);
           if (mode === "interact") {
             cancelGesture();
-            selectNode(null);
+            runtime.clearSelection();
             applyUserSelect(false);
           } else {
             applyUserSelect(true);
@@ -476,9 +594,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         },
       });
       attachInvalidation();
-      if (selected) {
-        overlays.showSelection([selected]);
-      }
+      renderSelection();
     },
     stop() {
       cancelGesture();
@@ -488,18 +604,96 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       input.stop();
       owner().dispose();
       started = false;
-      selected = null;
+      selection = emptySelection();
+      groups.clear();
+      groupByMember.clear();
     },
     select(element) {
       const nodeId = visualModel.adopt(element);
-      selectNode(nodeId);
+      setSelection(nodeId ? selectionFromAtoms([atomForNode(nodeId)], "click") : emptySelection());
       return nodeId;
     },
+    toggleSelection(element) {
+      const nodeId = visualModel.adopt(element);
+      if (nodeId) setSelection(toggleAtom(selection, atomForNode(nodeId)));
+      return nodeId;
+    },
+    selectRect(rect, mode) {
+      const atoms = resolveLasso(rect).map(atomForNode);
+      setSelection(selectionFromAtoms(mode === "add" ? [...selection.atoms, ...atoms] : atoms, "lasso"));
+      return selection;
+    },
+    clearSelection() {
+      setSelection(emptySelection());
+    },
+    getSelection() {
+      return selectionFromAtoms(selection.atoms, selection.source);
+    },
+    selectedNodeIds() {
+      return selectedIds();
+    },
+    measureSelection() {
+      return unionRects(visualModel.measure(selectedIds()).values());
+    },
+    measureGroup(groupId) {
+      const group = groups.get(groupId);
+      return group ? unionRects(visualModel.measure(group.memberIds).values()) : null;
+    },
+    getGroup(groupId) {
+      return groups.get(groupId) ?? null;
+    },
+    groupSelection() {
+      const memberIds = selectedIds();
+      if (memberIds.length < 2) return null;
+      for (const atom of selection.atoms) {
+        if (atom.kind !== "group") continue;
+        const old = groups.get(atom.groupId);
+        if (old) for (const memberId of old.memberIds) groupByMember.delete(memberId);
+        groups.delete(atom.groupId);
+      }
+      groupCounter += 1;
+      const groupId: GroupId = `otf-group-${groupCounter.toString(36)}`;
+      const group: RuntimeVirtualGroup = { id: groupId, memberIds };
+      groups.set(groupId, group);
+      for (const memberId of memberIds) groupByMember.set(memberId, groupId);
+      setSelection(selectionFromAtoms([{ kind: "group", groupId }], "group"));
+      return groupId;
+    },
+    ungroupSelection() {
+      const atoms: SelectionAtom[] = [];
+      const members: VisualNodeId[] = [];
+      for (const atom of selection.atoms) {
+        if (atom.kind === "node") {
+          atoms.push(atom);
+          continue;
+        }
+        const group = groups.get(atom.groupId);
+        if (!group) continue;
+        groups.delete(atom.groupId);
+        for (const memberId of group.memberIds) {
+          groupByMember.delete(memberId);
+          atoms.push({ kind: "node", nodeId: memberId });
+          members.push(memberId);
+        }
+      }
+      if (members.length > 0) setSelection(selectionFromAtoms(atoms, "group"));
+      return members;
+    },
+    moveSelection(dx, dy): BatchExecutionResult {
+      const roots = movementRoots(selectedIds());
+      ignoreMutations = true;
+      const result = executor.executeMoveBatch({ nodeIds: roots, dx, dy, pageKey: pageKey() });
+      releaseMutationIgnore();
+      refreshSave();
+      renderSelection();
+      return result;
+    },
     selectParent() {
-      if (!selected) {
+      const primary = selection.primary;
+      if (!primary || primary.kind !== "node") {
         return null;
       }
-      const parentId = visualModel.parentOf(selected);
+      const parentId = visualModel.parentOf(primary.nodeId);
       if (!parentId) {
         return null;
       }
@@ -507,7 +701,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       if (!parent || parent.role === "root") {
         return null;
       }
-      selectNode(parentId);
+      setSelection(selectionFromAtoms([atomForNode(parentId)], "click"));
       return parentId;
     },
     move(nodeId, dx, dy): ExecutionResult {
@@ -520,7 +714,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       });
       releaseMutationIgnore();
       if (result.ok) {
-        selectNode(nodeId);
+        setSelection(selectionFromAtoms([atomForNode(nodeId)], "click"));
       }
       refreshSave();
       overlays.refreshFromLiveGeometry();
@@ -531,7 +725,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const result = executor.executeLayer({ nodeId, command, pageKey: pageKey() });
       releaseMutationIgnore();
       if (result.ok) {
-        selectNode(nodeId);
+        setSelection(selectionFromAtoms([atomForNode(nodeId)], "click"));
       }
       refreshSave();
       overlays.refreshFromLiveGeometry();
@@ -539,30 +733,32 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return result;
     },
     undo() {
-      const operation = ledger.peekUndo();
-      if (!operation || (!isMoveOperation(operation) && !isLayerOperation(operation))) {
+      const operations = ledger.peekUndoTransaction().filter((operation): operation is MoveOperation | ZIndexOperation =>
+        isMoveOperation(operation) || isLayerOperation(operation));
+      if (operations.length === 0) {
         return { ok: false, error: "nothing_to_undo", rolledBack: false };
       }
       ignoreMutations = true;
-      const result = executor.revertCommitted(operation);
+      const result = executor.revertCommittedBatch(operations);
       releaseMutationIgnore();
       if (result.ok) {
-        ledger.confirmUndo();
+        ledger.confirmUndoTransaction();
       }
       refreshSave();
       overlays.refreshFromLiveGeometry();
       return result;
     },
     redo() {
-      const operation = ledger.peekRedo();
-      if (!operation || (!isMoveOperation(operation) && !isLayerOperation(operation))) {
+      const operations = ledger.peekRedoTransaction().filter((operation): operation is MoveOperation | ZIndexOperation =>
+        isMoveOperation(operation) || isLayerOperation(operation));
+      if (operations.length === 0) {
         return { ok: false, error: "nothing_to_redo", rolledBack: false };
       }
       ignoreMutations = true;
-      const result = executor.reapplyCommitted(operation);
+      const result = executor.reapplyCommittedBatch(operations);
       releaseMutationIgnore();
       if (result.ok) {
-        ledger.confirmRedo();
+        ledger.confirmRedoTransaction();
       }
       refreshSave();
       overlays.refreshFromLiveGeometry();

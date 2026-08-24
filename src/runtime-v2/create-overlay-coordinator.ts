@@ -8,6 +8,7 @@ import { rectsNear } from "./geometry.js";
 import type { InputMode } from "./input-router.js";
 import type { OverlayCoordinator } from "./overlay-coordinator.js";
 import type { IntendedRect } from "./placement-engine.js";
+import { unionRects } from "./runtime-selection.js";
 import type { VisualModel } from "./visual-model.js";
 
 export interface OverlayCoordinatorDeps {
@@ -17,6 +18,8 @@ export interface OverlayCoordinatorDeps {
 
 const SAVE_BUTTON_CLASS = "otf-save-button";
 const OUTLINE_CLASS = "otf-selection-outline";
+const MEMBER_OUTLINE_CLASS = "otf-selection-member-outline";
+const LASSO_CLASS = "otf-lasso";
 
 function serializeRect(rect: IntendedRect): string {
   return `${String(rect.x)},${String(rect.y)},${String(rect.width)},${String(rect.height)}`;
@@ -74,6 +77,20 @@ function overlayStyles(doc: Document): HTMLStyleElement {
       box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85), 0 0 0 4px rgba(37, 99, 235, 0.18);
       pointer-events: none;
     }
+    .${MEMBER_OUTLINE_CLASS} {
+      position: fixed;
+      box-sizing: border-box;
+      border: 1px solid rgba(37, 99, 235, 0.72);
+      border-radius: 3px;
+      pointer-events: none;
+    }
+    .${LASSO_CLASS} {
+      position: fixed;
+      box-sizing: border-box;
+      border: 1px solid #2563eb;
+      background: rgba(37, 99, 235, 0.08);
+      pointer-events: none;
+    }
   `;
   return style;
 }
@@ -96,6 +113,8 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
   let painted: IntendedRect | null = null;
   let saveHandler: (() => void) | null = null;
   let outline: HTMLElement | null = null;
+  let memberOutlines: HTMLElement[] = [];
+  let lasso: HTMLElement | null = null;
   let rafId = 0;
   let mode: InputMode = "edit";
   const scrollCleanups: Array<() => void> = [];
@@ -108,13 +127,22 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     }
   };
 
-  const paint = (rect: IntendedRect | null): void => {
+  const position = (element: HTMLElement, rect: IntendedRect): void => {
+    element.style.left = `${String(rect.x)}px`;
+    element.style.top = `${String(rect.y)}px`;
+    element.style.width = `${String(rect.width)}px`;
+    element.style.height = `${String(rect.height)}px`;
+  };
+
+  const paint = (rect: IntendedRect | null, members: readonly IntendedRect[] = []): void => {
     if (!layer) {
       return;
     }
     if (!rect) {
       outline?.remove();
       outline = null;
+      for (const member of memberOutlines) member.remove();
+      memberOutlines = [];
       painted = null;
       return;
     }
@@ -123,27 +151,36 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       outline.className = OUTLINE_CLASS;
       layer.append(outline);
     }
-    outline.style.left = `${String(rect.x)}px`;
-    outline.style.top = `${String(rect.y)}px`;
-    outline.style.width = `${String(rect.width)}px`;
-    outline.style.height = `${String(rect.height)}px`;
-    const model = measureSelected();
+    position(outline, rect);
+    while (memberOutlines.length < members.length) {
+      const member = deps.document.createElement("div");
+      member.className = MEMBER_OUTLINE_CLASS;
+      layer.append(member);
+      memberOutlines.push(member);
+    }
+    while (memberOutlines.length > members.length) memberOutlines.pop()?.remove();
+    members.forEach((member, index) => {
+      const target = memberOutlines[index];
+      if (target) position(target, member);
+    });
+    const model = measureSelected().union;
     outline.dataset.otfModel = serializeRect(model ?? rect);
     outline.dataset.otfRenderer = serializeRect(rect);
     outline.dataset.otfSpace = "viewport";
     painted = rect;
   };
 
-  const measureSelected = (): IntendedRect | null => {
-    const id = selected[0];
-    if (!id) {
-      return null;
-    }
-    return deps.visualModel.measure([id]).get(id) ?? null;
+  const measureSelected = (): { union: IntendedRect | null; members: IntendedRect[] } => {
+    const measured = deps.visualModel.measure(selected);
+    const members = selected
+      .map((id) => measured.get(id))
+      .filter((rect): rect is IntendedRect => Boolean(rect));
+    return { union: unionRects(members), members };
   };
 
   const render = (force = false): void => {
-    const rect = measureSelected();
+    const measured = measureSelected();
+    const rect = measured.union;
     if (!rect) {
       paint(null);
       return;
@@ -151,7 +188,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     if (!force && painted && rectsNear(rect, painted, 0.5)) {
       return;
     }
-    paint(rect);
+    paint(rect, selected.length > 1 ? measured.members : []);
   };
 
   const loop = (): void => {
@@ -170,25 +207,23 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     while (nestedScrollCleanups.length > 0) {
       nestedScrollCleanups.pop()?.();
     }
-    const id = selected[0];
-    if (!id) {
-      return;
-    }
-    const element = deps.visualModel.bind(id);
-    if (!element) {
-      return;
-    }
     const onNestedScroll = (): void => {
       render(true);
     };
-    let current: HTMLElement | null = element;
-    while (current) {
-      current.addEventListener("scroll", onNestedScroll, { passive: true });
-      const node = current;
-      nestedScrollCleanups.push(() => {
-        node.removeEventListener("scroll", onNestedScroll);
-      });
-      current = current.parentElement;
+    const observed = new Set<HTMLElement>();
+    for (const id of selected) {
+      let current = deps.visualModel.bind(id);
+      while (current) {
+        if (!observed.has(current)) {
+          observed.add(current);
+          current.addEventListener("scroll", onNestedScroll, { passive: true });
+          const node = current;
+          nestedScrollCleanups.push(() => {
+            node.removeEventListener("scroll", onNestedScroll);
+          });
+        }
+        current = current.parentElement;
+      }
     }
   };
 
@@ -289,6 +324,8 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       shadow = null;
       layer = null;
       outline = null;
+      memberOutlines = [];
+      lasso = null;
       saveButton = null;
       indicatorLabel = null;
       selected = [];
@@ -305,6 +342,19 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       }
       cancelLoop();
     },
+    showLasso(rect) {
+      if (!layer) return;
+      if (!lasso) {
+        lasso = deps.document.createElement("div");
+        lasso.className = LASSO_CLASS;
+        layer.append(lasso);
+      }
+      position(lasso, rect);
+    },
+    clearLasso() {
+      lasso?.remove();
+      lasso = null;
+    },
     refreshFromLiveGeometry() {
       render(true);
     },
@@ -313,9 +363,11 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       attachNestedScroll();
       cancelLoop();
       paint(null);
+      lasso?.remove();
+      lasso = null;
     },
     selectionOutlineRect() {
-      return measureSelected();
+      return measureSelected().union;
     },
     setMode(next: InputMode) {
       mode = next;

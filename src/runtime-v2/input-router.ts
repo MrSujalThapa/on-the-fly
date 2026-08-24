@@ -5,6 +5,7 @@ export interface NormalizedPointer {
   readonly clientY: number;
   readonly pointerId: number;
   readonly button: number;
+  readonly shiftKey: boolean;
   readonly target: EventTarget | null;
 }
 

@@ -8,6 +8,8 @@ import type { InputMode } from "./input-router.js";
  */
 export interface OverlayCoordinator {
   showSelection(nodeIds: readonly VisualNodeId[]): void;
+  showLasso(rect: IntendedRect): void;
+  clearLasso(): void;
   refreshFromLiveGeometry(): void;
   clear(): void;
   selectionOutlineRect(): IntendedRect | null;
