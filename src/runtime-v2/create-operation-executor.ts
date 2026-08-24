@@ -5,7 +5,7 @@ import { applyMoveOperation, applyResizeOperation, applyRotateOperation } from "
 import { applyHideOperation } from "../editor/dom/handlers/hide-handler.js";
 import { applyDuplicateOperation } from "../editor/dom/handlers/duplicate-handler.js";
 import { applyCropOperation } from "../editor/dom/handlers/crop-handler.js";
-import { applyStyleOperation, textSubtreeStyleTargets } from "../editor/dom/handlers/style-handler.js";
+import { applyStyleOperation, styleRealizationTargets } from "../editor/dom/handlers/style-handler.js";
 import { applyTextOperation, renderedVisibleText } from "../editor/dom/handlers/text-handler.js";
 import { readStoredTransformState } from "../editor/dom/element-snapshot.js";
 import { ElementSnapshotStore } from "../editor/dom/element-snapshot.js";
@@ -271,9 +271,12 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       element = resolved.element;
       nodeId = resolved.nodeId;
       snapshot = captureElementDomSnapshot(element, deps.document);
-      descendantStyles = operation.type === "style" && operation.payload.scope === "text-subtree"
-        ? textSubtreeStyleTargets(element).map((descendant) => ({ element: descendant, style: descendant.getAttribute("style") }))
+      descendantStyles = operation.type === "style"
+        ? styleRealizationTargets(element, operation)
+          .filter((target) => target !== element)
+          .map((descendant) => ({ element: descendant, style: descendant.getAttribute("style") }))
         : undefined;
+      if (descendantStyles && descendantStyles.length === 0) descendantStyles = undefined;
       try {
         if (operation.type === "hide") applyHideOperation(element, operation, snapshotStore);
         else if (operation.type === "resize") applyResizeOperation(element, operation, snapshotStore);
@@ -300,9 +303,7 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       }[operation.payload.property];
       const probe = deps.document.createElement("div");
       probe.style.setProperty(cssProperty, operation.payload.value);
-      const targets = operation.payload.scope === "text-subtree"
-        ? textSubtreeStyleTargets(element)
-        : [element];
+      const targets = styleRealizationTargets(element, operation);
       return targets.length > 0 && targets.every((target) =>
         target.style.getPropertyValue(cssProperty) === probe.style.getPropertyValue(cssProperty));
     })();

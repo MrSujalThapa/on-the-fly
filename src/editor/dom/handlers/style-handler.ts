@@ -1,3 +1,4 @@
+import { isFillStyleProperty, resolveFillSurface, setManagedStyleProperty } from "../../style/fill-surface.js";
 import type { StyleOperation, StyleProperty } from "../../operations.js";
 import type { ElementSnapshotStore } from "../element-snapshot.js";
 import type { AppliedDomEffect } from "../types.js";
@@ -48,6 +49,11 @@ export function textSubtreeStyleTargets(element: HTMLElement): HTMLElement[] {
   return [...targets];
 }
 
+export function styleRealizationTargets(element: HTMLElement, operation: StyleOperation): HTMLElement[] {
+  if (operation.payload.scope === "text-subtree") return textSubtreeStyleTargets(element);
+  return [isFillStyleProperty(operation.payload.property) ? resolveFillSurface(element) : element];
+}
+
 export function applyStyleOperation(
   element: HTMLElement,
   operation: StyleOperation,
@@ -56,13 +62,21 @@ export function applyStyleOperation(
   snapshotStore.captureIfNeeded(element);
 
   const cssProperty = STYLE_PROPERTY_MAP[operation.payload.property];
-  const inlinePrevious = getInlineStyleValue(element, cssProperty);
-  const previousValue =
-    inlinePrevious || getComputedStyleValue(element, cssProperty) || operation.payload.previousValue || "";
-
-  const targets = operation.payload.scope === "text-subtree" ? textSubtreeStyleTargets(element) : [element];
+  const targets = styleRealizationTargets(element, operation);
   if (targets.length === 0) throw new Error("style_text_subtree_empty");
-  for (const target of targets) target.style.setProperty(cssProperty, operation.payload.value);
+  for (const target of targets) {
+    if (target !== element) snapshotStore.captureIfNeeded(target);
+  }
+  const previousSource = targets[0] ?? element;
+  const inlinePrevious = getInlineStyleValue(previousSource, cssProperty);
+  const previousValue =
+    inlinePrevious || getComputedStyleValue(previousSource, cssProperty) || operation.payload.previousValue || "";
+
+  const managed = isFillStyleProperty(operation.payload.property);
+  for (const target of targets) {
+    if (managed) setManagedStyleProperty(target, cssProperty, operation.payload.value);
+    else target.style.setProperty(cssProperty, operation.payload.value);
+  }
 
   return [{ kind: "style", property: cssProperty, previousValue }];
 }
@@ -72,7 +86,7 @@ export function revertStyleChange(
   change: Extract<AppliedDomEffect["changes"][number], { kind: "style" }>,
 ): void {
   if (change.previousValue) {
-    element.style.setProperty(change.property, change.previousValue);
+    setManagedStyleProperty(element, change.property, change.previousValue);
     return;
   }
 

@@ -10,6 +10,7 @@ import { OTF_TRANSFORM_ATTR, type StoredTransformState } from "../editor/dom/typ
 import { readStoredCropInsets, resolveCropSubject } from "../editor/dom/handlers/crop-handler.js";
 import { renderedVisibleText } from "../editor/dom/handlers/text-handler.js";
 import { textSubtreeStyleTargets } from "../editor/dom/handlers/style-handler.js";
+import { isFillStyleProperty, resolveFillSurface, resolveStyleRealizationTarget, setManagedStyleProperty } from "../editor/style/fill-surface.js";
 import { captureElementDomSnapshot, restoreElementDomSnapshot, type ElementDomSnapshot } from "../editor/dom/dom-placement-snapshot.js";
 import { isExtensionRoot } from "../editor/measurement/scan-guards.js";
 import { createInputRouter } from "./create-input-router.js";
@@ -490,14 +491,17 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       if (!stylePreview.snapshots.has(element)) stylePreview.snapshots.set(element, element.getAttribute("style"));
       let originals = stylePreview.originals.get(element);
       if (!originals) { originals = new Map(); stylePreview.originals.set(element, originals); }
-      if (!originals.has(property)) originals.set(property, getComputedStyle(element).getPropertyValue(STYLE_CSS_MAP[property]));
+      const originalSource = resolveStyleRealizationTarget(element, property);
+      if (!originals.has(property)) originals.set(property, getComputedStyle(originalSource).getPropertyValue(STYLE_CSS_MAP[property]));
       for (const [pendingProperty, pendingValue] of stylePreview.pending) {
         const wantsSubtree = TEXT_STYLE_PROPERTIES.has(pendingProperty) && textSurface(element) !== element;
         const subtree = wantsSubtree ? textSubtreeStyleTargets(element) : [];
-        const styleTargets = wantsSubtree && subtree.length > 0 ? subtree : wantsSubtree ? [] : [element];
+        const fillSurface = isFillStyleProperty(pendingProperty) ? resolveFillSurface(element) : element;
+        const styleTargets = wantsSubtree && subtree.length > 0 ? subtree : wantsSubtree ? [] : [fillSurface];
         for (const styleTarget of styleTargets) {
           if (!stylePreview.snapshots.has(styleTarget)) stylePreview.snapshots.set(styleTarget, styleTarget.getAttribute("style"));
-          styleTarget.style.setProperty(STYLE_CSS_MAP[pendingProperty], pendingValue);
+          if (isFillStyleProperty(pendingProperty)) setManagedStyleProperty(styleTarget, STYLE_CSS_MAP[pendingProperty], pendingValue);
+          else styleTarget.style.setProperty(STYLE_CSS_MAP[pendingProperty], pendingValue);
         }
       }
     }
@@ -507,8 +511,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   const stylePanelValues = (): Record<string, string> => {
     const selected = singleSelectedElement();
     if (!selected) return {};
-    const computed = getComputedStyle(selected.element);
-    return Object.fromEntries(Object.entries(STYLE_CSS_MAP).map(([property, css]) => [property, computed.getPropertyValue(css).trim()]));
+    const fillSurface = resolveFillSurface(selected.element);
+    return Object.fromEntries(Object.entries(STYLE_CSS_MAP).map(([property, css]) => {
+      const source = isFillStyleProperty(property as StyleProperty) ? fillSurface : selected.element;
+      return [property, getComputedStyle(source).getPropertyValue(css).trim()];
+    }));
   };
 
   refreshToolbar = (): void => {
@@ -1402,7 +1409,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         const rect = visualModel.measure([nodeId]).get(nodeId);
         if (!element || !identity || !rect) return { ok: false, error: "style_target_unresolved", rolledBack: false };
         for (const [property, value] of pending) {
-          const previousValue = getComputedStyle(element).getPropertyValue(STYLE_CSS_MAP[property]);
+          const previousValue = getComputedStyle(resolveStyleRealizationTarget(element, property)).getPropertyValue(STYLE_CSS_MAP[property]);
           const drafted = buildStyleOperation({ nodeId, signature: identity.signature, rect }, property, value, { pageKey: pageKey(), sourceCommand: "style" }, previousValue, element);
           const wantsSubtree = TEXT_STYLE_PROPERTIES.has(property) && textSurface(element) !== element;
           const subtree = wantsSubtree ? textSubtreeStyleTargets(element) : [];
