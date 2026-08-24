@@ -7,7 +7,7 @@ import {
   type ElementSnapshotStore,
   writeStoredTransformState,
 } from "../element-snapshot.js";
-import { applyPersistedDetachPlacement, OTF_DETACH_ATTR } from "../managed-detach.js";
+import { applyPersistedDetachPlacement, OTF_DETACH_ATTR, realizeIndependentPlacement } from "../managed-detach.js";
 import {
   applyPersistedInteractionSafeFixed,
   applyInteractionSafeFixedDelta,
@@ -173,6 +173,18 @@ export function applyResizeOperation(
   if (operation.metadata?.finalRect) {
     const finalRect = operation.metadata.finalRect;
     element.style.boxSizing = "border-box";
+    if (element.getAttribute(OTF_DETACH_ATTR) === "true") {
+      const previousSerialized = element.getAttribute(OTF_TRANSFORM_ATTR);
+      realizeIndependentPlacement(element, {
+        ...finalRect,
+        width: operation.payload.width,
+        height: operation.payload.height,
+      }, { zIndex: element.style.zIndex });
+      return [
+        { kind: "transform-state" as const, previousState: previousSerialized },
+        { kind: "size", previousWidth, previousHeight, previousBoxSizing },
+      ];
+    }
     const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
     applyStoredTransformStateToRect(element, state, {
       ...finalRect,

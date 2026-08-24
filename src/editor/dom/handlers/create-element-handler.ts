@@ -1,10 +1,7 @@
 import type { CreateElementOperation } from "../../operations.js";
 import { buildElementSignature } from "../../measurement/signature-builder.js";
-import {
-  applyStoredTransformState,
-  writeStoredTransformState,
-  type ElementSnapshotStore,
-} from "../element-snapshot.js";
+import { type ElementSnapshotStore } from "../element-snapshot.js";
+import { realizeIndependentPlacement } from "../managed-detach.js";
 import type { AppliedDomEffect } from "../types.js";
 import { OTF_ELEMENT_ID_ATTR } from "../../create/created-element.js";
 import { renderCreatedElement } from "../../create/render-created-element.js";
@@ -17,22 +14,7 @@ export function applyCreateElementOperation(
 ): { element: HTMLElement; changes: AppliedDomEffect["changes"] } {
   const element = existing?.isConnected ? existing : resolveOrCreate(document, operation);
   snapshotStore.captureIfNeeded(element);
-  document.body.appendChild(element);
-  const view = document.defaultView;
-  const left = operation.payload.rect.x + (view?.scrollX ?? 0);
-  const top = operation.payload.rect.y + (view?.scrollY ?? 0);
-  const state = {
-    dx: 0,
-    dy: 0,
-    width: operation.payload.rect.width,
-    height: operation.payload.rect.height,
-    rotate: 0,
-    position: "absolute" as const,
-    fixedLeft: left,
-    fixedTop: top,
-  };
-  writeStoredTransformState(element, state);
-  applyStoredTransformState(element, state);
+  realizeIndependentPlacement(element, operation.payload.rect);
   const viewport = document.defaultView
     ? { width: document.documentElement.clientWidth, height: document.documentElement.clientHeight }
     : undefined;

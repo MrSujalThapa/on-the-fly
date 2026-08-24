@@ -74,6 +74,7 @@ describe("layer order", () => {
   it("jumps to front and back", () => {
     expect(computeNextLayer(3, "front")).toBe(FRONT_LAYER);
     expect(computeNextLayer(3, "back")).toBe(BACK_LAYER);
+    expect(computeNextLayer(3, "back", 0, 1)).toBe(1);
   });
 
   it("does not step below the back layer", () => {

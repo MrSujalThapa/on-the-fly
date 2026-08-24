@@ -8,7 +8,7 @@ describe("FloatingToolbar", () => {
     globalThis.document.getElementById("on-the-fly-root-host")?.remove();
   });
 
-  it("renders only when selection anchor is provided", async () => {
+  it("renders with a default viewport position when there is no selection", async () => {
     const shell = new EditorShell();
     shell.mount({ onDeactivate: () => undefined });
     const shadow = shell.getShadowRoot();
@@ -39,13 +39,14 @@ describe("FloatingToolbar", () => {
       execute: vi.fn(),
     };
 
-    toolbar.renderCommands([], null);
+    toolbar.renderCommands([{ command, enabled: true }], null);
     const toolbarEl = shadow.querySelector(".otf-curved-toolbar");
     expect(toolbarEl).toBeInstanceOf(HTMLElement);
     expect((toolbarEl as HTMLElement).hidden).toBe(true);
+    await nextFrame();
+    expect((toolbarEl as HTMLElement).hidden).toBe(false);
 
     toolbar.renderCommands([{ command, enabled: true }], { x: 10, y: 10, width: 100, height: 40 });
-    expect((toolbarEl as HTMLElement).hidden).toBe(true);
     await nextFrame();
     expect((toolbarEl as HTMLElement).hidden).toBe(false);
     expect(shadow.querySelector("[data-command-id='crop-mode']")).not.toBeNull();

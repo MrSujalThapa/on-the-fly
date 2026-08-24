@@ -517,7 +517,7 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       if ("error" in resolved) {
         return resolved;
       }
-      if (resolved.element.getAttribute("data-otf-detached") !== "true") {
+      if (!deps.placement.isIndependent(resolved.element)) {
         const currentRect = rectFromElement(resolved.element);
         const independentPlan = deps.placement.planMove({
           element: resolved.element,

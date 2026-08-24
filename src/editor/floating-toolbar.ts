@@ -223,11 +223,13 @@ export class FloatingToolbar {
     }
 
     if (!anchorRect) {
-      this.hideToolbarOnly();
-      return;
+      if (!this.toolbarWasDragged) {
+        this.lastAnchor = this.defaultViewportAnchor();
+      }
+    } else {
+      this.lastAnchor = anchorRect;
     }
-
-    this.lastAnchor = anchorRect;
+    const layoutAnchor = this.lastAnchor ?? this.defaultViewportAnchor();
     this.cancelPendingShowFrame();
     this.toolbarEl.hidden = true;
     this.toolbarEl.style.visibility = "hidden";
@@ -244,12 +246,12 @@ export class FloatingToolbar {
 
     this.pendingShowFrame = requestAnimationFrame(() => {
       this.pendingShowFrame = null;
-      if (!this.toolbarEl || this.lastAnchor !== anchorRect) {
+      if (!this.toolbarEl) {
         return;
       }
       this.toolbarEl.hidden = false;
       if (!this.toolbarWasDragged) {
-        this.positionToolbarNearSelection(anchorRect);
+        this.positionToolbarNearSelection(layoutAnchor);
       }
       this.updateToolButtonPositions();
       this.toolbarEl.style.visibility = "visible";
@@ -894,6 +896,11 @@ export class FloatingToolbar {
       divider.style.top = `${String(point.y)}px`;
       divider.style.setProperty("--angle", `${String(point.angle + 90)}deg`);
     }
+  }
+
+  private defaultViewportAnchor(): VisualNodeRect {
+    const viewportHeight = Math.max(1, window.innerHeight);
+    return { x: 24, y: Math.max(72, viewportHeight * 0.28), width: 1, height: 1 };
   }
 
   private positionToolbarNearSelection(rect: VisualNodeRect): void {

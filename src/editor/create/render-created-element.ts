@@ -146,7 +146,6 @@ function applyBox(
   root.style.height = `${String(rect.height)}px`;
   root.style.boxSizing = "border-box";
   root.style.margin = "0";
-  root.style.zIndex = "1";
   root.style.display = kind === "button" || kind === "badge" || kind === "header" || kind === "search" || kind === "input" ? "flex" : "block";
   root.style.alignItems = "center";
   root.style.justifyContent = kind === "header" ? "flex-start" : "center";

@@ -8,6 +8,7 @@ import { unionRectWithPadding } from "../../src/editor/create/placement-geometry
 import { renderCreatedElement } from "../../src/editor/create/render-created-element.js";
 import { appearanceForFamily, appearanceHasLayoutProps, sampleAppearance } from "../../src/editor/create/sample-appearance.js";
 import { createEmptyBoundingBoxHint } from "../../src/editor/element-signature.js";
+import { OTF_DETACH_ATTR } from "../../src/editor/dom/managed-detach.js";
 import type { CreateElementOperation, EditorOperation, MoveOperation } from "../../src/editor/operations.js";
 import { createEditorRuntime } from "../../src/runtime-v2/create-editor-runtime.js";
 import { projectCanonicalCheckpoint } from "../../src/runtime-v2/canonical-checkpoint.js";
@@ -139,6 +140,9 @@ describe("created elements", () => {
     const container = document.querySelector<HTMLElement>('[data-otf-component-kind="container"]');
     expect(container).not.toBeNull();
     expect(a.parentElement).toBe(parent);
+    expect(runtime.getSelection().atoms).toEqual([{ kind: "node", nodeId: container?.getAttribute(OTF_ELEMENT_ID_ATTR) }]);
+    expect(runtime.getGroup("otf-group-1")).toBeNull();
+    expect(runtime.groupSelection()).toBeNull();
     if (container && expected) {
       const box = container.getBoundingClientRect();
       expect(Math.abs(box.x - expected.x)).toBeLessThan(2);
@@ -148,6 +152,9 @@ describe("created elements", () => {
     expect(document.querySelector('[data-otf-component-kind="container"]')).toBeNull();
     expect(runtime.redo().ok).toBe(true);
     expect(document.querySelector('[data-otf-component-kind="container"]')).not.toBeNull();
+    const hostId = runtime.visualModel.adopt(a);
+    expect(hostId && runtime.move(hostId, 12, 0).ok).toBe(true);
+    expect(a.parentElement).toBe(parent);
     runtime.stop();
   });
 
@@ -169,6 +176,46 @@ describe("created elements", () => {
     expect(COMPONENT_DEFINITIONS.rectangle.textCapable).toBe(false);
   });
 
+  it("created targets stay independent and pick follows paint order", () => {
+    const { document, root } = createTestDocument(`<button id="host">Host</button>`);
+    const host = root.querySelector("#host") as HTMLElement;
+    layoutManagedElement(host, { x: 40, y: 40, width: 120, height: 40 });
+    patchRects(document);
+    document.elementsFromPoint = (x, y) => paintAt(document, x, y);
+    const runtime = createEditorRuntime(document);
+    runtime.start();
+    const created = runtime.createElement({ kind: "rectangle", rect: { x: 40, y: 40, width: 120, height: 80 } });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const createdId = created.operation.target.nodeId ?? "";
+    const createdEl = runtime.visualModel.bind(createdId);
+    expect(createdEl?.getAttribute(OTF_DETACH_ATTR)).toBe("true");
+    expect(runtime.move(createdId, 24, 0).ok).toBe(true);
+    expect(createdEl?.getBoundingClientRect().x).toBe(64);
+    expect(runtime.resizeSelection({ x: 64, y: 40, width: 140, height: 90 }).ok).toBe(true);
+    expect(createdEl?.getAttribute(OTF_DETACH_ATTR)).toBe("true");
+    const hostId = runtime.visualModel.adopt(host);
+    expect(hostId).toBeTruthy();
+    if (!hostId || !createdEl) return;
+    host.style.left = "40px";
+    host.style.top = "40px";
+    host.style.width = "120px";
+    host.style.height = "40px";
+    expect(host.getAttribute(OTF_DETACH_ATTR)).not.toBe("true");
+    const broughtFront = runtime.layer(hostId, "front");
+    expect(broughtFront.ok).toBe(true);
+    expect(host.getAttribute(OTF_DETACH_ATTR)).toBe("true");
+    expect(runtime.layer(hostId, "back").ok).toBe(true);
+    expect(Number.parseInt(host.style.zIndex || "1", 10)).toBeGreaterThanOrEqual(1);
+    host.style.zIndex = "2";
+    createdEl.style.zIndex = "1";
+    document.elementsFromPoint = () => [host, createdEl, document.body];
+    expect(runtime.visualModel.pick(80, 50)).toBe(hostId);
+    document.elementsFromPoint = () => [createdEl, host, document.body];
+    expect(runtime.visualModel.pick(80, 50)).toBe(createdId);
+    runtime.stop();
+  });
+
   it("replays a created element onto a fresh document with the same elementId", () => {
     const { document } = createTestDocument("");
     patchRects(document);
@@ -186,5 +233,6 @@ describe("created elements", () => {
     const restored = next.querySelector(`[${OTF_ELEMENT_ID_ATTR}="${operation.payload.elementId}"]`);
     expect(restored).not.toBeNull();
     expect(restored?.getAttribute("data-otf-component-kind")).toBe("button");
+    expect(restored?.getAttribute(OTF_DETACH_ATTR)).toBe("true");
   });
 });

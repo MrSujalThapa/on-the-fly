@@ -61,7 +61,7 @@ function click(target: HTMLElement, x: number, y: number, shiftKey = false): voi
 }
 
 describe("Runtime V2 editor parity", () => {
-  it("keeps the toolbar closed on selection and toggles it only with plain T", () => {
+  it("toggles the toolbar with plain T even without a selection, but not while typing", () => {
     const { document, root } = createTestDocument(`<button id="a">Target</button><input id="field">`);
     const target = byId(root, "a");
     const field = byId(root, "field");
@@ -70,9 +70,11 @@ describe("Runtime V2 editor parity", () => {
     runtime.start();
     const visible: boolean[] = [];
     runtime.overlays.setToolbarVisible = (value) => { visible.push(value); };
-    runtime.select(target);
-    expect(visible.at(-1)).toBe(false);
     document.defaultView?.dispatchEvent(new KeyboardEvent("keydown", { key: "t", bubbles: true }));
+    expect(visible.at(-1)).toBe(true);
+    runtime.select(target);
+    expect(visible.at(-1)).toBe(true);
+    runtime.clearSelection();
     expect(visible.at(-1)).toBe(true);
     field.dispatchEvent(new KeyboardEvent("keydown", { key: "t", bubbles: true }));
     expect(visible.at(-1)).toBe(true);

@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
-import { getOverlayRect } from "../e2e/helpers/geometry.js";
-import { clearPageOperations, enableEdit, expect, loadSanitizedOperations, selectRealTarget, test } from "./harness.js";
+import { getOverlayRect, getTransformHandleRect } from "../e2e/helpers/geometry.js";
+import { clearPageOperations, dragRealTarget, enableEdit, expect, loadSanitizedOperations, selectRealTarget, test } from "./harness.js";
 import { linkedInFilters, reloadLinkedInAndReplay, requireLinkedInAuth } from "./linkedin.js";
 
 interface NodeInfo { nodeId: number; attributes?: string[]; children?: NodeInfo[]; shadowRoots?: NodeInfo[] }
@@ -168,4 +168,67 @@ test("create elements, sample styles, and wrap on LinkedIn", async ({ page, cont
   await reloadLinkedInAndReplay(page, context);
   await expect.poll(() => createdIds(page), { timeout: 30_000 }).toEqual(beforeReload);
   expect(saves).toBe(10);
+});
+
+test("toolbar, created movement, wrap, layer, and resize after move on LinkedIn", async ({ page, context }) => {
+  test.setTimeout(240_000);
+  await requireLinkedInAuth(page);
+  await clearPageOperations(context, page);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const filters = await linkedInFilters(page);
+  await enableEdit(context, page);
+  await dismissJumpMenu(page);
+  await page.mouse.click(24, 320);
+  await page.keyboard.press("Escape");
+  await dismissJumpMenu(page);
+  await page.keyboard.press("t");
+  await expect.poll(() => chromeNode(page, "otf-curved-toolbar")).not.toBeNull();
+  await page.keyboard.press("t");
+  expect(await chromeNode(page, "otf-curved-toolbar")).toBeNull();
+  const search = page.locator('input[placeholder*="Search"]').first();
+  if (await search.count()) {
+    await search.click({ timeout: 2_000 }).catch(() => undefined);
+    await page.keyboard.type("t");
+    expect(await chromeNode(page, "otf-curved-toolbar")).toBeNull();
+    await page.keyboard.press("Escape");
+  }
+  const mentions = await filters.Mentions.boundingBox();
+  expect(mentions).not.toBeNull();
+  if (!mentions) return;
+  await addKind(page, "rectangle", mentions.x, mentions.y + 200);
+  const created = page.locator("[data-otf-component-kind='rectangle']").last();
+  const before = await created.boundingBox();
+  await dragRealTarget(page, created, 36, 18);
+  const moved = await created.boundingBox();
+  expect(Math.abs((moved?.x ?? 0) - ((before?.x ?? 0) + 36))).toBeLessThan(16);
+  let handle = await getTransformHandleRect(page, "resize-se");
+  expect(handle).not.toBeNull();
+  if (handle) {
+    await page.mouse.move(handle.x + 4, handle.y + 4);
+    await page.mouse.down();
+    await page.mouse.move(handle.x + 28, handle.y + 16, { steps: 6 });
+    await page.mouse.up();
+  }
+  const settings = page.getByRole("link", { name: "View settings" });
+  await selectRealTarget(page, settings);
+  await openToolbar(page);
+  expect(await invokeChrome(page, "otf-tool-btn", ["data-command-id", "more"])).toBe(true);
+  expect(await invokeChrome(page, "otf-more-option", ["data-more-action", "wrap-selection"])).toBe(true);
+  await expect.poll(() => createdCount(page, "container")).toBeGreaterThan(0);
+  expect(await chromeNode(page, "otf-selection-member-outline")).toBeNull();
+  await selectRealTarget(page, filters.All);
+  await page.keyboard.press("Alt+ArrowUp");
+  const filterBefore = await filters.All.boundingBox();
+  handle = await getTransformHandleRect(page, "resize-se");
+  expect(handle).not.toBeNull();
+  await dragRealTarget(page, filters.All, 24, 16);
+  handle = await getTransformHandleRect(page, "resize-se");
+  expect(handle).not.toBeNull();
+  if (handle) {
+    await page.mouse.move(handle.x + 4, handle.y + 4);
+    await page.mouse.down();
+    await page.mouse.move(handle.x + 22, handle.y + 10, { steps: 5 });
+    await page.mouse.up();
+  }
+  expect(filterBefore).not.toBeNull();
 });

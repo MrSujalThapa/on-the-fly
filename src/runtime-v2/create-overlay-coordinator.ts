@@ -563,13 +563,11 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     setToolbarCommands(commands, activeStates = {}) {
       toolbarCommands = commands;
       toolbarActiveStates = activeStates;
-      const rect = measureSelected().union;
-      if (rect && mode === "edit" && toolbarVisible) toolbar?.renderCommandStates(toolbarCommands, rect, toolbarActiveStates);
+      if (mode === "edit" && toolbarVisible) toolbar?.renderCommandStates(toolbarCommands, measureSelected().union, toolbarActiveStates);
     },
     setToolbarVisible(visible) {
       toolbarVisible = visible;
-      const rect = measureSelected().union;
-      if (visible && rect && mode === "edit") toolbar?.renderCommandStates(toolbarCommands, rect, toolbarActiveStates);
+      if (visible && mode === "edit") toolbar?.renderCommandStates(toolbarCommands, measureSelected().union, toolbarActiveStates);
       else toolbar?.hide();
     },
     openStylePanel(values) {

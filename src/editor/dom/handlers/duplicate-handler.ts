@@ -9,6 +9,7 @@ import {
   applyStoredTransformState,
   writeStoredTransformState,
 } from "../element-snapshot.js";
+import { OTF_DETACH_ATTR } from "../managed-detach.js";
 import { OTF_MANAGED_ATTR, type AppliedDomEffect, type StoredTransformState } from "../types.js";
 
 export function applyDuplicateOperation(
@@ -30,6 +31,7 @@ export function applyDuplicateOperation(
   document.body.appendChild(element);
   element.setAttribute(OTF_CLONE_ATTR, operation.payload.cloneId);
   element.setAttribute(OTF_MANAGED_ATTR, "true");
+  element.setAttribute(OTF_DETACH_ATTR, "true");
   element.style.position = "absolute";
   // Margins belong to the source's former layout context. Keeping them on a
   // body-managed clone offsets its verified absolute box from left/top.

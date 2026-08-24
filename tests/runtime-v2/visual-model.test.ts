@@ -233,13 +233,13 @@ describe("VisualModel identity", () => {
 });
 
 describe("VisualModel hierarchy", () => {
-  it("keeps a managed BACK object selectable beneath unmanaged page content", () => {
+  it("selects the frontmost paint-order target, not a later managed node", () => {
     const { root } = createTestDocument(`<div class="page">Page</div><button data-otf-managed="true">My posts</button>`);
     const page = root.querySelector(".page");
     const managed = root.querySelector("button");
     if (!(page instanceof HTMLElement) || !(managed instanceof HTMLElement)) return;
     const discovery = discoverFromPath([page, managed]);
-    expect(discovery?.binding).toBe(managed);
+    expect(discovery?.binding).toBe(page);
   });
 
   it("keeps ordinary image and text descendants as the exact selected unit", () => {

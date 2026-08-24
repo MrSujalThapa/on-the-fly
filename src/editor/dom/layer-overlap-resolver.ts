@@ -5,11 +5,13 @@ import {
   BACK_LAYER,
   computeNextLayer,
   FRONT_LAYER,
+  MANAGED_Z_INDEX_BASELINE,
   resolveCurrentManagedLayer,
   type LayerCommand,
 } from "../transform/layer-order.js";
 import type { ElementSnapshotStore } from "./element-snapshot.js";
 import type { AppliedDomEffect } from "./types.js";
+import { OTF_DETACH_ATTR } from "./managed-detach.js";
 import { OTF_MANAGED_ATTR } from "./types.js";
 
 const UNSAFE_HOST_TAGS = new Set(["html", "body"]);
@@ -342,6 +344,7 @@ function computeTargetLayer(
     readComputedZIndex(host),
   );
   const siblingMax = readSiblingMaxZIndex(host);
+  const floor = host.getAttribute(OTF_DETACH_ATTR) === "true" ? MANAGED_Z_INDEX_BASELINE : BACK_LAYER;
 
   if (blockerHost && (command === "forward" || command === "backward")) {
     const blockerLayer = resolveCurrentManagedLayer(
@@ -354,10 +357,10 @@ function computeTargetLayer(
         Math.max(currentLayer + 1, siblingMax + 1, blockerLayer + 1),
       );
     }
-    return Math.max(BACK_LAYER, Math.min(currentLayer - 1, blockerLayer - 1));
+    return Math.max(floor, Math.min(currentLayer - 1, blockerLayer - 1));
   }
 
-  return computeNextLayer(currentLayer, command, siblingMax);
+  return computeNextLayer(currentLayer, command, siblingMax, floor);
 }
 
 function captureLayerStyle(element: HTMLElement): LayerStyleSnapshot {

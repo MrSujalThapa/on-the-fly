@@ -196,11 +196,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   let armedCreate: { kind: CreatedElementKind; appearance: CreatedElementAppearance } | null = null;
   let paletteSampling = false;
   const wrapSessions = new Map<string, {
-    priorGroups: Map<GroupId, RuntimeVirtualGroup>;
-    priorGroupByMember: Map<VisualNodeId, GroupId>;
-    priorGroupCounter: number;
     priorAtoms: readonly SelectionAtom[];
-    memberIds: readonly VisualNodeId[];
     containerId: VisualNodeId;
   }>();
   let transformGesture: TransformGesture | null = null;
@@ -319,7 +315,6 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     cropMode = false;
     overlays.setCropMode(false);
     selection = normalizeSelection(next.atoms, groups, next.source);
-    if (selection.atoms.length === 0) toolbarOpen = false;
     overlays.setToolbarVisible(toolbarOpen);
     renderSelection();
   };
@@ -1148,14 +1143,13 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     if (textEntry) return;
     if (
       event.key.toLowerCase() === "t" &&
-      !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+      !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey &&
+      !event.isComposing
     ) {
-      if (selectedIds().length > 0) {
-        event.preventDefault();
-        toolbarOpen = !toolbarOpen;
-        overlays.setToolbarVisible(toolbarOpen);
-        refreshToolbar();
-      }
+      event.preventDefault();
+      toolbarOpen = !toolbarOpen;
+      overlays.setToolbarVisible(toolbarOpen);
+      refreshToolbar();
       return;
     }
     if (event.key === "Escape") {
@@ -1421,15 +1415,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const measured = [...visualModel.measure(members).values()];
       const rect = unionRectWithPadding(measured, 16);
       if (!rect) return { ok: false, error: "missing_union", rolledBack: false };
-      const priorGroups = new Map(groups);
-      const priorGroupByMember = new Map(groupByMember);
-      const priorGroupCounter = groupCounter;
       const priorAtoms = selection.atoms;
       const cursorBefore = ledger.cursor;
       const restorePriorSelection = (): void => {
-        groups = new Map(priorGroups);
-        groupByMember = new Map(priorGroupByMember);
-        groupCounter = priorGroupCounter;
         setSelection(priorAtoms.length > 0 ? selectionFromAtoms([...priorAtoms], "click") : emptySelection());
       };
       const rollbackWrap = (): void => {
@@ -1464,16 +1452,27 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       };
       const layerOps = [
         inPlaceLayer(containerId, BACK_LAYER),
-        ...members.map((memberId, index) => inPlaceLayer(memberId, MANAGED_Z_INDEX_BASELINE + 1 + index)),
+        ...members.map((memberId, index) => inPlaceLayer(memberId, MANAGED_Z_INDEX_BASELINE + 10 + index)),
       ].filter((operation): operation is ZIndexOperation => Boolean(operation));
       if (layerOps.length > 0) {
         ignoreMutations = true;
-        const layered = executor.executeTransaction({ operations: layerOps });
-        releaseMutationIgnore();
-        if (!layered.ok) {
-          rollbackWrap();
-          return layered;
+        for (const operation of layerOps) {
+          const layered = executor.executeTransaction({ operations: [operation] });
+          if (!layered.ok && operation.target.nodeId === containerId) {
+            releaseMutationIgnore();
+            rollbackWrap();
+            return layered;
+          }
+          if (!layered.ok) {
+            const element = operation.target.nodeId ? visualModel.bind(operation.target.nodeId) : null;
+            if (element) {
+              const view = element.ownerDocument.defaultView;
+              if (view && view.getComputedStyle(element).position === "static") element.style.position = "relative";
+              element.style.zIndex = String(operation.payload.layer);
+            }
+          }
         }
+        releaseMutationIgnore();
       }
       const coversMembers = (): boolean => {
         const containerEl = visualModel.bind(containerId);
@@ -1494,14 +1493,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         return { ok: false, error: "wrap_covers_members", rolledBack: true };
       }
       ledger.coalesceLastCommits(ledger.cursor - cursorBefore);
-      setSelection(selectionFromAtoms([...members, containerId].map(atomForNode), "click"));
-      runtime.groupSelection();
+      setSelection(selectionFromAtoms([atomForNode(containerId)], "click"));
       wrapSessions.set(transactionKey(ledger.peekUndoTransaction()), {
-        priorGroups,
-        priorGroupByMember,
-        priorGroupCounter,
         priorAtoms,
-        memberIds: members,
         containerId,
       });
       refreshSave();
@@ -1865,9 +1859,6 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       if (result.ok) {
         const wrap = wrapSessions.get(transactionKey(operations));
         if (wrap) {
-          groups = new Map(wrap.priorGroups);
-          groupByMember = new Map(wrap.priorGroupByMember);
-          groupCounter = wrap.priorGroupCounter;
           setSelection(wrap.priorAtoms.length > 0 ? selectionFromAtoms([...wrap.priorAtoms], "click") : emptySelection());
         } else if (operations.every((operation) => operation.type === "duplicate" || operation.type === "createElement")) {
           removeGroupsContaining(new Set(operations.map((operation) => operation.target.nodeId).filter((id): id is VisualNodeId => Boolean(id))));
@@ -1892,8 +1883,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         ledger.confirmRedoTransaction();
         const wrap = wrapSessions.get(transactionKey(operations));
         if (wrap) {
-          setSelection(selectionFromAtoms([...wrap.memberIds, wrap.containerId].map(atomForNode), "click"));
-          runtime.groupSelection();
+          setSelection(selectionFromAtoms([atomForNode(wrap.containerId)], "click"));
         }
         const partitions = pastePartitions.get(transactionKey(operations));
         if (partitions) {

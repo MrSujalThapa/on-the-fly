@@ -4,7 +4,6 @@ import {
   shouldExcludeFromMeasurement,
 } from "../editor/measurement/scan-guards.js";
 import type { VisualRole } from "./visual-model.js";
-import { OTF_MANAGED_ATTR } from "../editor/dom/types.js";
 
 export interface VisualDiscovery {
   readonly binding: HTMLElement;
@@ -105,22 +104,6 @@ function parentDiscovery(element: HTMLElement): {
  * through the parent command, never inferred from content size or tag.
  */
 export function discoverFromPath(path: readonly Element[]): VisualDiscovery | null {
-  const managedIndex = path.findIndex((candidate) =>
-    candidate instanceof HTMLElement && isSelectable(candidate) && candidate.hasAttribute(OTF_MANAGED_ATTR));
-  const managed = managedIndex >= 0 ? path[managedIndex] : null;
-  const exactManagedDescendant = managed instanceof HTMLElement
-    ? path.slice(0, managedIndex).find((candidate): candidate is HTMLElement =>
-      candidate instanceof HTMLElement && managed.contains(candidate) && isSelectable(candidate) && !isPaintlessLayoutWrapper(candidate))
-    : null;
-  if (managed instanceof HTMLElement && !exactManagedDescendant) {
-    const parent = parentDiscovery(managed);
-    return {
-      binding: managed,
-      role: roleFor(managed),
-      parentBinding: parent?.binding ?? null,
-      parentRole: parent?.role ?? null,
-    };
-  }
   for (const candidate of path) {
     if (!(candidate instanceof HTMLElement) || !isSelectable(candidate)) {
       continue;

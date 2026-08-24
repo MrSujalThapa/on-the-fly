@@ -1,4 +1,5 @@
 import { readStoredTransformState, writeStoredTransformState, applyStoredTransformState } from "./element-snapshot.js";
+import { MANAGED_Z_INDEX_BASELINE } from "../transform/layer-order.js";
 import { OTF_INTERACTION_FIXED_ATTR, OTF_MANAGED_ATTR, OTF_TRANSFORM_ONLY_ATTR, type StoredTransformState } from "./types.js";
 import type { MoveOperation } from "../operations.js";
 
@@ -21,7 +22,45 @@ export function isTransformOnlyMove(element: HTMLElement): boolean {
 }
 
 const OUTSIDE_PARENT_TOLERANCE_PX = 2;
-const INDEPENDENT_BASE_LAYER = "1";
+const INDEPENDENT_BASE_LAYER = String(MANAGED_Z_INDEX_BASELINE + 1);
+
+export function realizeIndependentPlacement(
+  element: HTMLElement,
+  viewportRect: { x: number; y: number; width: number; height: number },
+  options?: { zIndex?: string },
+): void {
+  const document = element.ownerDocument;
+  const view = document.defaultView;
+  const left = viewportRect.x + (view?.scrollX ?? 0);
+  const top = viewportRect.y + (view?.scrollY ?? 0);
+  if (element.parentElement !== document.body) {
+    document.body.appendChild(element);
+  }
+  element.setAttribute(OTF_DETACH_ATTR, "true");
+  element.setAttribute(OTF_MANAGED_ATTR, "true");
+  element.removeAttribute(OTF_INTERACTION_FIXED_ATTR);
+  element.removeAttribute(OTF_TRANSFORM_ONLY_ATTR);
+  const rotate = readStoredTransformState(element)?.rotate ?? 0;
+  const nextState: StoredTransformState = {
+    dx: 0,
+    dy: 0,
+    width: viewportRect.width,
+    height: viewportRect.height,
+    rotate,
+    position: "absolute",
+  };
+  writeStoredTransformState(element, nextState);
+  element.style.position = "absolute";
+  element.style.left = `${String(left)}px`;
+  element.style.top = `${String(top)}px`;
+  element.style.width = `${String(viewportRect.width)}px`;
+  element.style.height = `${String(viewportRect.height)}px`;
+  element.style.margin = "0";
+  element.style.boxSizing = "border-box";
+  element.style.transform = rotate !== 0 ? `rotate(${String(rotate)}deg)` : "";
+  const layer = options?.zIndex ?? element.style.zIndex;
+  element.style.zIndex = layer && layer !== "auto" ? layer : INDEPENDENT_BASE_LAYER;
+}
 
 export interface DetachPlacement {
   left: number;
@@ -226,24 +265,22 @@ export function promoteElementToManagedLayer(
       const current = element.style.zIndex || getComputedStyle(element).zIndex;
       return current && current !== "auto" ? current : INDEPENDENT_BASE_LAYER;
     })(),
-    width: element.style.width || `${String(rect.width)}px`,
-    height: element.style.height || `${String(rect.height)}px`,
+    width: `${String(rect.width)}px`,
+    height: `${String(rect.height)}px`,
   };
 
   element.ownerDocument.body.appendChild(element);
   element.setAttribute(OTF_DETACH_ATTR, "true");
 
-  const state = readStoredTransformState(element);
-  const nextState: StoredTransformState = state
-    ? { ...state, dx: 0, dy: 0, position: "absolute" }
-    : {
-        dx: 0,
-        dy: 0,
-        width: null,
-        height: null,
-        rotate: 0,
-        position: "absolute",
-      };
+  const existing = readStoredTransformState(element);
+  const nextState: StoredTransformState = {
+    dx: 0,
+    dy: 0,
+    width: rect.width,
+    height: rect.height,
+    rotate: existing?.rotate ?? 0,
+    position: "absolute",
+  };
 
   writeStoredTransformState(element, nextState);
   element.style.position = "absolute";
@@ -303,6 +340,15 @@ export function applyPersistedDetachPlacement(
   element.style.position = "absolute";
   element.style.left = `${String(left)}px`;
   element.style.top = `${String(top)}px`;
+  const pixelWidth = operation.payload.detachedWidth ?? operation.metadata?.finalRect?.width;
+  const pixelHeight = operation.payload.detachedHeight ?? operation.metadata?.finalRect?.height;
+  if (pixelWidth && pixelWidth > 0) {
+    element.style.width = `${String(pixelWidth)}px`;
+  }
+  if (pixelHeight && pixelHeight > 0) {
+    element.style.height = `${String(pixelHeight)}px`;
+  }
+  element.style.boxSizing = "border-box";
   const intended = operation.metadata?.finalRect;
   if (intended) {
     const actual = element.getBoundingClientRect();

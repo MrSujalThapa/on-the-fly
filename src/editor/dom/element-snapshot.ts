@@ -209,6 +209,20 @@ export function applyStoredTransformStateToRect(
   const current = element.getBoundingClientRect();
   const dx = target.x - current.x;
   const dy = target.y - current.y;
+  if (element.getAttribute("data-otf-detached") === "true") {
+    const view = element.ownerDocument.defaultView;
+    state.dx = 0;
+    state.dy = 0;
+    state.position = "absolute";
+    element.style.position = "absolute";
+    element.style.left = `${String(target.x + (view?.scrollX ?? 0))}px`;
+    element.style.top = `${String(target.y + (view?.scrollY ?? 0))}px`;
+    element.style.width = `${String(target.width)}px`;
+    element.style.height = `${String(target.height)}px`;
+    element.style.transform = state.rotate !== 0 ? `rotate(${String(state.rotate)}deg)` : "";
+    writeStoredTransformState(element, state);
+    return;
+  }
   if (
     (state.position === "fixed" || state.position === "absolute") &&
     state.fixedLeft !== null && state.fixedLeft !== undefined &&

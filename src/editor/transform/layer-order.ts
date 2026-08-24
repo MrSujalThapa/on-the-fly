@@ -48,15 +48,17 @@ export function computeNextLayer(
   currentLayer: number,
   command: LayerCommand,
   siblingMaxLayer = 0,
+  floor = BACK_LAYER,
 ): number {
+  const backFloor = Math.max(BACK_LAYER, floor);
   switch (command) {
     case "forward":
       return Math.min(FRONT_LAYER, Math.max(currentLayer + LAYER_STEP, siblingMaxLayer + 1));
     case "backward":
-      return Math.max(BACK_LAYER, currentLayer - LAYER_STEP);
+      return Math.max(backFloor, currentLayer - LAYER_STEP);
     case "front":
       return FRONT_LAYER;
     case "back":
-      return BACK_LAYER;
+      return backFloor;
   }
 }
