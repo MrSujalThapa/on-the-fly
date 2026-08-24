@@ -2,6 +2,7 @@ import type { ElementSignature } from "../editor/element-signature.js";
 import { isDangerousCssPath } from "../editor/validation/dangerous-selectors.js";
 import {
   buildPersistableElementSignature,
+  buildAncestorTextContext,
   buildUniqueCssPath,
 } from "../editor/measurement/signature-builder.js";
 import { fingerprintSrcValue } from "../editor/measurement/src-fingerprint.js";
@@ -355,9 +356,18 @@ function evaluateCandidate(
       contradicted = true;
     }
   }
+  if (signature.altAttr) {
+    const alt = element.getAttribute("alt")?.trim();
+    if (alt === signature.altAttr) matchedKeys.push("alt");
+    else if (alt) contradicted = true;
+  }
+  if (signature.ancestorTextContext) {
+    const context = buildAncestorTextContext(element);
+    if (context === signature.ancestorTextContext) matchedKeys.push("ancestor-text");
+  }
 
   const expectedIdent =
-    identifyingContent(signature.ariaLabel) || identifyingContent(signature.textFingerprint);
+    identifyingContent(signature.ariaLabel) || identifyingContent(signature.altAttr) || identifyingContent(signature.textFingerprint);
   const actualIdent = identifyingContent(textOf(element));
   const containerTag = new Set(["article", "aside", "div", "section"])
     .has(element.tagName.toLowerCase());
@@ -369,7 +379,7 @@ function evaluateCandidate(
     matchedKeys.push("text");
   }
   const hasSemantic = matchedKeys.some(
-    (key) => key === "id" || key.startsWith("data:") || key === "href" || key === "src" || key === "name" || key === "aria",
+    (key) => key === "id" || key.startsWith("data:") || key === "href" || key === "src" || key === "name" || key === "aria" || key === "alt" || key === "ancestor-text",
   );
   if (expectedIdent && actualIdent && !contentMatches && !hasSemantic) {
     contradicted = true;
@@ -411,6 +421,12 @@ function evaluateCandidate(
     }
     if (key === "aria") {
       return candidate.getAttribute("aria-label")?.trim() === signature.ariaLabel;
+    }
+    if (key === "alt") {
+      return candidate.getAttribute("alt")?.trim() === signature.altAttr;
+    }
+    if (key === "ancestor-text") {
+      return buildAncestorTextContext(candidate) === signature.ancestorTextContext;
     }
     return false;
   };

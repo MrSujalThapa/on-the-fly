@@ -9,7 +9,6 @@ export function applyTextOperation(
 ): AppliedDomEffect["changes"] {
   snapshotStore.captureIfNeeded(element);
   const previousValue = element.textContent;
-
   element.textContent = operation.payload.value;
 
   return [{ kind: "text", previousValue }];

@@ -230,6 +230,26 @@ describe("canonical MOVE checkpoint", () => {
     }
   });
 
+  it("compacts style per property and keeps crop independently", () => {
+    const base = move("1", "mentions", 0, 0, 0);
+    const effect = (id: string, type: EditorOperation["type"], payload: object): EditorOperation => ({
+      ...base, id, type, payload,
+    } as EditorOperation);
+    const checkpoint = projectCanonicalCheckpoint([
+      effect("background-old", "style", { property: "backgroundColor", value: "red", previousValue: "white" }),
+      effect("color", "style", { property: "color", value: "black", previousValue: "gray" }),
+      effect("background-new", "style", { property: "backgroundColor", value: "blue", previousValue: "red" }),
+      effect("crop", "crop", { top: 2, right: 3, bottom: 4, left: 5 }),
+    ]);
+    expect(checkpoint.ok).toBe(true);
+    if (!checkpoint.ok) return;
+    const styles = checkpoint.operations.filter((operation) => operation.type === "style");
+    expect(styles.map((operation) => [operation.payload.property, operation.payload.value, operation.payload.previousValue])).toEqual([
+      ["backgroundColor", "blue", "white"], ["color", "black", "gray"],
+    ]);
+    expect(checkpoint.operations.some((operation) => operation.type === "crop")).toBe(true);
+  });
+
   it("preserves the final detached relationship in the compacted move", () => {
     const first = move("1", "mentions", 100, 0, 100);
     first.payload.detached = true;

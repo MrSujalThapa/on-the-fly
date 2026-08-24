@@ -190,6 +190,14 @@ export function buildAncestorTextContext(element: Element): string | undefined {
       snippets.push(parentText);
     }
   }
+  if (snippets.length === 0) {
+    let ancestor = parent?.parentElement ?? null;
+    for (let depth = 0; ancestor && depth < 4; depth += 1, ancestor = ancestor.parentElement) {
+      if (isDangerousTagName(ancestor.tagName)) break;
+      const ancestorText = truncateText(normalizeText(ancestor.textContent), 80);
+      if (ancestorText) { snippets.push(ancestorText); break; }
+    }
+  }
 
   const previous = element.previousElementSibling;
   if (previous) {

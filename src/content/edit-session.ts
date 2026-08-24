@@ -76,7 +76,7 @@ import {
   type SessionOperationState,
 } from "./session-operation-state.js";
 import { createStyleTextController, StyleTextController } from "./style-text-controller.js";
-import { FloatingToolbar } from "./floating-toolbar.js";
+import { FloatingToolbar } from "../editor/floating-toolbar.js";
 import { PageCustomizationController } from "./page-customization-controller.js";
 import { isInsideEphemeralSurface } from "./ephemeral-surface.js";
 import {
@@ -1863,12 +1863,6 @@ export class EditSession implements SessionCommandHost {
     this.agentSelectionOverride = agentContext.selection;
     this.agentSelectedNodesOverride = agentContext.nodes;
     this.reapplyAgentSelection(agentContext);
-
-    if (isLocalAgentAvailable()) {
-      this.openAgentPanel(clientX, clientY);
-    } else {
-      this.onDebug("agent-disabled", { reason: "public-build" });
-    }
   }
 
   private reapplyAgentSelection(agentContext: {

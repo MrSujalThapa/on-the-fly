@@ -1,6 +1,7 @@
 import type { VisualNodeId } from "../editor/ids.js";
 import type { IntendedRect } from "./placement-engine.js";
 import type { InputMode } from "./input-router.js";
+import type { FloatingToolbarCallbacks, FloatingToolbarCommandState, StylePanelValues } from "../editor/floating-toolbar.js";
 
 /**
  * Derived UI only. Must not own element identity or authoritative geometry.
@@ -13,6 +14,13 @@ export interface OverlayCoordinator {
   refreshFromLiveGeometry(): void;
   clear(): void;
   selectionOutlineRect(): IntendedRect | null;
-  setHandlePointerDown(handler: ((kind: "resize-nw" | "resize-ne" | "resize-sw" | "resize-se" | "rotate", event: PointerEvent) => void) | null): void;
+  setHandlePointerDown(handler: ((kind: "resize-nw" | "resize-ne" | "resize-sw" | "resize-se" | "rotate" | "crop-nw" | "crop-ne" | "crop-sw" | "crop-se", event: PointerEvent) => void) | null): void;
+  setCropMode(active: boolean): void;
   setMode(mode: InputMode): void;
+  configureToolbar(callbacks: FloatingToolbarCallbacks): void;
+  setToolbarCommands(commands: readonly FloatingToolbarCommandState[], activeStates?: Record<string, boolean>): void;
+  openStylePanel(values: Partial<StylePanelValues>): void;
+  closeStylePanel(): void;
+  openTextEditor(initialText: string): void;
+  closeTextEditor(cancel: boolean): void;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { EditorShell } from "../../src/content/editor-shell.js";
-import { FloatingToolbar } from "../../src/content/floating-toolbar.js";
+import { FloatingToolbar } from "../../src/editor/floating-toolbar.js";
 import type { EditorCommand } from "../../src/editor/editor-command.js";
 
 describe("FloatingToolbar", () => {
@@ -48,7 +48,7 @@ describe("FloatingToolbar", () => {
     expect((toolbarEl as HTMLElement).hidden).toBe(true);
     await nextFrame();
     expect((toolbarEl as HTMLElement).hidden).toBe(false);
-    expect(shadow.querySelector("[data-command-id='hide']")).not.toBeNull();
+    expect(shadow.querySelector("[data-command-id='crop-mode']")).not.toBeNull();
 
     shell.unmount();
   });
@@ -74,9 +74,9 @@ describe("FloatingToolbar", () => {
     toolbar.mount();
 
     const command: EditorCommand = {
-      id: "bring-forward",
-      label: "Bring forward",
-      icon: "layer-up",
+      id: "style-panel",
+      label: "Style",
+      icon: "style",
       appliesTo: ["any"],
       order: 1,
       group: "primary",
@@ -86,9 +86,9 @@ describe("FloatingToolbar", () => {
 
     toolbar.renderCommands([{ command, enabled: true }], { x: 20, y: 20, width: 80, height: 30 });
     await nextFrame();
-    const button = shadow.querySelector("[data-command-id='bring-forward']") as HTMLButtonElement;
+    const button = shadow.querySelector("[data-command-id='style-panel']") as HTMLButtonElement;
     button.click();
-    expect(onCommand).toHaveBeenCalledWith("bring-forward");
+    expect(onCommand).toHaveBeenCalledWith("style-panel");
 
     shell.unmount();
   });
@@ -116,6 +116,12 @@ describe("FloatingToolbar", () => {
     expect(shadow.querySelectorAll(".otf-curved-toolbar")).toHaveLength(1);
     expect(shadow.querySelector(".rotation-controls")).toBeNull();
     expect(shadow.querySelectorAll('[data-otf-ui="toolbar"]')).toHaveLength(1);
+    expect(Array.from(shadow.querySelectorAll(".otf-tool-btn")).map((button) => button.getAttribute("data-command-id"))).toEqual([
+      "crop-mode", "style-panel", "agent", "text-edit", "lasso", "undo", "redo", "more",
+    ]);
+    for (const id of ["agent", "lasso", "more"]) {
+      expect((shadow.querySelector(`[data-command-id="${id}"]`) as HTMLButtonElement).disabled).toBe(true);
+    }
 
     shell.unmount();
   });

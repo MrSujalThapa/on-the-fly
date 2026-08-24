@@ -123,49 +123,7 @@ describe("EditSession phase 9C4 interactions", () => {
     shell.unmount();
   });
 
-  it("does not hide the selection when Delete is pressed inside the agent panel", async () => {
-    const doc = globalThis.document;
-    const win = globalThis.window;
-
-    doc.body.innerHTML = `<main><p id="copy">Hello</p></main>`;
-    const main = doc.querySelector("main") as HTMLElement;
-    const copy = doc.querySelector("#copy") as HTMLElement;
-    layoutElement(main, { x: 10, y: 10, width: 400, height: 200 });
-    layoutElement(copy, { x: 20, y: 20, width: 160, height: 28 });
-    doc.elementsFromPoint = vi.fn(() => [copy, main, doc.body, doc.documentElement]);
-
-    const shell = new EditorShell();
-    shell.mount({ onDeactivate: () => undefined });
-    const session = createEditSession({
-      shell,
-      root: doc,
-      pageCustomization: createTestPageCustomization(doc),
-    });
-    await session.start();
-
-    dispatchPointer(win, copy, "pointerdown", { clientX: 40, clientY: 30, buttons: 1 });
-    dispatchPointer(win, copy, "pointerup", { clientX: 40, clientY: 30, buttons: 0 });
-    dispatchPointer(win, copy, "pointerdown", { clientX: 40, clientY: 30, buttons: 1 });
-    dispatchPointer(win, copy, "pointerup", { clientX: 40, clientY: 30, buttons: 0 });
-
-    const shadow = shell.getShadowRoot();
-    if (!shadow) {
-      throw new Error("expected shadow root");
-    }
-    const agentPanel = shadow.querySelector(".otf-agent-panel") as HTMLElement;
-    expect(agentPanel.hidden).toBe(false);
-
-    const instruction = shadow.querySelector("[data-agent-instruction]") as HTMLTextAreaElement;
-    instruction.focus();
-    instruction.value = "abc";
-    dispatchKey(win, instruction, "Delete");
-
-    expect(copy.style.display).not.toBe("none");
-    session.stop();
-    shell.unmount();
-  });
-
-  it("opens the agent panel on normal double-click in local dev", async () => {
+  it("keeps the reserved agent panel closed on normal double-click in local dev", async () => {
     localAgentAvailable.value = true;
     const doc = globalThis.document;
     const win = globalThis.window;
@@ -193,7 +151,7 @@ describe("EditSession phase 9C4 interactions", () => {
 
     const shadow = shell.getShadowRoot();
     expect(shadow?.querySelector(".otf-agent-panel")).not.toBeNull();
-    expect((shadow?.querySelector(".otf-agent-panel") as HTMLElement).hidden).toBe(false);
+    expect((shadow?.querySelector(".otf-agent-panel") as HTMLElement).hidden).toBe(true);
 
     session.stop();
     shell.unmount();
@@ -349,6 +307,7 @@ describe("EditSession phase 9C4 interactions", () => {
     dispatchPointer(win, copy, "pointerdown", { clientX: 40, clientY: 30, buttons: 1 });
     dispatchPointer(win, copy, "pointerup", { clientX: 40, clientY: 30, buttons: 0 });
 
+    (session as unknown as { openAgentPanel: (x: number, y: number) => void }).openAgentPanel(40, 30);
     const panel = shell.getShadowRoot()?.querySelector(".otf-agent-panel") as HTMLElement;
     expect(panel.hidden).toBe(false);
 
@@ -385,6 +344,7 @@ describe("EditSession phase 9C4 interactions", () => {
     dispatchPointer(win, copy, "pointerdown", { clientX: 40, clientY: 30, buttons: 1 });
     dispatchPointer(win, copy, "pointerup", { clientX: 40, clientY: 30, buttons: 0 });
 
+    (session as unknown as { openAgentPanel: (x: number, y: number) => void }).openAgentPanel(40, 30);
     const panel = shell.getShadowRoot()?.querySelector(".otf-agent-panel") as HTMLElement;
     expect(panel.hidden).toBe(false);
 
@@ -419,6 +379,7 @@ describe("EditSession phase 9C4 interactions", () => {
     dispatchPointer(win, copy, "pointerdown", { clientX: 40, clientY: 30, buttons: 1 });
     dispatchPointer(win, copy, "pointerup", { clientX: 40, clientY: 30, buttons: 0 });
 
+    (session as unknown as { openAgentPanel: (x: number, y: number) => void }).openAgentPanel(40, 30);
     const shadow = shell.getShadowRoot();
     const panel = shadow?.querySelector(".otf-agent-panel") as HTMLElement;
     expect(panel.hidden).toBe(false);

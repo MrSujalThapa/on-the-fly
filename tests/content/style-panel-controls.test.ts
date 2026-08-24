@@ -7,7 +7,7 @@ import {
   buildLinearGradientValue,
   GRADIENT_PRESETS,
   parseLinearGradientValue,
-} from "../../src/content/style-panel-controls.js";
+} from "../../src/editor/style-panel-controls.js";
 
 describe("style panel controls", () => {
   it("builds a valid gradient operation payload from palette controls", () => {

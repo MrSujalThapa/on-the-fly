@@ -10,6 +10,8 @@ import type { OverlayCoordinator } from "./overlay-coordinator.js";
 import type { IntendedRect } from "./placement-engine.js";
 import { unionRects } from "./runtime-selection.js";
 import type { VisualModel } from "./visual-model.js";
+import { FloatingToolbar, type FloatingToolbarCallbacks, type FloatingToolbarCommandState } from "../editor/floating-toolbar.js";
+import { readStoredCropInsets } from "../editor/dom/handlers/crop-handler.js";
 
 export interface OverlayCoordinatorDeps {
   document: Document;
@@ -21,6 +23,7 @@ const OUTLINE_CLASS = "otf-selection-outline";
 const MEMBER_OUTLINE_CLASS = "otf-selection-member-outline";
 const LASSO_CLASS = "otf-lasso";
 const HANDLE_CLASS = "otf-transform-handle";
+const CROP_HANDLE_CLASS = "otf-crop-handle";
 
 function serializeRect(rect: IntendedRect): string {
   return `${String(rect.x)},${String(rect.y)},${String(rect.width)},${String(rect.height)}`;
@@ -106,6 +109,13 @@ function overlayStyles(doc: Document): HTMLStyleElement {
     .${HANDLE_CLASS}[data-handle="resize-sw"] { left: -6px; bottom: -6px; cursor: nesw-resize; }
     .${HANDLE_CLASS}[data-handle="resize-se"] { right: -6px; bottom: -6px; cursor: nwse-resize; }
     .${HANDLE_CLASS}[data-handle="rotate"] { left: 50%; top: -28px; transform: translateX(-50%); cursor: grab; }
+    .${CROP_HANDLE_CLASS} { display: none; position: absolute; width: 12px; height: 12px; box-sizing: border-box; border: 2px solid #f59e0b; background: white; pointer-events: auto; }
+    .otf-overlay-layer[data-crop-mode="true"] .${HANDLE_CLASS} { display: none; }
+    .otf-overlay-layer[data-crop-mode="true"] .${CROP_HANDLE_CLASS} { display: block; }
+    .${CROP_HANDLE_CLASS}[data-handle="crop-nw"] { left: -6px; top: -6px; cursor: nwse-resize; }
+    .${CROP_HANDLE_CLASS}[data-handle="crop-ne"] { right: -6px; top: -6px; cursor: nesw-resize; }
+    .${CROP_HANDLE_CLASS}[data-handle="crop-sw"] { left: -6px; bottom: -6px; cursor: nesw-resize; }
+    .${CROP_HANDLE_CLASS}[data-handle="crop-se"] { right: -6px; bottom: -6px; cursor: nwse-resize; }
   `;
   return style;
 }
@@ -131,9 +141,18 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
   let outline: HTMLElement | null = null;
   let memberOutlines: HTMLElement[] = [];
   let lasso: HTMLElement | null = null;
-  let handlePointerDown: ((kind: "resize-nw" | "resize-ne" | "resize-sw" | "resize-se" | "rotate", event: PointerEvent) => void) | null = null;
+  let handlePointerDown: ((kind: "resize-nw" | "resize-ne" | "resize-sw" | "resize-se" | "rotate" | "crop-nw" | "crop-ne" | "crop-sw" | "crop-se", event: PointerEvent) => void) | null = null;
   let rafId = 0;
   let mode: InputMode = "edit";
+  let toolbar: FloatingToolbar | null = null;
+  let toolbarCallbacks: FloatingToolbarCallbacks = {
+    onCommand: () => undefined,
+    onStyleChange: () => undefined,
+    onTextCommit: () => undefined,
+    onTextCancel: () => undefined,
+  };
+  let toolbarCommands: readonly FloatingToolbarCommandState[] = [];
+  let toolbarActiveStates: Record<string, boolean> = {};
   const scrollCleanups: Array<() => void> = [];
   const nestedScrollCleanups: Array<() => void> = [];
 
@@ -178,9 +197,30 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
         });
         outline.append(handle);
       }
+      for (const kind of ["crop-nw", "crop-ne", "crop-sw", "crop-se"] as const) {
+        const handle = deps.document.createElement("div");
+        handle.className = CROP_HANDLE_CLASS;
+        handle.dataset.handle = kind;
+        handle.addEventListener("pointerdown", (event) => {
+          event.preventDefault(); event.stopPropagation();
+          handle.setPointerCapture(event.pointerId);
+          handlePointerDown?.(kind, event);
+        });
+        outline.append(handle);
+      }
     }
     outline.setAttribute("data-selection-kind", layer.getAttribute("data-selection-kind") ?? "selection");
     position(outline, rect);
+    const cropNodeId = selected.length === 1 ? selected[0] : undefined;
+    const cropTarget = cropNodeId ? deps.visualModel.bind(cropNodeId) : null;
+    const crop = cropTarget ? readStoredCropInsets(cropTarget) : { top: 0, right: 0, bottom: 0, left: 0 };
+    const cropHandles: Record<string, HTMLElement> = Object.fromEntries(
+      Array.from(outline.querySelectorAll<HTMLElement>(`.${CROP_HANDLE_CLASS}`)).map((handle) => [handle.dataset.handle ?? "", handle]),
+    );
+    cropHandles["crop-nw"]?.style.setProperty("left", `${String(crop.left - 6)}px`); cropHandles["crop-nw"]?.style.setProperty("top", `${String(crop.top - 6)}px`);
+    cropHandles["crop-ne"]?.style.setProperty("right", `${String(crop.right - 6)}px`); cropHandles["crop-ne"]?.style.setProperty("top", `${String(crop.top - 6)}px`);
+    cropHandles["crop-sw"]?.style.setProperty("left", `${String(crop.left - 6)}px`); cropHandles["crop-sw"]?.style.setProperty("bottom", `${String(crop.bottom - 6)}px`);
+    cropHandles["crop-se"]?.style.setProperty("right", `${String(crop.right - 6)}px`); cropHandles["crop-se"]?.style.setProperty("bottom", `${String(crop.bottom - 6)}px`);
     while (memberOutlines.length < members.length) {
       const member = deps.document.createElement("div");
       member.className = MEMBER_OUTLINE_CLASS;
@@ -212,12 +252,14 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     const rect = measured.union;
     if (!rect) {
       paint(null);
+      toolbar?.hide();
       return;
     }
     if (!force && painted && rectsNear(rect, painted, 0.5)) {
       return;
     }
     paint(rect, selected.length > 1 ? measured.members : []);
+    if (mode === "edit") toolbar?.refreshAnchor(rect);
   };
 
   const loop = (): void => {
@@ -279,6 +321,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       selected = [];
       cancelLoop();
       paint(null);
+      toolbar?.hide();
       return;
     }
     indicatorLabel.textContent = "Edit mode — press I to interact";
@@ -320,6 +363,8 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       layer = deps.document.createElement("div");
       layer.className = "otf-overlay-layer";
       shadow.append(overlayStyles(deps.document), indicator, saveButton, layer);
+      toolbar = new FloatingToolbar({ shadowRoot: shadow, callbacks: toolbarCallbacks });
+      toolbar.mount();
       deps.document.documentElement.append(host);
       const view = deps.document.defaultView;
       const onScrollOrResize = (): void => {
@@ -342,6 +387,8 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     },
     unmount() {
       cancelLoop();
+      toolbar?.unmount();
+      toolbar = null;
       while (scrollCleanups.length > 0) {
         scrollCleanups.pop()?.();
       }
@@ -395,6 +442,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       attachNestedScroll();
       cancelLoop();
       paint(null);
+      toolbar?.hide();
       lasso?.remove();
       lasso = null;
     },
@@ -404,9 +452,35 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     setHandlePointerDown(handler) {
       handlePointerDown = handler;
     },
+    setCropMode(active) {
+      layer?.setAttribute("data-crop-mode", String(active));
+    },
     setMode(next: InputMode) {
       mode = next;
       applyMode();
+      if (mode === "edit") render(true);
+    },
+    configureToolbar(callbacks) {
+      toolbarCallbacks = callbacks;
+    },
+    setToolbarCommands(commands, activeStates = {}) {
+      toolbarCommands = commands;
+      toolbarActiveStates = activeStates;
+      const rect = measureSelected().union;
+      if (rect && mode === "edit") toolbar?.renderCommandStates(toolbarCommands, rect, toolbarActiveStates);
+    },
+    openStylePanel(values) {
+      toolbar?.toggleStylePanel(true, values);
+    },
+    closeStylePanel() {
+      toolbar?.closeStylePanel();
+    },
+    openTextEditor(initialText) {
+      const rect = measureSelected().union;
+      if (rect) toolbar?.openTextEditor(rect, initialText);
+    },
+    closeTextEditor(cancel) {
+      toolbar?.closeTextEditor(cancel);
     },
     setSave(state) {
       saveHandler = state.onSave ?? null;

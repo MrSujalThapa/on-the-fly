@@ -4,6 +4,9 @@ import { validateOperation } from "../editor/validation/validate-operation.js";
 import { applyMoveOperation, applyResizeOperation, applyRotateOperation } from "../editor/dom/handlers/transform-handler.js";
 import { applyHideOperation } from "../editor/dom/handlers/hide-handler.js";
 import { applyDuplicateOperation } from "../editor/dom/handlers/duplicate-handler.js";
+import { applyCropOperation } from "../editor/dom/handlers/crop-handler.js";
+import { applyStyleOperation } from "../editor/dom/handlers/style-handler.js";
+import { applyTextOperation } from "../editor/dom/handlers/text-handler.js";
 import { readStoredTransformState } from "../editor/dom/element-snapshot.js";
 import { ElementSnapshotStore } from "../editor/dom/element-snapshot.js";
 import {
@@ -270,6 +273,9 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         if (operation.type === "hide") applyHideOperation(element, operation, snapshotStore);
         else if (operation.type === "resize") applyResizeOperation(element, operation, snapshotStore);
         else if (operation.type === "rotate") applyRotateOperation(element, operation, snapshotStore);
+        else if (operation.type === "crop") applyCropOperation(element, operation, snapshotStore);
+        else if (operation.type === "style") applyStyleOperation(element, operation, snapshotStore);
+        else if (operation.type === "text") applyTextOperation(element, operation, snapshotStore);
         else return failure("unsupported_transaction_operation", false);
       } catch (error) {
         rollback(element, snapshot);
@@ -280,13 +286,26 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     const expectedRect = expected ?? actual;
     const hiddenOk = operation.type !== "hide" || (operation.payload.hidden ? element.style.display === "none" : element.style.display !== "none");
     const rotateOk = operation.type !== "rotate" || readStoredTransformState(element)?.rotate === operation.payload.degrees;
+    const styleOk = operation.type !== "style" || (() => {
+      const cssProperty = {
+        color: "color", backgroundColor: "background-color", backgroundImage: "background-image",
+        borderColor: "border-color", borderWidth: "border-width", borderRadius: "border-radius",
+        fontSize: "font-size", fontWeight: "font-weight", textAlign: "text-align", opacity: "opacity",
+        boxShadow: "box-shadow", filter: "filter",
+      }[operation.payload.property];
+      const probe = deps.document.createElement("div");
+      probe.style.setProperty(cssProperty, operation.payload.value);
+      return element.style.getPropertyValue(cssProperty) === probe.style.getPropertyValue(cssProperty);
+    })();
+    const textOk = operation.type !== "text" || element.textContent === operation.payload.value;
+    const cropOk = operation.type !== "crop" || element.getAttribute("data-otf-crop") === JSON.stringify(operation.payload);
     const geometryOk = operation.type === "resize" || operation.type === "duplicate" ? rectsNear(actual, expectedRect) : true;
     const identityOk = operation.type === "duplicate"
       ? Array.from(deps.document.querySelectorAll("[data-otf-clone-id]")).filter(
         (candidate) => candidate.getAttribute("data-otf-clone-id") === operation.payload.cloneId,
       ).length === 1
       : Boolean(signature && verifyIdentity(nodeId, { signature }, element));
-    if (!element.isConnected || !identityOk || !hiddenOk || !rotateOk || !geometryOk) {
+    if (!element.isConnected || !identityOk || !hiddenOk || !rotateOk || !styleOk || !textOk || !cropOk || !geometryOk) {
       if (snapshot) rollback(element, snapshot); else element.remove();
       return failure("operation_verification_failed", true, { ok: false, expected: expectedRect, actual });
     }

@@ -9,6 +9,7 @@ import type { RuntimeLifecycle } from "./runtime-lifecycle.js";
 import type { VisualModel } from "./visual-model.js";
 import type { IntendedRect } from "./placement-engine.js";
 import type { RuntimeSelection, RuntimeVirtualGroup } from "./runtime-selection.js";
+import type { CropOperation, StyleProperty } from "../editor/operations.js";
 
 export interface PersistResult {
   readonly ok: boolean;
@@ -59,6 +60,11 @@ export interface EditorRuntime {
   selectParent(): VisualNodeId | null;
   move(nodeId: VisualNodeId, dx: number, dy: number): ExecutionResult;
   layer(nodeId: VisualNodeId, command: LayerCommand): ExecutionResult;
+  styleSelection(styles: ReadonlyMap<StyleProperty, string>): BatchExecutionResult;
+  editSelectedText(value: string): ExecutionResult;
+  cropSelection(insets: CropOperation["payload"]): ExecutionResult;
+  canUndo(): boolean;
+  canRedo(): boolean;
   undo(): BatchExecutionResult;
   redo(): BatchExecutionResult;
   save(): Promise<PersistResult>;

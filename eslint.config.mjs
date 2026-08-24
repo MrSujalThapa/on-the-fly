@@ -39,7 +39,6 @@ export default tseslint.config(
                 "**/session-history*",
                 "**/page-customization-controller*",
                 "**/editor-shell*",
-                "**/floating-toolbar*",
                 "**/session-command-host*",
                 "**/content-script*",
                 "**/dom-runtime-adapter*",

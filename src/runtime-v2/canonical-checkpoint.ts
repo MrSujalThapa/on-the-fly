@@ -1,4 +1,4 @@
-import type { DuplicateOperation, EditorOperation, HideOperation, MoveOperation, ResizeOperation, RotateOperation, ZIndexOperation } from "../editor/operations.js";
+import type { CropOperation, DuplicateOperation, EditorOperation, HideOperation, MoveOperation, ResizeOperation, RotateOperation, StyleOperation, TextOperation, ZIndexOperation } from "../editor/operations.js";
 import { freezeCommittedOperation } from "./freeze-operation.js";
 import { identifyingContent, isGeneratedIdentityValue } from "./visual-identity.js";
 import { validateOperation } from "../editor/validation/validate-operation.js";
@@ -143,6 +143,26 @@ function composeFinalState<T extends ResizeOperation | RotateOperation | HideOpe
   });
 }
 
+function composeStyle(first: StyleOperation, last: StyleOperation): StyleOperation {
+  const payload: StyleOperation["payload"] = first.payload.previousValue === undefined
+    ? { property: last.payload.property, value: last.payload.value }
+    : { property: last.payload.property, value: last.payload.value, previousValue: first.payload.previousValue };
+  const composed: StyleOperation = { ...last, target: first.target, payload };
+  return freezeCommittedOperation(composed);
+}
+
+function composeText(first: TextOperation, last: TextOperation): TextOperation {
+  const payload: TextOperation["payload"] = first.payload.previousValue === undefined
+    ? { value: last.payload.value, preserveFormat: true }
+    : { value: last.payload.value, preserveFormat: true, previousValue: first.payload.previousValue };
+  const composed: TextOperation = { ...last, target: first.target, payload };
+  return freezeCommittedOperation(composed);
+}
+
+function composeCrop(first: CropOperation, last: CropOperation): CropOperation {
+  return freezeCommittedOperation({ ...last, target: first.target });
+}
+
 /**
  * Session history stays on the ledger. Persistence stores this canonical
  * projection: one final MOVE per durable target.
@@ -160,10 +180,10 @@ export function projectCanonicalCheckpoint(
     duplicates.set(cloneId, operation);
   }
   const sessionKeys = new Map<string, string>();
-  const checkpointKey = (operation: MoveOperation | ZIndexOperation): string | null => {
+  const checkpointKey = (operation: EditorOperation): string | null => {
     const cloneId = cloneIdFromOperation(operation);
     if (cloneId) return duplicates.has(cloneId) ? `clone:${cloneId}` : null;
-    const durable = durableMoveKey(operation);
+    const durable = durableMoveKey(operation as MoveOperation);
     if (!durable) return null;
     const nodeId = operation.target.nodeId;
     if (!nodeId) return durable;
@@ -177,6 +197,9 @@ export function projectCanonicalCheckpoint(
   const resizes = new Map<string, ResizeOperation>();
   const rotates = new Map<string, RotateOperation>();
   const hides = new Map<string, HideOperation>();
+  const crops = new Map<string, CropOperation>();
+  const texts = new Map<string, TextOperation>();
+  const styles = new Map<string, StyleOperation>();
   const rest: EditorOperation[] = [];
 
   for (const operation of operations) {
@@ -188,7 +211,7 @@ export function projectCanonicalCheckpoint(
       return { ok: false, error: `clone_effect_missing_creation:${referencedClone}:${operation.id}:${operation.type}:${operation.target.nodeId ?? "missing"}:known=${[...duplicates.keys()].sort().join(",") || "none"}` };
     }
     if (operation.type === "resize" || operation.type === "rotate" || operation.type === "hide") {
-      const key = checkpointKey(operation as ResizeOperation & MoveOperation);
+      const key = checkpointKey(operation);
       if (!key) return { ok: false, error: `${operation.type}_missing_durable_identity` };
       if (operation.type === "resize") {
         const first = resizes.get(key);
@@ -199,6 +222,22 @@ export function projectCanonicalCheckpoint(
       } else {
         const first = hides.get(key);
         hides.set(key, first ? composeFinalState(first, operation) : operation);
+      }
+      continue;
+    }
+    if (operation.type === "crop" || operation.type === "text" || operation.type === "style") {
+      const entityKey = checkpointKey(operation);
+      if (!entityKey) return { ok: false, error: `${operation.type}_missing_durable_identity` };
+      if (operation.type === "style") {
+        const key = `${entityKey}|style:${operation.payload.property}`;
+        const first = styles.get(key);
+        styles.set(key, first ? composeStyle(first, operation) : operation);
+      } else if (operation.type === "text") {
+        const first = texts.get(entityKey);
+        texts.set(entityKey, first ? composeText(first, operation) : operation);
+      } else {
+        const first = crops.get(entityKey);
+        crops.set(entityKey, first ? composeCrop(first, operation) : operation);
       }
       continue;
     }
@@ -291,6 +330,9 @@ export function projectCanonicalCheckpoint(
       ...canonicalMoves,
       ...canonicalResizes,
       ...sortEntries(rotates.entries()),
+      ...sortEntries(crops.entries()),
+      ...sortEntries(styles.entries()),
+      ...sortEntries(texts.entries()),
       ...sortEntries(layers.entries()),
       ...sortEntries(hides.entries()),
     ];

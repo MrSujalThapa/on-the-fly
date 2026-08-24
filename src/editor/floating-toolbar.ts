@@ -1,7 +1,7 @@
-import type { StyleProperty } from "../editor/operations.js";
-import type { VisualNodeRect } from "../editor/visual-node.js";
-import type { ResolvedCommand } from "../editor/commands/command-registry.js";
-import { OPACITY_MAX, OPACITY_MIN, OPACITY_STEP } from "../editor/style/opacity-value.js";
+import type { StyleProperty } from "./operations.js";
+import type { VisualNodeRect } from "./visual-node.js";
+import type { ResolvedCommand } from "./commands/command-registry.js";
+import { OPACITY_MAX, OPACITY_MIN, OPACITY_STEP } from "./style/opacity-value.js";
 import {
   buildBoxShadowValue,
   buildGradientFromPreset,
@@ -33,11 +33,18 @@ export interface FloatingToolbarCallbacks {
   onTextCancel: () => void;
   onStylePanelReset?: () => Partial<StylePanelValues> | undefined;
   onStylePanelClose?: () => void;
+  onToolbarBackgroundClick?: (clientX: number, clientY: number) => void;
+  onToolbarPointerDown?: (clientX: number, clientY: number) => boolean;
 }
 
 export interface FloatingToolbarOptions {
   shadowRoot: ShadowRoot;
   callbacks: FloatingToolbarCallbacks;
+}
+
+export interface FloatingToolbarCommandState {
+  id: string;
+  enabled: boolean;
 }
 
 const VIEWBOX_WIDTH = 520;
@@ -49,14 +56,14 @@ const MAIN_PATH = "M 90 300 C 55 185 140 82 270 78 C 335 76 390 92 432 120";
 const MAIN_DIVIDERS = [0.12, 0.24, 0.36, 0.48, 0.6, 0.72, 0.84] as const;
 
 const COMMAND_LAYOUT: Array<{ id: string; tool: string; label: string; at: number }> = [
-  { id: "hide", tool: "hide", label: "Hide", at: 0.06 },
-  { id: "send-backward", tool: "backward", label: "Send backward", at: 0.18 },
-  { id: "bring-forward", tool: "forward", label: "Send forward", at: 0.3 },
-  { id: "crop-mode", tool: "crop", label: "Crop mode", at: 0.42 },
-  { id: "style-panel", tool: "style", label: "Style", at: 0.54 },
-  { id: "text-edit", tool: "text", label: "Edit text", at: 0.66 },
-  { id: "undo", tool: "undo", label: "Undo", at: 0.78 },
-  { id: "redo", tool: "redo", label: "Redo", at: 0.9 },
+  { id: "crop-mode", tool: "crop", label: "Crop", at: 0.06 },
+  { id: "style-panel", tool: "style", label: "Style", at: 0.18 },
+  { id: "agent", tool: "agent", label: "Agent (coming soon)", at: 0.3 },
+  { id: "text-edit", tool: "text", label: "Edit text", at: 0.42 },
+  { id: "lasso", tool: "lasso", label: "Lasso (coming soon)", at: 0.54 },
+  { id: "undo", tool: "undo", label: "Undo", at: 0.66 },
+  { id: "redo", tool: "redo", label: "Redo", at: 0.78 },
+  { id: "more", tool: "more", label: "More (coming soon)", at: 0.9 },
 ];
 
 const TOOL_ICONS: Record<string, string> = {
@@ -65,9 +72,12 @@ const TOOL_ICONS: Record<string, string> = {
   forward: `<svg viewBox="0 0 24 24"><rect x="7" y="7" width="9" height="9" rx="1.5"/><path d="M10 4h9"/><path d="M19 4v9"/></svg>`,
   crop: `<svg viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M2 6h14a2 2 0 0 1 2 2v14"/></svg>`,
   style: `<svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0 0 18h1.5a1.8 1.8 0 0 0 1.3-3.05 1.2 1.2 0 0 1 .85-2.05H17a4 4 0 0 0 4-4c0-4.9-4-8.9-9-8.9Z"/><circle cx="7.5" cy="10" r="1"/><circle cx="10.5" cy="7.5" r="1"/><circle cx="14" cy="7.5" r="1"/><circle cx="16.5" cy="10.5" r="1"/></svg>`,
+  agent: `<svg viewBox="0 0 24 24"><path d="M12 3l1.25 4.25L17.5 8.5l-4.25 1.25L12 14l-1.25-4.25L6.5 8.5l4.25-1.25L12 3Z"/><path d="M18.5 14l.7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7.7-2.3Z"/></svg>`,
   text: `<svg viewBox="0 0 24 24"><path d="M4 6V4h16v2"/><path d="M12 4v16"/><path d="M8 20h8"/></svg>`,
+  lasso: `<svg viewBox="0 0 24 24"><path d="M18.5 8.2c1.8 1.7 2.2 4.3.8 6.2-1.8 2.5-6.3 3.1-10.1 1.4-3.8-1.7-5.4-5-3.6-7.5 1.8-2.5 6.3-3.1 10.1-1.4"/><path d="M19.2 14.5c1.7 1.4 2 3.2.8 4.4-1.2 1.2-3.4.8-4.2-.6-.7-1.2.1-2.6 1.4-2.7" stroke-dasharray="2.2 2.2"/></svg>`,
   undo: `<svg viewBox="0 0 24 24"><path d="M4 7v6h6"/><path d="M20 17A8 8 0 0 0 6.5 11.2L4 13"/></svg>`,
   redo: `<svg viewBox="0 0 24 24"><path d="M20 7v6h-6"/><path d="M4 17a8 8 0 0 1 13.5-5.8L20 13"/></svg>`,
+  more: `<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>`,
 };
 
 export class FloatingToolbar {
@@ -157,6 +167,18 @@ export class FloatingToolbar {
     anchorRect: VisualNodeRect | null,
     activeStates: Record<string, boolean> = {},
   ): void {
+    this.renderCommandStates(
+      commands.map((entry) => ({ id: entry.command.id, enabled: entry.enabled })),
+      anchorRect,
+      activeStates,
+    );
+  }
+
+  renderCommandStates(
+    commands: readonly FloatingToolbarCommandState[],
+    anchorRect: VisualNodeRect | null,
+    activeStates: Record<string, boolean> = {},
+  ): void {
     if (!this.toolbarEl) {
       return;
     }
@@ -176,7 +198,7 @@ export class FloatingToolbar {
       if (!button) {
         continue;
       }
-      const entry = commands.find((item) => item.command.id === layout.id);
+      const entry = commands.find((item) => item.id === layout.id);
       button.disabled = entry ? !entry.enabled : true;
       button.classList.toggle("selected", activeStates[layout.id] === true);
     }
@@ -205,6 +227,15 @@ export class FloatingToolbar {
     this.closeStylePanel();
     this.closeTextEditor(true);
     this.lastAnchor = null;
+  }
+
+  refreshAnchor(anchorRect: VisualNodeRect): void {
+    if (!this.toolbarEl || this.toolbarEl.hidden) return;
+    this.lastAnchor = anchorRect;
+    if (this.toolbarWasDragged) return;
+    this.positionToolbarNearSelection(anchorRect);
+    this.updateToolButtonPositions();
+    if (this.styleOpen) this.positionStylePanel(true);
   }
 
   hideToolbarOnly(): void {
@@ -408,6 +439,11 @@ export class FloatingToolbar {
     if (!this.toolbarEl) {
       return;
     }
+    this.toolbarEl.addEventListener("pointerdown", (event) => {
+      if (!this.callbacks.onToolbarPointerDown?.(event.clientX, event.clientY)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
 
     for (const button of Array.from(this.toolbarEl.querySelectorAll<HTMLButtonElement>(".otf-tool-btn"))) {
       const guardPointer = (event: Event): void => {
@@ -712,6 +748,7 @@ export class FloatingToolbar {
     let startY = 0;
     let originX = 0;
     let originY = 0;
+    let moved = false;
 
     this.toolbarEl.addEventListener("pointerdown", (event) => {
       if (!(event.target instanceof Element)) {
@@ -725,6 +762,7 @@ export class FloatingToolbar {
       startY = event.clientY;
       originX = Number(this.toolbarEl?.dataset.x ?? 0);
       originY = Number(this.toolbarEl?.dataset.y ?? 0);
+      moved = false;
       if (this.toolbarEl) {
         this.toolbarEl.dataset.dragging = "true";
       }
@@ -736,6 +774,8 @@ export class FloatingToolbar {
       }
       const nextX = originX + (event.clientX - startX);
       const nextY = originY + (event.clientY - startY);
+      moved = moved || Math.hypot(event.clientX - startX, event.clientY - startY) >= 3;
+      if (!moved) return;
       this.toolbarWasDragged = true;
       this.setToolbarPlacement(
         nextX,
@@ -751,6 +791,9 @@ export class FloatingToolbar {
         this.toolbarEl.dataset.dragging = "false";
         if (this.toolbarEl.hasPointerCapture(event.pointerId)) {
           this.toolbarEl.releasePointerCapture(event.pointerId);
+        }
+        if (!moved && event.type === "pointerup") {
+          this.callbacks.onToolbarBackgroundClick?.(event.clientX, event.clientY);
         }
       }
     };
@@ -1086,7 +1129,7 @@ const CURVED_TOOLBAR_CSS = `
     cursor: grab;
     touch-action: none;
     user-select: none;
-    pointer-events: auto;
+    pointer-events: none;
     z-index: 2;
     contain: layout style paint;
   }
@@ -1106,6 +1149,8 @@ const CURVED_TOOLBAR_CSS = `
     stroke-linecap: round;
     stroke-linejoin: round;
     filter: drop-shadow(0 12px 20px rgba(0,0,0,0.42)) drop-shadow(0 1px 0 rgba(255,255,255,0.35));
+    pointer-events: stroke;
+    cursor: grab;
   }
   .otf-tool-btn {
     position: absolute;
@@ -1118,6 +1163,7 @@ const CURVED_TOOLBAR_CSS = `
     background: transparent;
     color: #202020;
     cursor: pointer;
+    pointer-events: auto;
     transform: translate(-50%, -50%) rotate(var(--angle));
   }
   .otf-tool-btn.selected, .otf-tool-btn:hover:not(:disabled) {
@@ -1157,6 +1203,7 @@ const CURVED_TOOLBAR_CSS = `
     color: #202020;
     box-shadow: 0 calc(10px * var(--scale)) calc(22px * var(--scale)) rgba(0,0,0,0.26), inset 0 calc(1px * var(--scale)) 0 rgba(255,255,255,0.8);
     cursor: grab;
+    pointer-events: auto;
     transform: translate(-50%, -50%) rotate(var(--counter-angle, 0deg));
     z-index: 10;
   }

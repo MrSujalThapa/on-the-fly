@@ -1,4 +1,4 @@
-import type { DuplicateOperation, EditorOperation, MoveOperation, ResizeOperation, ZIndexOperation } from "../editor/operations.js";
+import type { CropOperation, DuplicateOperation, EditorOperation, MoveOperation, ResizeOperation, StyleProperty, ZIndexOperation } from "../editor/operations.js";
 import type { GroupId, VisualNodeId } from "../editor/ids.js";
 import { computeDocumentPageKey } from "../content/page-identity.js";
 import {
@@ -7,6 +7,7 @@ import {
 } from "../content/storage-client.js";
 import { waitForDocumentReady, waitForReplayTargets } from "../editor/dom/replay-readiness.js";
 import { OTF_TRANSFORM_ATTR, type StoredTransformState } from "../editor/dom/types.js";
+import { readStoredCropInsets } from "../editor/dom/handlers/crop-handler.js";
 import { captureElementDomSnapshot, restoreElementDomSnapshot, type ElementDomSnapshot } from "../editor/dom/dom-placement-snapshot.js";
 import { isExtensionRoot } from "../editor/measurement/scan-guards.js";
 import { createInputRouter } from "./create-input-router.js";
@@ -25,7 +26,7 @@ import { identityConsistent, summarizeIdentity } from "./visual-identity.js";
 import { isResolvedVisual } from "./visual-model.js";
 import { projectCanonicalCheckpoint } from "./canonical-checkpoint.js";
 import { buildDuplicateFromClipboardEntry } from "../editor/duplicate/duplicate-element.js";
-import { buildHideOperation, buildMoveOperation, buildResizeOperation, buildRotateOperation } from "../editor/transform/operation-factory.js";
+import { buildCropOperation, buildHideOperation, buildMoveOperation, buildResizeOperation, buildRotateOperation, buildStyleOperation, buildTextOperation } from "../editor/transform/operation-factory.js";
 import { applyStoredTransformState, applyStoredTransformStateToRect, readStoredTransformState, writeStoredTransformState } from "../editor/dom/element-snapshot.js";
 import { localSizeForRotatedBounds, resizeRectFromCorner, rotatePointAroundCenter, rotatedMemberRect, scaleRects, type ResizeCorner } from "./editor-parity-geometry.js";
 import {
@@ -47,6 +48,12 @@ import {
 } from "./runtime-selection.js";
 
 const MOVE_THRESHOLD_PX = 3;
+const STYLE_CSS_MAP: Record<StyleProperty, string> = {
+  color: "color", backgroundColor: "background-color", backgroundImage: "background-image",
+  borderColor: "border-color", borderWidth: "border-width", borderRadius: "border-radius",
+  fontSize: "font-size", fontWeight: "font-weight", textAlign: "text-align", opacity: "opacity",
+  boxShadow: "box-shadow", filter: "filter",
+};
 
 interface PreviewTarget {
   nodeId: VisualNodeId;
@@ -85,12 +92,13 @@ interface TransformPreviewTarget {
 
 interface TransformGesture {
   id: string;
-  kind: "resize-nw" | "resize-ne" | "resize-sw" | "resize-se" | "rotate";
+  kind: "resize-nw" | "resize-ne" | "resize-sw" | "resize-se" | "rotate" | "crop-nw" | "crop-ne" | "crop-sw" | "crop-se";
   startPointer: { x: number; y: number };
   startUnion: IntendedRect;
   targets: readonly TransformPreviewTarget[];
   lastPointer: { x: number; y: number };
   rafId: number;
+  cropInsets?: CropOperation["payload"];
 }
 
 interface ClipboardSnapshot {
@@ -151,6 +159,15 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   let replayGeneration = 0;
   let saveStatus: "idle" | "saving" | "saved" | "failed" = "idle";
   let lastSaveError: string | undefined;
+  let refreshToolbar = (): void => undefined;
+  let stylePanelOpen = false;
+  let textEditorOpen = false;
+  let cropMode = false;
+  let stylePreview: {
+    pending: Map<StyleProperty, string>;
+    snapshots: Map<HTMLElement, string | null>;
+    originals: Map<HTMLElement, Map<StyleProperty, string>>;
+  } | null = null;
 
   const pageKey = (): string => computeDocumentPageKey(root);
 
@@ -231,9 +248,14 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     }
     else overlays.clear();
     observeSelected();
+    refreshToolbar();
   };
 
   const setSelection = (next: RuntimeSelection): void => {
+    if (stylePanelOpen) { cancelStylePreview(); stylePanelOpen = false; overlays.closeStylePanel(); }
+    if (textEditorOpen) { textEditorOpen = false; overlays.closeTextEditor(true); }
+    cropMode = false;
+    overlays.setCropMode(false);
     selection = normalizeSelection(next.atoms, groups, next.source);
     renderSelection();
   };
@@ -272,7 +294,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     ignoreMutations = true;
     try {
       for (const operation of checkpoint.operations) {
-        if (!["move", "resize", "rotate", "zIndex", "hide"].includes(operation.type)) {
+        if (!["move", "resize", "rotate", "zIndex", "hide", "style", "text", "crop"].includes(operation.type)) {
           continue;
         }
         const identity = operation.target.signature
@@ -390,6 +412,87 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     });
   };
 
+  const singleSelectedElement = (): { nodeId: VisualNodeId; element: HTMLElement } | null => {
+    const ids = selectedIds();
+    if (ids.length !== 1) return null;
+    const nodeId = ids[0];
+    const element = nodeId ? visualModel.bind(nodeId) : null;
+    return nodeId && element ? { nodeId, element } : null;
+  };
+
+  const canEditText = (element: HTMLElement): boolean => {
+    if (element.textContent.trim().length === 0) return false;
+    if (element.childElementCount === 0) return true;
+    if (element.querySelector("img, video, svg, input, textarea, select, [contenteditable=true]")) return false;
+    return Array.from(element.querySelectorAll<HTMLElement>("*")).filter(
+      (candidate) => candidate.childElementCount === 0 && candidate.textContent.trim().length > 0,
+    ).length === 1;
+  };
+
+  const canCrop = (element: HTMLElement): boolean =>
+    (element instanceof HTMLImageElement || element instanceof HTMLVideoElement) &&
+    (readStoredTransformState(element)?.rotate ?? 0) === 0;
+
+  const restoreStylePreview = (): void => {
+    if (!stylePreview) return;
+    ignoreMutations = true;
+    for (const [element, style] of stylePreview.snapshots) {
+      if (!element.isConnected) continue;
+      if (style === null) element.removeAttribute("style");
+      else element.setAttribute("style", style);
+    }
+    releaseMutationIgnore();
+  };
+
+  const cancelStylePreview = (): void => {
+    restoreStylePreview();
+    stylePreview = null;
+    overlays.refreshFromLiveGeometry();
+  };
+
+  const previewStyle = (property: StyleProperty, value: string): void => {
+    const ids = effectRoots(selectedIds());
+    const targets = ids.map((id) => visualModel.bind(id)).filter((element): element is HTMLElement => Boolean(element));
+    if (targets.length !== ids.length || targets.length === 0) return;
+    if (!stylePreview) stylePreview = { pending: new Map(), snapshots: new Map(), originals: new Map() };
+    ignoreMutations = true;
+    restoreStylePreview();
+    stylePreview.pending.set(property, value);
+    for (const element of targets) {
+      if (!stylePreview.snapshots.has(element)) stylePreview.snapshots.set(element, element.getAttribute("style"));
+      let originals = stylePreview.originals.get(element);
+      if (!originals) { originals = new Map(); stylePreview.originals.set(element, originals); }
+      if (!originals.has(property)) originals.set(property, getComputedStyle(element).getPropertyValue(STYLE_CSS_MAP[property]));
+      for (const [pendingProperty, pendingValue] of stylePreview.pending) {
+        element.style.setProperty(STYLE_CSS_MAP[pendingProperty], pendingValue);
+      }
+    }
+    releaseMutationIgnore();
+    overlays.refreshFromLiveGeometry();
+  };
+
+  const stylePanelValues = (): Record<string, string> => {
+    const selected = singleSelectedElement();
+    if (!selected) return {};
+    const computed = getComputedStyle(selected.element);
+    return Object.fromEntries(Object.entries(STYLE_CSS_MAP).map(([property, css]) => [property, computed.getPropertyValue(css).trim()]));
+  };
+
+  refreshToolbar = (): void => {
+    const selected = singleSelectedElement();
+    const hasSelection = selectedIds().length > 0;
+    overlays.setToolbarCommands([
+      { id: "crop-mode", enabled: Boolean(selected && canCrop(selected.element)) },
+      { id: "style-panel", enabled: hasSelection },
+      { id: "agent", enabled: false },
+      { id: "text-edit", enabled: Boolean(selected && canEditText(selected.element)) },
+      { id: "lasso", enabled: false },
+      { id: "undo", enabled: ledger.canUndo() },
+      { id: "redo", enabled: ledger.canRedo() },
+      { id: "more", enabled: false },
+    ], { "crop-mode": cropMode, "style-panel": stylePanelOpen, "text-edit": textEditorOpen });
+  };
+
   const initialTransformState = (element: HTMLElement): StoredTransformState => {
     const stored = readStoredTransformState(element);
     if (stored) return { ...stored };
@@ -414,10 +517,33 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     }
   };
 
+  const cropInsetsAt = (active: TransformGesture, pointer: { x: number; y: number }): CropOperation["payload"] => {
+    const start = active.cropInsets ?? { top: 0, right: 0, bottom: 0, left: 0 };
+    const dx = pointer.x - active.startPointer.x;
+    const dy = pointer.y - active.startPointer.y;
+    const maxX = Math.max(0, active.startUnion.width - 1);
+    const maxY = Math.max(0, active.startUnion.height - 1);
+    const next = { ...start };
+    if (active.kind.endsWith("nw") || active.kind.endsWith("sw")) next.left = Math.min(maxX - start.right, Math.max(0, start.left + dx));
+    if (active.kind.endsWith("ne") || active.kind.endsWith("se")) next.right = Math.min(maxX - start.left, Math.max(0, start.right - dx));
+    if (active.kind.endsWith("nw") || active.kind.endsWith("ne")) next.top = Math.min(maxY - start.bottom, Math.max(0, start.top + dy));
+    if (active.kind.endsWith("sw") || active.kind.endsWith("se")) next.bottom = Math.min(maxY - start.top, Math.max(0, start.bottom - dy));
+    return next;
+  };
+
   const previewTransformAt = (active: TransformGesture, pointer: { x: number; y: number }): void => {
     restoreTransformPreview(active);
     if (active.targets.some((target) => !target.element.isConnected || visualModel.bind(target.nodeId) !== target.element)) return;
-    if (active.kind === "rotate") {
+    if (active.kind.startsWith("crop-")) {
+      const insets = cropInsetsAt(active, pointer);
+      const clipPath = `inset(${String(insets.top)}px ${String(insets.right)}px ${String(insets.bottom)}px ${String(insets.left)}px)`;
+      const target = active.targets[0]?.element;
+      if (target) {
+        target.style.clipPath = clipPath;
+        target.style.setProperty("-webkit-clip-path", clipPath);
+        target.setAttribute("data-otf-crop", JSON.stringify(insets));
+      }
+    } else if (active.kind === "rotate") {
       const center = { x: active.startUnion.x + active.startUnion.width / 2, y: active.startUnion.y + active.startUnion.height / 2 };
       const initial = Math.atan2(active.startPointer.y - center.y, active.startPointer.x - center.x);
       const current = Math.atan2(pointer.y - center.y, pointer.x - center.x);
@@ -480,7 +606,12 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       overlays.refreshFromLiveGeometry();
       return;
     }
-    if (active.kind === "rotate") {
+    if (active.kind.startsWith("crop-")) {
+      runtime.cropSelection(cropInsetsAt(active, pointer));
+      cropMode = false;
+      overlays.setCropMode(false);
+      refreshToolbar();
+    } else if (active.kind === "rotate") {
       const center = { x: active.startUnion.x + active.startUnion.width / 2, y: active.startUnion.y + active.startUnion.height / 2 };
       const initial = Math.atan2(active.startPointer.y - center.y, active.startPointer.x - center.x);
       const current = Math.atan2(pointer.y - center.y, pointer.x - center.x);
@@ -501,6 +632,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   ): void => {
     if (transformGesture) finishTransformGesture(false);
     const roots = effectRoots(selectedIds());
+    if (kind.startsWith("crop-") && roots.length !== 1) return;
     const measured = visualModel.measure(roots);
     const targets: TransformPreviewTarget[] = [];
     for (const nodeId of roots) {
@@ -531,6 +663,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       targets,
       lastPointer: { x: event.clientX, y: event.clientY },
       rafId: 0,
+      ...(kind.startsWith("crop-") && targets[0] ? { cropInsets: readStoredCropInsets(targets[0].element) } : {}),
     };
     transformGesture = active;
     const onMove = (move: PointerEvent): void => {
@@ -1085,7 +1218,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         return [{ ...operation, id: nextOperationId("hide"), status: "approved" as const, target: { nodeId, signature: identity.signature }, metadata: { ...operation.metadata, originalRect: measured, finalRect: measured, affectedRect: measured } }];
       });
       if (operations.length !== roots.length) return { ok: false, error: "delete_target_unresolved", rolledBack: false };
+      ignoreMutations = true;
       const result = executor.executeTransaction({ operations });
+      releaseMutationIgnore();
+      logV2("delete", { ok: result.ok, selectedNodeIds: roots, operationIds: operations.map((operation) => operation.id), error: result.ok ? undefined : result.error });
       if (result.ok) { runtime.clearSelection(); refreshSave(); }
       return result;
     },
@@ -1199,6 +1335,56 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       logV2("layer", { owner: "EXECUTION", ok: result.ok, command, error: result.ok ? undefined : result.error });
       return result;
     },
+    styleSelection(styles): BatchExecutionResult {
+      cancelStylePreview();
+      const roots = effectRoots(selectedIds());
+      if (roots.length === 0 || styles.size === 0) return { ok: false, error: "empty_style_transaction", rolledBack: false };
+      const operations: EditorOperation[] = [];
+      for (const nodeId of roots) {
+        const element = visualModel.bind(nodeId);
+        const identity = visualModel.durableIdentityOf(nodeId);
+        const rect = visualModel.measure([nodeId]).get(nodeId);
+        if (!element || !identity || !rect) return { ok: false, error: "style_target_unresolved", rolledBack: false };
+        for (const [property, value] of styles) {
+          const previousValue = getComputedStyle(element).getPropertyValue(STYLE_CSS_MAP[property]);
+          const drafted = buildStyleOperation({ nodeId, signature: identity.signature, rect }, property, value, { pageKey: pageKey(), sourceCommand: "style" }, previousValue, element);
+          operations.push({ ...drafted, id: nextOperationId("style"), status: "approved", target: { nodeId, signature: identity.signature } });
+        }
+      }
+      const result = executor.executeTransaction({ operations });
+      if (result.ok) { renderSelection(); refreshSave(); }
+      return result;
+    },
+    editSelectedText(value): ExecutionResult {
+      const selected = singleSelectedElement();
+      if (!selected || !canEditText(selected.element)) return { ok: false, error: "text_target_unsafe", rolledBack: false };
+      const identity = visualModel.durableIdentityOf(selected.nodeId);
+      const rect = visualModel.measure([selected.nodeId]).get(selected.nodeId);
+      if (!identity || !rect) return { ok: false, error: "text_target_unresolved", rolledBack: false };
+      const drafted = buildTextOperation({ nodeId: selected.nodeId, signature: identity.signature, rect }, value, { pageKey: pageKey(), sourceCommand: "text-edit" }, selected.element.textContent, selected.element);
+      const operation = { ...drafted, id: nextOperationId("text"), status: "approved" as const, target: { nodeId: selected.nodeId, signature: identity.signature } };
+      ignoreMutations = true;
+      const result = executor.executeTransaction({ operations: [operation] });
+      releaseMutationIgnore();
+      if (result.ok) { renderSelection(); refreshSave(); return { ok: true, operation: result.operations[0] ?? operation, verification: result.verifications[0] ?? { ok: true, expected: rect, actual: rect } }; }
+      return result;
+    },
+    cropSelection(insets): ExecutionResult {
+      const selected = singleSelectedElement();
+      if (!selected || !canCrop(selected.element)) return { ok: false, error: "crop_target_unsafe", rolledBack: false };
+      const identity = visualModel.durableIdentityOf(selected.nodeId);
+      const rect = visualModel.measure([selected.nodeId]).get(selected.nodeId);
+      if (!identity || !rect) return { ok: false, error: "crop_target_unresolved", rolledBack: false };
+      const drafted = buildCropOperation({ nodeId: selected.nodeId, signature: identity.signature, rect }, insets, { pageKey: pageKey(), sourceCommand: "crop" });
+      const operation: CropOperation = { ...drafted, id: nextOperationId("crop"), status: "approved", target: { nodeId: selected.nodeId, signature: identity.signature } };
+      ignoreMutations = true;
+      const result = executor.executeTransaction({ operations: [operation] });
+      releaseMutationIgnore();
+      if (result.ok) { renderSelection(); refreshSave(); return { ok: true, operation: result.operations[0] ?? operation, verification: result.verifications[0] ?? { ok: true, expected: rect, actual: rect } }; }
+      return result;
+    },
+    canUndo() { return ledger.canUndo(); },
+    canRedo() { return ledger.canRedo(); },
     undo() {
       const operations = [...ledger.peekUndoTransaction()];
       if (operations.length === 0) {
@@ -1302,7 +1488,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
               ? [summarizeIdentity({ signature })]
               : [];
           })).size,
-          perPropertyCounts: Object.fromEntries(["duplicate", "move", "resize", "rotate", "zIndex", "hide"].map((type) => [type, projection.filter((operation) => operation.type === type).length])),
+          perPropertyCounts: Object.fromEntries(["duplicate", "move", "resize", "rotate", "crop", "style", "text", "zIndex", "hide"].map((type) => [type, projection.filter((operation) => operation.type === type).length])),
           cloneCreationIds: cloneCreations.map((operation) => operation.payload.cloneId),
           storageCalled: true,
           operationIds: projection.map((operation) => operation.id),
@@ -1369,7 +1555,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         Number(a.payload.detached) - Number(b.payload.detached));
       const layers = toApply.filter(isLayerOperation);
       const duplicates = toApply.filter((operation): operation is DuplicateOperation => operation.type === "duplicate");
-      const effects = toApply.filter((operation) => operation.type === "resize" || operation.type === "rotate" || operation.type === "hide");
+      const effects = toApply.filter((operation) =>
+        operation.type === "resize" || operation.type === "rotate" || operation.type === "crop" ||
+        operation.type === "style" || operation.type === "text" || operation.type === "hide");
       if (duplicates.length > 0 && root.readyState !== "complete") {
         await new Promise<void>((resolve) => {
           root.defaultView?.addEventListener("load", () => { resolve(); }, { once: true });
@@ -1445,7 +1633,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         }
       }
       for (const operation of effects) {
+        const identity = operation.target.signature ? { signature: operation.target.signature } : null;
+        const resolution = identity ? visualModel.resolveIdentity(identity) : { kind: "unresolved" as const, evidence: { reason: "missing_signature" } };
         const result = executor.replayOperation(operation);
+        logV2("replay-item", { owner: resolution.kind === "resolved" ? "EXECUTION" : "IDENTITY", id: operation.id, operationType: operation.type, resolution: resolution.kind, evidence: "evidence" in resolution ? resolution.evidence : undefined, applyOk: result.ok, error: result.ok ? undefined : result.error });
         if (result.ok) applied += 1;
         else if (result.error === "unresolved_target" || result.error === "ambiguous_target") { unresolved += 1; failureKind = "IDENTITY"; }
         else { failed += 1; failureKind = "EXECUTION"; }
@@ -1510,6 +1701,81 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return result;
     },
   };
+
+  overlays.configureToolbar({
+    onCommand(commandId) {
+      if (commandId === "undo") { runtime.undo(); return; }
+      if (commandId === "redo") { runtime.redo(); return; }
+      if (commandId === "style-panel") {
+        stylePanelOpen = !stylePanelOpen;
+        if (stylePanelOpen) overlays.openStylePanel(stylePanelValues());
+        else { cancelStylePreview(); overlays.closeStylePanel(); }
+        refreshToolbar();
+        return;
+      }
+      if (commandId === "text-edit") {
+        const selected = singleSelectedElement();
+        if (!selected || !canEditText(selected.element)) return;
+        textEditorOpen = true;
+        overlays.openTextEditor(selected.element.textContent);
+        refreshToolbar();
+        return;
+      }
+      if (commandId === "crop-mode") {
+        cropMode = !cropMode;
+        overlays.setCropMode(cropMode);
+        refreshToolbar();
+      }
+    },
+    onStyleChange(property, value) {
+      previewStyle(property, value);
+    },
+    onStylePanelApply() {
+      const pending = new Map(stylePreview?.pending ?? []);
+      cancelStylePreview();
+      if (pending.size > 0) runtime.styleSelection(pending);
+      stylePanelOpen = false;
+      refreshToolbar();
+    },
+    onStylePanelReset() {
+      cancelStylePreview();
+      return stylePanelValues();
+    },
+    onStylePanelClose() {
+      cancelStylePreview();
+      stylePanelOpen = false;
+      refreshToolbar();
+    },
+    onTextCommit(value) {
+      runtime.editSelectedText(value);
+      textEditorOpen = false;
+      refreshToolbar();
+    },
+    onTextCancel() {
+      textEditorOpen = false;
+      refreshToolbar();
+    },
+    onToolbarBackgroundClick(clientX, clientY) {
+      const candidate = root.elementsFromPoint(clientX, clientY).find(
+        (element): element is HTMLElement => element instanceof HTMLElement && !isExtensionRoot(element),
+      );
+      if (candidate) runtime.select(candidate);
+    },
+    onToolbarPointerDown(clientX, clientY) {
+      const managed = root.elementsFromPoint(clientX, clientY)
+        .filter((element) => !isExtensionRoot(element))
+        .map((element) => element.closest<HTMLElement>('[data-otf-managed="true"]'))
+        .find((element): element is HTMLElement => Boolean(element));
+      if (!managed) return false;
+      const managedId = managed.getAttribute("data-otf-clone-id");
+      const selectedCloneIds = selectedIds().map((id) => visualModel.bind(id)?.getAttribute("data-otf-clone-id"));
+      if (managedId && !selectedCloneIds.includes(managedId)) {
+        runtime.select(managed);
+        return true;
+      }
+      return false;
+    },
+  });
 
   return runtime;
 }
