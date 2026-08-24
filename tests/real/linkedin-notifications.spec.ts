@@ -631,4 +631,55 @@ test.describe("LinkedIn notifications RL1–RL4", () => {
     }, await page.evaluate(() => `${location.origin}${location.pathname}`));
     console.log(`[RL14] checkpointBytes=${String(checkpointBytes)}`);
   });
+
+  test("RL15 each filter supports three independent saved clones", async ({ page }) => {
+    const filters = await linkedInFilters(page);
+    for (const name of ["All", "Jobs", "My posts", "Mentions"] as const) {
+      await selectRealTarget(page, filters[name]);
+      await page.keyboard.press("Control+c");
+      for (let index = 0; index < 3; index += 1) await page.keyboard.press("Control+v");
+      const clone = page.locator("[data-otf-clone-id]").last();
+      await selectAndDragReal(page, clone, 8, 5);
+      await selectRealTarget(page, clone);
+      const resizeHandle = await getTransformHandleRect(page, "resize-se");
+      if (!resizeHandle) throw new Error(productFailure(`${name} clone resize handle missing`));
+      await page.mouse.move(resizeHandle.x + 4, resizeHandle.y + 4);
+      await page.mouse.down(); await page.mouse.move(resizeHandle.x + 15, resizeHandle.y + 10, { steps: 3 }); await page.mouse.up();
+      await selectRealTarget(page, clone);
+      const rotateHandle = await getTransformHandleRect(page, "rotate");
+      if (!rotateHandle) throw new Error(productFailure(`${name} clone rotate handle missing`));
+      await page.mouse.move(rotateHandle.x + 4, rotateHandle.y + 4);
+      await page.mouse.down(); await page.mouse.move(rotateHandle.x + 20, rotateHandle.y - 8, { steps: 3 }); await page.mouse.up();
+    }
+    const clones = page.locator("[data-otf-clone-id]");
+    await expect(clones).toHaveCount(12);
+    const ids = await clones.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-otf-clone-id")));
+    expect(new Set(ids).size).toBe(12);
+    await expectRealSave(page);
+    await page.reload({ waitUntil: "domcontentloaded" }); await linkedInFilters(page);
+    await expect(page.locator("[data-otf-clone-id]")).toHaveCount(12);
+  });
+
+  test("RL16 filter resize stays exact after Save wait and reload", async ({ page }) => {
+    const filters = await linkedInFilters(page);
+    const expected = new Map<string, Awaited<ReturnType<typeof rect>>>();
+    for (const name of ["All", "Jobs", "My posts", "Mentions"] as const) {
+      await selectAndDragReal(page, filters[name], 4, 3);
+      await selectRealTarget(page, filters[name]);
+      const handle = await getTransformHandleRect(page, "resize-se");
+      if (!handle) throw new Error(productFailure(`${name} resize handle missing`));
+      await page.mouse.move(handle.x + 4, handle.y + 4);
+      await page.mouse.down(); await page.mouse.move(handle.x + 24, handle.y + 14, { steps: 4 }); await page.mouse.up();
+      const saved = await rect(filters[name]); expected.set(name, saved);
+      await expectRealSave(page); await page.waitForTimeout(10_000);
+      expect(nearRect(await rect(filters[name]), saved, 3), productFailure(`${name} snapped after Save`)).toBe(true);
+    }
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const replayed = await linkedInFilters(page);
+    for (const name of ["All", "Jobs", "My posts", "Mentions"] as const) {
+      const saved = expected.get(name); if (!saved) throw new Error("missing_expected_rect");
+      const actual = await rect(replayed[name]);
+      expect(nearRect(actual, saved, 4), productFailure(`${name} resize missing after reload`)).toBe(true);
+    }
+  });
 });

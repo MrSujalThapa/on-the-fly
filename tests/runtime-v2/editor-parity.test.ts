@@ -312,6 +312,18 @@ describe("Runtime V2 editor parity", () => {
     expect(b.style.display).toBe("none");
   });
 
+  it("mutation reconciliation does not replace the undo snapshot", () => {
+    const { document, root } = createTestDocument(`<article id="profile">Profile</article>`);
+    const profile = byId(root, "profile");
+    layoutManagedElement(profile, { x: 10, y: 20, width: 180, height: 120 });
+    const runtime = createEditorRuntime(document);
+    runtime.select(profile);
+    expect(runtime.deleteSelection().ok).toBe(true);
+    runtime.lifecycle.onDomInvalidated();
+    expect(runtime.undo().ok).toBe(true);
+    expect(profile.style.display).not.toBe("none");
+  });
+
   it("deletes an attached nested selection only once", () => {
     const { document, root } = createTestDocument(`<section id="p"><button id="c">C</button></section>`);
     const parent = byId(root, "p"); const child = byId(root, "c");

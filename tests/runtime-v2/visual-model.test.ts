@@ -157,6 +157,21 @@ describe("VisualModel identity", () => {
     }
   });
 
+  it("adopts a rerendered host as the existing canonical node", () => {
+    const { document, root } = createTestDocument(`<div><article data-logical-id="profile">Sujal Thapa Canada</article></div>`);
+    const original = root.querySelector("article");
+    if (!(original instanceof HTMLElement)) return;
+    stubRect(original, { x: 20, y: 20, width: 200, height: 80 });
+    const model = createVisualModel(document);
+    const nodeId = model.adopt(original);
+    original.outerHTML = `<article data-logical-id="profile">Sujal Thapa Canada</article>`;
+    const replacement = root.querySelector("article");
+    if (!nodeId || !(replacement instanceof HTMLElement)) return;
+    stubRect(replacement, { x: 20, y: 20, width: 200, height: 80 });
+    expect(model.adopt(replacement)).toBe(nodeId);
+    expect(model.bind(nodeId)).toBe(replacement);
+  });
+
   it("returns unresolved when the target is permanently removed", () => {
     const { document, root } = createTestDocument(`<article class="card" data-logical-id="gone">Gone</article>`);
     const card = root.querySelector("article");
