@@ -77,4 +77,15 @@ describe("OperationLedger", () => {
     expect(ledger.isDirty()).toBe(false);
     expect(ledger.persistedRevision).toBe(1);
   });
+
+  it("keeps a committed batch as one history transaction", () => {
+    const ledger = createOperationLedger();
+    ledger.commitBatch([move("a"), move("b"), move("c")]);
+    expect(ledger.peekUndoTransaction().map((operation) => operation.id)).toEqual(["a", "b", "c"]);
+    ledger.confirmUndoTransaction();
+    expect(ledger.activeOperations()).toEqual([]);
+    expect(ledger.peekRedoTransaction()).toHaveLength(3);
+    ledger.confirmRedoTransaction();
+    expect(ledger.activeOperations()).toHaveLength(3);
+  });
 });
