@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { OTF_DETACH_ATTR } from "../../src/editor/dom/managed-detach.js";
+import { OTF_MANAGED_ATTR } from "../../src/editor/dom/types.js";
 import type { IntendedRect } from "../../src/runtime-v2/placement-engine.js";
 import { createEditorRuntime } from "../../src/runtime-v2/create-editor-runtime.js";
 import { createOperationExecutor } from "../../src/runtime-v2/create-operation-executor.js";
 import { createOperationLedger } from "../../src/runtime-v2/create-operation-ledger.js";
 import { createPlacementEngine } from "../../src/runtime-v2/create-placement-engine.js";
 import { createVisualModel } from "../../src/runtime-v2/create-visual-model.js";
+import { projectCanonicalCheckpoint } from "../../src/runtime-v2/canonical-checkpoint.js";
+import { normalizeSelection, type RuntimeVirtualGroup } from "../../src/runtime-v2/runtime-selection.js";
+import type { VisualModel } from "../../src/runtime-v2/visual-model.js";
 import { createTestDocument } from "../editor/dom/test-document.js";
 import { layoutManagedElement } from "../editor/measurement/layout-helpers.js";
 
@@ -57,6 +61,22 @@ function click(target: HTMLElement, x: number, y: number, shiftKey = false): voi
 }
 
 describe("Runtime V2 editor parity", () => {
+  it("normalizes stale, duplicate, and group+member atoms canonically", () => {
+    const groups = new Map<string, RuntimeVirtualGroup>([
+      ["g1", { id: "g1", memberIds: ["a", "b"] }],
+    ]);
+    expect(normalizeSelection([
+      { kind: "node", nodeId: "a" },
+      { kind: "group", groupId: "g1" },
+      { kind: "node", nodeId: "b" },
+      { kind: "group", groupId: "stale" },
+    ], groups, "lasso")).toEqual({
+      atoms: [{ kind: "group", groupId: "g1" }],
+      primary: { kind: "group", groupId: "g1" },
+      source: "lasso",
+    });
+  });
+
   it("Shift-click toggles canonical nodes in deterministic order without dirtying the ledger", () => {
     const { document, root } = createTestDocument(`<button id="a">A</button><button id="b">B</button><button id="c">C</button>`);
     const a = byId(root, "a"); const b = byId(root, "b"); const c = byId(root, "c");
@@ -76,6 +96,18 @@ describe("Runtime V2 editor parity", () => {
     expect(runtime.getSelection().primary).toEqual({ kind: "node", nodeId: runtime.visualModel.adopt(c) });
     expect(runtime.ledger.isDirty()).toBe(false);
     runtime.stop();
+  });
+
+  it("keeps exact child selection after an ancestor becomes editor-managed", () => {
+    const { document, root } = createTestDocument(`<div id="parent"><button id="child">Child</button></div>`);
+    const parent = byId(root, "parent");
+    const child = byId(root, "child");
+    layoutManagedElement(parent, { x: 10, y: 10, width: 160, height: 80 });
+    layoutManagedElement(child, { x: 30, y: 30, width: 70, height: 30 });
+    parent.setAttribute(OTF_MANAGED_ATTR, "true");
+    document.elementsFromPoint = () => [child, parent];
+    const runtime = createEditorRuntime(document);
+    expect(runtime.visualModel.pick(40, 40)).toBe(runtime.visualModel.adopt(child));
   });
 
   it("lasso returns only canonical IDs and adds to existing selection", () => {
@@ -108,10 +140,18 @@ describe("Runtime V2 editor parity", () => {
     runtime.select(a); runtime.toggleSelection(b);
     const first = runtime.groupSelection();
     expect(first).toBeTruthy();
+    for (let index = 0; index < 10; index += 1) expect(runtime.groupSelection()).toBe(first);
+    expect(runtime.getGroup(present(first))?.memberIds).toHaveLength(2);
     runtime.clearSelection();
     runtime.select(a);
     expect(runtime.getSelection().atoms).toEqual([{ kind: "group", groupId: first }]);
     runtime.toggleSelection(c);
+    document.elementsFromPoint = () => [a, b, c];
+    runtime.selectRect({ x: 0, y: 0, width: 150, height: 40 }, "add");
+    expect(runtime.getSelection().atoms).toEqual([
+      { kind: "group", groupId: first },
+      { kind: "node", nodeId: runtime.visualModel.adopt(c) },
+    ]);
     const second = runtime.groupSelection();
     expect(runtime.getGroup(present(first))).toBeNull();
     expect(runtime.getGroup(present(second))?.memberIds).toEqual([
@@ -193,5 +233,50 @@ describe("Runtime V2 editor parity", () => {
     expect(result.ok).toBe(false);
     expect(good.getAttribute("style")).toBe(before);
     expect(ledger.activeOperations()).toHaveLength(0);
+  });
+
+  it("rejects duplicate node IDs and aliased live elements before batch mutation", () => {
+    const { document, root } = createTestDocument(`<div id="a">A</div>`);
+    const element = byId(root, "a");
+    layoutManagedElement(element, { x: 10, y: 10, width: 40, height: 30 });
+    const base = createVisualModel(document);
+    const adopted = present(base.adopt(element));
+    const identity = present(base.durableIdentityOf(adopted));
+    const ledger = createOperationLedger();
+    const executor = createOperationExecutor({ document, visualModel: base, ledger, placement: createPlacementEngine() });
+    const duplicate = executor.executeMoveBatch({ nodeIds: [adopted, adopted], dx: 10, dy: 10, pageKey: "https://example.com/" });
+    expect(duplicate).toMatchObject({ ok: false, error: "duplicate_batch_target" });
+
+    const aliased = {
+      ...base,
+      durableIdentityOf: () => identity,
+      resolveNode: (nodeId: string) => ({
+        kind: "resolved" as const,
+        nodeId,
+        element,
+        identity,
+        evidence: { strategy: "live-cache" as const, candidateCount: 1, cssPathMatched: true, structureShifted: false, matchedKeys: [] },
+      }),
+    } satisfies VisualModel;
+    const aliasExecutor = createOperationExecutor({ document, visualModel: aliased, ledger, placement: createPlacementEngine() });
+    const result = aliasExecutor.executeMoveBatch({ nodeIds: ["alias-a", "alias-b"], dx: 10, dy: 10, pageKey: "https://example.com/" });
+    expect(result).toMatchObject({ ok: false, error: "duplicate_live_element" });
+    expect(ledger.activeOperations()).toHaveLength(0);
+  });
+
+  it("projects a valid checkpoint after repeated regroup and movement", () => {
+    const { document, root } = createTestDocument(`<div id="a">A</div><div id="b">B</div><div id="c">C</div>`);
+    const a = byId(root, "a"); const b = byId(root, "b"); const c = byId(root, "c");
+    [a, b, c].forEach((element, index) => {
+      layoutManagedElement(element, { x: index * 60, y: 10, width: 40, height: 30 });
+    });
+    const runtime = createEditorRuntime(document);
+    runtime.select(a); runtime.toggleSelection(b); runtime.groupSelection();
+    expect(runtime.moveSelection(20, 10).ok).toBe(true);
+    runtime.toggleSelection(c); runtime.groupSelection();
+    expect(runtime.moveSelection(15, 5).ok).toBe(true);
+    const checkpoint = projectCanonicalCheckpoint(runtime.ledger.activeOperations());
+    expect(checkpoint.ok).toBe(true);
+    if (checkpoint.ok) expect(checkpoint.operations).toHaveLength(3);
   });
 });

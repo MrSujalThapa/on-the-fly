@@ -40,6 +40,29 @@ export function selectionFromAtoms(
   return { atoms: unique, primary: unique.at(-1) ?? null, source };
 }
 
+export function normalizeSelection(
+  atoms: readonly SelectionAtom[],
+  groups: ReadonlyMap<GroupId, RuntimeVirtualGroup>,
+  source: RuntimeSelectionSource,
+): RuntimeSelection {
+  const groupByMember = new Map<VisualNodeId, GroupId>();
+  for (const [groupId, group] of groups) {
+    for (const memberId of group.memberIds) {
+      if (!groupByMember.has(memberId)) groupByMember.set(memberId, groupId);
+    }
+  }
+  const canonical: SelectionAtom[] = [];
+  for (const atom of atoms) {
+    if (atom.kind === "group") {
+      if (groups.has(atom.groupId)) canonical.push(atom);
+      continue;
+    }
+    const groupId = groupByMember.get(atom.nodeId);
+    canonical.push(groupId ? { kind: "group", groupId } : atom);
+  }
+  return selectionFromAtoms(canonical, source);
+}
+
 export function toggleAtom(selection: RuntimeSelection, atom: SelectionAtom): RuntimeSelection {
   const key = atomKey(atom);
   const exists = selection.atoms.some((candidate) => atomKey(candidate) === key);

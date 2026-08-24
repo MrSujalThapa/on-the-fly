@@ -7,7 +7,7 @@ import type { InputMode } from "./input-router.js";
  * Geometry is always queried from VisualModel.
  */
 export interface OverlayCoordinator {
-  showSelection(nodeIds: readonly VisualNodeId[]): void;
+  showSelection(nodeIds: readonly VisualNodeId[], kind?: "selection" | "group"): void;
   showLasso(rect: IntendedRect): void;
   clearLasso(): void;
   refreshFromLiveGeometry(): void;

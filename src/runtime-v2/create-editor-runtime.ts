@@ -32,6 +32,7 @@ import {
 import {
   emptySelection,
   flattenSelection,
+  normalizeSelection,
   selectionFromAtoms,
   toggleAtom,
   unionRects,
@@ -98,8 +99,8 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   const owner = (): DisposableOwner => ownerHolder.current;
   let started = false;
   let selection: RuntimeSelection = emptySelection();
-  const groups = new Map<GroupId, RuntimeVirtualGroup>();
-  const groupByMember = new Map<VisualNodeId, GroupId>();
+  let groups = new Map<GroupId, RuntimeVirtualGroup>();
+  let groupByMember = new Map<VisualNodeId, GroupId>();
   let groupCounter = 0;
   let gesture: PointerGesture | null = null;
   let ignoreMutations = false;
@@ -156,13 +157,16 @@ export function createEditorRuntime(root: Document): EditorRuntime {
 
   const renderSelection = (): void => {
     const ids = selectedIds();
-    if (ids.length > 0) overlays.showSelection(ids);
+    if (ids.length > 0) {
+      const explicitGroup = selection.atoms.length === 1 && selection.atoms[0]?.kind === "group";
+      overlays.showSelection(ids, explicitGroup ? "group" : "selection");
+    }
     else overlays.clear();
     observeSelected();
   };
 
   const setSelection = (next: RuntimeSelection): void => {
-    selection = next;
+    selection = normalizeSelection(next.atoms, groups, next.source);
     renderSelection();
   };
 
@@ -282,6 +286,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   };
 
   const movementRoots = (nodeIds: readonly VisualNodeId[]): VisualNodeId[] => {
+    if (new Set(nodeIds).size !== nodeIds.length) return [];
     const selectedSet = new Set(nodeIds);
     return nodeIds.filter((nodeId) => {
       const element = visualModel.bind(nodeId);
@@ -298,9 +303,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   const beginMoveGesture = (event: NormalizedPointer): boolean => {
     const roots = movementRoots(selectedIds());
     const targets: PreviewTarget[] = [];
+    const elements = new Set<HTMLElement>();
     for (const nodeId of roots) {
       const element = visualModel.bind(nodeId);
-      if (!element) return false;
+      if (!element || elements.has(element)) return false;
+      elements.add(element);
       targets.push({
         nodeId,
         element,
@@ -643,25 +650,43 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return groups.get(groupId) ?? null;
     },
     groupSelection() {
+      const normalized = normalizeSelection(selection.atoms, groups, selection.source);
+      if (normalized.atoms.length === 1 && normalized.atoms[0]?.kind === "group") {
+        selection = normalized;
+        return normalized.atoms[0].groupId;
+      }
       const memberIds = selectedIds();
       if (memberIds.length < 2) return null;
-      for (const atom of selection.atoms) {
-        if (atom.kind !== "group") continue;
-        const old = groups.get(atom.groupId);
-        if (old) for (const memberId of old.memberIds) groupByMember.delete(memberId);
-        groups.delete(atom.groupId);
+      if (memberIds.some((memberId) => !visualModel.bind(memberId))) return null;
+
+      const memberSet = new Set(memberIds);
+      const nextGroups = new Map<GroupId, RuntimeVirtualGroup>();
+      for (const [existingId, existing] of groups) {
+        if (!existing.memberIds.some((memberId) => memberSet.has(memberId))) {
+          nextGroups.set(existingId, existing);
+        }
       }
-      groupCounter += 1;
-      const groupId: GroupId = `otf-group-${groupCounter.toString(36)}`;
+      const nextCounter = groupCounter + 1;
+      const groupId: GroupId = `otf-group-${nextCounter.toString(36)}`;
       const group: RuntimeVirtualGroup = { id: groupId, memberIds };
-      groups.set(groupId, group);
-      for (const memberId of memberIds) groupByMember.set(memberId, groupId);
+      nextGroups.set(groupId, group);
+      const nextReverse = new Map<VisualNodeId, GroupId>();
+      for (const [nextGroupId, nextGroup] of nextGroups) {
+        for (const memberId of nextGroup.memberIds) {
+          if (nextReverse.has(memberId)) return null;
+          nextReverse.set(memberId, nextGroupId);
+        }
+      }
+      groups = nextGroups;
+      groupByMember = nextReverse;
+      groupCounter = nextCounter;
       setSelection(selectionFromAtoms([{ kind: "group", groupId }], "group"));
       return groupId;
     },
     ungroupSelection() {
       const atoms: SelectionAtom[] = [];
       const members: VisualNodeId[] = [];
+      const removedGroups = new Set<GroupId>();
       for (const atom of selection.atoms) {
         if (atom.kind === "node") {
           atoms.push(atom);
@@ -669,14 +694,19 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         }
         const group = groups.get(atom.groupId);
         if (!group) continue;
-        groups.delete(atom.groupId);
+        removedGroups.add(atom.groupId);
         for (const memberId of group.memberIds) {
-          groupByMember.delete(memberId);
           atoms.push({ kind: "node", nodeId: memberId });
           members.push(memberId);
         }
       }
-      if (members.length > 0) setSelection(selectionFromAtoms(atoms, "group"));
+      if (members.length > 0) {
+        groups = new Map([...groups].filter(([groupId]) => !removedGroups.has(groupId)));
+        groupByMember = new Map(
+          [...groups].flatMap(([groupId, group]) => group.memberIds.map((memberId) => [memberId, groupId] as const)),
+        );
+        setSelection(selectionFromAtoms(atoms, "group"));
+      }
       return members;
     },
     moveSelection(dx, dy): BatchExecutionResult {

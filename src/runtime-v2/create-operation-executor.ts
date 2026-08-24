@@ -251,13 +251,17 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     executeMoveBatch(input): BatchExecutionResult {
       const uniqueIds = Array.from(new Set(input.nodeIds));
       if (uniqueIds.length === 0) return failure("empty_batch", false);
+      if (uniqueIds.length !== input.nodeIds.length) return failure("duplicate_batch_target", false);
       const prepared: PreparedMove[] = [];
+      const resolvedElements = new Set<HTMLElement>();
 
       for (const nodeId of uniqueIds) {
         const identity = deps.visualModel.durableIdentityOf(nodeId);
         if (!identity) return failure("missing_identity", false);
         const resolved = resolveOrFail(nodeId, identity);
         if ("error" in resolved) return resolved;
+        if (resolvedElements.has(resolved.element)) return failure("duplicate_live_element", false);
+        resolvedElements.add(resolved.element);
         const currentRect = rectFromElement(resolved.element);
         const plan = deps.placement.planMove({
           element: resolved.element,

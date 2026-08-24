@@ -84,6 +84,13 @@ function overlayStyles(doc: Document): HTMLStyleElement {
       border-radius: 3px;
       pointer-events: none;
     }
+    .${OUTLINE_CLASS}[data-selection-kind="group"] {
+      border-color: #7c3aed;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85), 0 0 0 4px rgba(124, 58, 237, 0.2);
+    }
+    .otf-overlay-layer[data-selection-kind="group"] .${MEMBER_OUTLINE_CLASS} {
+      border-color: rgba(167, 139, 250, 0.82);
+    }
     .${LASSO_CLASS} {
       position: fixed;
       box-sizing: border-box;
@@ -151,6 +158,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       outline.className = OUTLINE_CLASS;
       layer.append(outline);
     }
+    outline.setAttribute("data-selection-kind", layer.getAttribute("data-selection-kind") ?? "selection");
     position(outline, rect);
     while (memberOutlines.length < members.length) {
       const member = deps.document.createElement("div");
@@ -332,8 +340,10 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       painted = null;
       saveHandler = null;
     },
-    showSelection(nodeIds: readonly VisualNodeId[]) {
+    showSelection(nodeIds: readonly VisualNodeId[], kind = "selection") {
       selected = nodeIds;
+      layer?.setAttribute("data-selection-kind", kind);
+      outline?.setAttribute("data-selection-kind", kind);
       attachNestedScroll();
       render(true);
       if (nodeIds.length > 0) {
