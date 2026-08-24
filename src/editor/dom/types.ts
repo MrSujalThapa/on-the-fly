@@ -26,7 +26,7 @@ export interface ElementStyleSnapshot {
 
 export type DomChange =
   | { kind: "style"; property: string; previousValue: string }
-  | { kind: "text"; previousValue: string }
+  | { kind: "text"; previousValue: string; previousTextNodes?: string[] }
   | { kind: "display"; previousValue: string }
   | { kind: "visibility"; previousValue: string }
   | { kind: "transform-state"; previousState: string | null }

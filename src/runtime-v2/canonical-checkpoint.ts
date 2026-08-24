@@ -145,8 +145,8 @@ function composeFinalState<T extends ResizeOperation | RotateOperation | HideOpe
 
 function composeStyle(first: StyleOperation, last: StyleOperation): StyleOperation {
   const payload: StyleOperation["payload"] = first.payload.previousValue === undefined
-    ? { property: last.payload.property, value: last.payload.value }
-    : { property: last.payload.property, value: last.payload.value, previousValue: first.payload.previousValue };
+    ? { property: last.payload.property, value: last.payload.value, ...(last.payload.scope ? { scope: last.payload.scope } : {}) }
+    : { property: last.payload.property, value: last.payload.value, previousValue: first.payload.previousValue, ...(last.payload.scope ? { scope: last.payload.scope } : {}) };
   const composed: StyleOperation = { ...last, target: first.target, payload };
   return freezeCommittedOperation(composed);
 }

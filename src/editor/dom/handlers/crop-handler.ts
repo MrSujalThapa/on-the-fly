@@ -75,6 +75,17 @@ export function revertClipChange(
   }
 }
 
+export function resolveCropSubject(element: HTMLElement): HTMLElement | null {
+  if (element instanceof HTMLImageElement || element instanceof HTMLVideoElement) return element;
+  const media = Array.from(element.querySelectorAll<HTMLElement>("img, video"));
+  if (media.length !== 1) return null;
+  const subject = media[0] ?? null;
+  if (!subject) return null;
+  let depth = 0;
+  for (let current = subject.parentElement; current && current !== element; current = current.parentElement) depth += 1;
+  return depth <= 2 ? subject : null;
+}
+
 export function readStoredCropInsets(element: HTMLElement): CropInsets {
   const raw = element.getAttribute(OTF_CROP_ATTR);
   if (!raw) {

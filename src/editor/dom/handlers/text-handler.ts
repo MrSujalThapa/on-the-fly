@@ -2,6 +2,28 @@ import type { TextOperation } from "../../operations.js";
 import type { ElementSnapshotStore } from "../element-snapshot.js";
 import type { AppliedDomEffect } from "../types.js";
 
+function collectTextNodes(element: HTMLElement): Text[] {
+  const walker = element.ownerDocument.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node as Text);
+  return nodes;
+}
+
+function isVisibleTextNode(node: Text): boolean {
+  const parent = node.parentElement;
+  if (!parent || parent.closest("script, style, [hidden], [aria-hidden=true], [data-otf-ui]")) return false;
+  const style = parent.ownerDocument.defaultView?.getComputedStyle(parent);
+  return !(style?.display === "none" || style?.visibility === "hidden");
+}
+
+export function renderedVisibleText(element: HTMLElement): string {
+  let value = "";
+  for (const node of collectTextNodes(element)) {
+    if (isVisibleTextNode(node)) value += node.data;
+  }
+  return value.replace(/[\t\n\f\r ]+/g, " ").trim();
+}
+
 export function applyTextOperation(
   element: HTMLElement,
   operation: TextOperation,
@@ -9,14 +31,32 @@ export function applyTextOperation(
 ): AppliedDomEffect["changes"] {
   snapshotStore.captureIfNeeded(element);
   const previousValue = element.textContent;
-  element.textContent = operation.payload.value;
+  const nodes = collectTextNodes(element);
+  const previousTextNodes = nodes.map((node) => node.data);
+  const visible = nodes.filter(isVisibleTextNode);
+  if (visible.length === 0) {
+    element.append(element.ownerDocument.createTextNode(operation.payload.value));
+  } else {
+    const first = visible[0];
+    if (first) first.data = operation.payload.value;
+    for (const node of visible.slice(1)) node.data = "";
+  }
 
-  return [{ kind: "text", previousValue }];
+  return [{ kind: "text", previousValue, previousTextNodes }];
 }
 
 export function revertTextChange(
   element: HTMLElement,
   change: Extract<AppliedDomEffect["changes"][number], { kind: "text" }>,
 ): void {
-  element.textContent = change.previousValue;
+  if (!change.previousTextNodes) {
+    element.textContent = change.previousValue;
+    return;
+  }
+  const nodes = collectTextNodes(element);
+  if (nodes.length !== change.previousTextNodes.length) {
+    element.textContent = change.previousValue;
+    return;
+  }
+  nodes.forEach((node, index) => { node.data = change.previousTextNodes?.[index] ?? ""; });
 }

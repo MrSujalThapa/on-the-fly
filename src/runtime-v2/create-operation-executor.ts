@@ -5,8 +5,8 @@ import { applyMoveOperation, applyResizeOperation, applyRotateOperation } from "
 import { applyHideOperation } from "../editor/dom/handlers/hide-handler.js";
 import { applyDuplicateOperation } from "../editor/dom/handlers/duplicate-handler.js";
 import { applyCropOperation } from "../editor/dom/handlers/crop-handler.js";
-import { applyStyleOperation } from "../editor/dom/handlers/style-handler.js";
-import { applyTextOperation } from "../editor/dom/handlers/text-handler.js";
+import { applyStyleOperation, textSubtreeStyleTargets } from "../editor/dom/handlers/style-handler.js";
+import { applyTextOperation, renderedVisibleText } from "../editor/dom/handlers/text-handler.js";
 import { readStoredTransformState } from "../editor/dom/element-snapshot.js";
 import { ElementSnapshotStore } from "../editor/dom/element-snapshot.js";
 import {
@@ -61,6 +61,7 @@ interface GenericEffect {
   element: HTMLElement;
   snapshot: ElementDomSnapshot | null;
   originalRect: IntendedRect | null;
+  descendantStyles?: Array<{ element: HTMLElement; style: string | null }>;
 }
 
 interface PreparedMove {
@@ -241,6 +242,7 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     let element: HTMLElement;
     let nodeId: VisualNodeId | null = operation.target.nodeId ?? null;
     let snapshot: ElementDomSnapshot | null = null;
+    let descendantStyles: Array<{ element: HTMLElement; style: string | null }> | undefined;
     const signature = operation.target.signature;
     if (operation.type === "duplicate") {
       try {
@@ -269,6 +271,9 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       element = resolved.element;
       nodeId = resolved.nodeId;
       snapshot = captureElementDomSnapshot(element, deps.document);
+      descendantStyles = operation.type === "style" && operation.payload.scope === "text-subtree"
+        ? textSubtreeStyleTargets(element).map((descendant) => ({ element: descendant, style: descendant.getAttribute("style") }))
+        : undefined;
       try {
         if (operation.type === "hide") applyHideOperation(element, operation, snapshotStore);
         else if (operation.type === "resize") applyResizeOperation(element, operation, snapshotStore);
@@ -295,9 +300,13 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       }[operation.payload.property];
       const probe = deps.document.createElement("div");
       probe.style.setProperty(cssProperty, operation.payload.value);
-      return element.style.getPropertyValue(cssProperty) === probe.style.getPropertyValue(cssProperty);
+      const targets = operation.payload.scope === "text-subtree"
+        ? textSubtreeStyleTargets(element)
+        : [element];
+      return targets.length > 0 && targets.every((target) =>
+        target.style.getPropertyValue(cssProperty) === probe.style.getPropertyValue(cssProperty));
     })();
-    const textOk = operation.type !== "text" || element.textContent === operation.payload.value;
+    const textOk = operation.type !== "text" || renderedVisibleText(element) === operation.payload.value.replace(/[\t\n\f\r ]+/g, " ").trim();
     const cropOk = operation.type !== "crop" || element.getAttribute("data-otf-crop") === JSON.stringify(operation.payload);
     const geometryOk = operation.type === "resize" || operation.type === "duplicate" ? rectsNear(actual, expectedRect) : true;
     const identityOk = operation.type === "duplicate"
@@ -309,7 +318,13 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       if (snapshot) rollback(element, snapshot); else element.remove();
       return failure("operation_verification_failed", true, { ok: false, expected: expectedRect, actual });
     }
-    if (captureEffect && nodeId) genericEffects.set(operation.id, { nodeId, element, snapshot, originalRect: snapshot ? operation.metadata?.originalRect ?? null : null });
+    if (captureEffect && nodeId) genericEffects.set(operation.id, {
+      nodeId,
+      element,
+      snapshot,
+      originalRect: snapshot ? operation.metadata?.originalRect ?? null : null,
+      ...(descendantStyles ? { descendantStyles } : {}),
+    });
     return { ok: true, operation, verification: { ok: true, expected: expectedRect, actual } };
   };
 
@@ -625,6 +640,10 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
           return { ok: true, operation, verification: { ok: true, expected: box, actual: box } };
         }
         if (!effect.snapshot || !rollback(effect.element, effect.snapshot)) return failure("rollback_failed", false);
+        for (const descendant of effect.descendantStyles ?? []) {
+          if (descendant.style === null) descendant.element.removeAttribute("style");
+          else descendant.element.setAttribute("style", descendant.style);
+        }
         const box = rectFromElement(effect.element);
         return { ok: true, operation, verification: { ok: true, expected: box, actual: box } };
       }

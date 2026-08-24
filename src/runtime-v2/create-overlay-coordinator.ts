@@ -72,7 +72,7 @@ function overlayStyles(doc: Document): HTMLStyleElement {
       cursor: pointer;
     }
     .${SAVE_BUTTON_CLASS}[hidden] { display: none !important; }
-    .otf-overlay-layer { position: fixed; inset: 0; pointer-events: none; }
+    .otf-overlay-layer { position: fixed; inset: 0; z-index: 5; pointer-events: none; }
     .${OUTLINE_CLASS} {
       position: fixed;
       box-sizing: border-box;
@@ -153,6 +153,8 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
   };
   let toolbarCommands: readonly FloatingToolbarCommandState[] = [];
   let toolbarActiveStates: Record<string, boolean> = {};
+  let toolbarVisible = false;
+  let cropSubjectId: VisualNodeId | undefined;
   const scrollCleanups: Array<() => void> = [];
   const nestedScrollCleanups: Array<() => void> = [];
 
@@ -203,6 +205,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
         handle.dataset.handle = kind;
         handle.addEventListener("pointerdown", (event) => {
           event.preventDefault(); event.stopPropagation();
+          if (typeof __OTF_DIAGNOSTICS_ENABLED__ !== "undefined" && __OTF_DIAGNOSTICS_ENABLED__) console.info("[otf-v2] crop-handle-pointerdown", { kind, x: event.clientX, y: event.clientY });
           handle.setPointerCapture(event.pointerId);
           handlePointerDown?.(kind, event);
         });
@@ -211,16 +214,21 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     }
     outline.setAttribute("data-selection-kind", layer.getAttribute("data-selection-kind") ?? "selection");
     position(outline, rect);
-    const cropNodeId = selected.length === 1 ? selected[0] : undefined;
+    const cropNodeId = cropSubjectId ?? (selected.length === 1 ? selected[0] : undefined);
     const cropTarget = cropNodeId ? deps.visualModel.bind(cropNodeId) : null;
     const crop = cropTarget ? readStoredCropInsets(cropTarget) : { top: 0, right: 0, bottom: 0, left: 0 };
+    const subjectRect = (cropNodeId ? deps.visualModel.measure([cropNodeId]).get(cropNodeId) : null) ?? rect;
+    const insetLeft = (subjectRect.x - rect.x) + crop.left - 6;
+    const insetTop = (subjectRect.y - rect.y) + crop.top - 6;
+    const insetRight = (rect.x + rect.width) - (subjectRect.x + subjectRect.width) + crop.right - 6;
+    const insetBottom = (rect.y + rect.height) - (subjectRect.y + subjectRect.height) + crop.bottom - 6;
     const cropHandles: Record<string, HTMLElement> = Object.fromEntries(
       Array.from(outline.querySelectorAll<HTMLElement>(`.${CROP_HANDLE_CLASS}`)).map((handle) => [handle.dataset.handle ?? "", handle]),
     );
-    cropHandles["crop-nw"]?.style.setProperty("left", `${String(crop.left - 6)}px`); cropHandles["crop-nw"]?.style.setProperty("top", `${String(crop.top - 6)}px`);
-    cropHandles["crop-ne"]?.style.setProperty("right", `${String(crop.right - 6)}px`); cropHandles["crop-ne"]?.style.setProperty("top", `${String(crop.top - 6)}px`);
-    cropHandles["crop-sw"]?.style.setProperty("left", `${String(crop.left - 6)}px`); cropHandles["crop-sw"]?.style.setProperty("bottom", `${String(crop.bottom - 6)}px`);
-    cropHandles["crop-se"]?.style.setProperty("right", `${String(crop.right - 6)}px`); cropHandles["crop-se"]?.style.setProperty("bottom", `${String(crop.bottom - 6)}px`);
+    cropHandles["crop-nw"]?.style.setProperty("left", `${String(insetLeft)}px`); cropHandles["crop-nw"]?.style.setProperty("top", `${String(insetTop)}px`);
+    cropHandles["crop-ne"]?.style.setProperty("right", `${String(insetRight)}px`); cropHandles["crop-ne"]?.style.setProperty("top", `${String(insetTop)}px`);
+    cropHandles["crop-sw"]?.style.setProperty("left", `${String(insetLeft)}px`); cropHandles["crop-sw"]?.style.setProperty("bottom", `${String(insetBottom)}px`);
+    cropHandles["crop-se"]?.style.setProperty("right", `${String(insetRight)}px`); cropHandles["crop-se"]?.style.setProperty("bottom", `${String(insetBottom)}px`);
     while (memberOutlines.length < members.length) {
       const member = deps.document.createElement("div");
       member.className = MEMBER_OUTLINE_CLASS;
@@ -259,7 +267,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       return;
     }
     paint(rect, selected.length > 1 ? measured.members : []);
-    if (mode === "edit") toolbar?.refreshAnchor(rect);
+    if (mode === "edit" && toolbarVisible) toolbar?.refreshAnchor(rect);
   };
 
   const loop = (): void => {
@@ -342,6 +350,16 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       host.style.cssText =
         "all: initial; position: fixed; inset: 0; z-index: 2147483647; pointer-events: none;";
       shadow = host.attachShadow({ mode: "closed" });
+      const syncKeyboardCapture = (): void => {
+        const active = shadow?.activeElement;
+        const captures = active instanceof HTMLElement &&
+          (active.matches("input, textarea, select") || active.isContentEditable);
+        host?.setAttribute("data-otf-keyboard-capture", String(captures));
+      };
+      shadow.addEventListener("focusin", syncKeyboardCapture);
+      shadow.addEventListener("focusout", () => {
+        queueMicrotask(syncKeyboardCapture);
+      });
       const indicator = deps.document.createElement("div");
       indicator.className = "otf-indicator";
       indicator.dataset.mode = mode;
@@ -452,8 +470,10 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     setHandlePointerDown(handler) {
       handlePointerDown = handler;
     },
-    setCropMode(active) {
+    setCropMode(active, subjectNodeId) {
       layer?.setAttribute("data-crop-mode", String(active));
+      cropSubjectId = active ? subjectNodeId : undefined;
+      render(true);
     },
     setMode(next: InputMode) {
       mode = next;
@@ -467,7 +487,13 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       toolbarCommands = commands;
       toolbarActiveStates = activeStates;
       const rect = measureSelected().union;
-      if (rect && mode === "edit") toolbar?.renderCommandStates(toolbarCommands, rect, toolbarActiveStates);
+      if (rect && mode === "edit" && toolbarVisible) toolbar?.renderCommandStates(toolbarCommands, rect, toolbarActiveStates);
+    },
+    setToolbarVisible(visible) {
+      toolbarVisible = visible;
+      const rect = measureSelected().union;
+      if (visible && rect && mode === "edit") toolbar?.renderCommandStates(toolbarCommands, rect, toolbarActiveStates);
+      else toolbar?.hide();
     },
     openStylePanel(values) {
       toolbar?.toggleStylePanel(true, values);

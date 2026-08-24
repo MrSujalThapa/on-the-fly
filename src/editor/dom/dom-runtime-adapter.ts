@@ -37,6 +37,7 @@ import {
 } from "./handlers/style-handler.js";
 import {
   applyTextOperation,
+  revertTextChange,
 } from "./handlers/text-handler.js";
 import {
   applyLayerToHost,
@@ -369,6 +370,12 @@ export class DomRuntimeAdapter {
         );
       }
 
+      if (operation.type === "text") {
+        const change = stored.changes.find(
+          (candidate): candidate is Extract<AppliedDomEffect["changes"][number], { kind: "text" }> => candidate.kind === "text",
+        );
+        if (change) revertTextChange(stored.element, change);
+      }
       restoreElementDomSnapshot(this.root, stored.beforeSnapshot, stored.element);
       this.effects.delete(operation.id);
       this.elementRefs.delete(stored.elementKey);

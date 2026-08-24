@@ -42,6 +42,10 @@ export function createInputRouter(root: Document): InputRouter {
     return target instanceof Element && isExtensionRoot(target);
   };
 
+  const editorChromeCapturesKeyboard = (target: EventTarget | null): boolean =>
+    target instanceof Element &&
+    target.closest('[data-otf-keyboard-capture="true"]') !== null;
+
   const attach = (next: InputRouterHandlers): void => {
     const view = root.defaultView;
     if (!view) {
@@ -53,7 +57,7 @@ export function createInputRouter(root: Document): InputRouter {
       if (!(event instanceof PointerEvent) || event.button !== 0) {
         return;
       }
-      if (inEditorChrome(event.target)) {
+      if (inEditorChrome(event.target) || editorChromeCapturesKeyboard(event.target)) {
         return;
       }
       if (mode === "interact") {
@@ -112,7 +116,7 @@ export function createInputRouter(root: Document): InputRouter {
       if (!(event instanceof KeyboardEvent)) {
         return;
       }
-      if (isTypingTarget(event.target)) {
+      if (editorChromeCapturesKeyboard(event.target) || isTypingTarget(event.target)) {
         return;
       }
       if (

@@ -93,6 +93,7 @@ export type StyleOperation = OperationBase<
     property: StyleProperty;
     value: string;
     previousValue?: string;
+    scope?: "self" | "text-subtree";
   }
 >;
 

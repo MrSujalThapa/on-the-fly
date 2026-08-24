@@ -61,6 +61,81 @@ function click(target: HTMLElement, x: number, y: number, shiftKey = false): voi
 }
 
 describe("Runtime V2 editor parity", () => {
+  it("keeps the toolbar closed on selection and toggles it only with plain T", () => {
+    const { document, root } = createTestDocument(`<button id="a">Target</button><input id="field">`);
+    const target = byId(root, "a");
+    const field = byId(root, "field");
+    layoutManagedElement(target, { x: 10, y: 10, width: 80, height: 30 });
+    const runtime = createEditorRuntime(document);
+    runtime.start();
+    const visible: boolean[] = [];
+    runtime.overlays.setToolbarVisible = (value) => { visible.push(value); };
+    runtime.select(target);
+    expect(visible.at(-1)).toBe(false);
+    document.defaultView?.dispatchEvent(new KeyboardEvent("keydown", { key: "t", bubbles: true }));
+    expect(visible.at(-1)).toBe(true);
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "t", bubbles: true }));
+    expect(visible.at(-1)).toBe(true);
+    document.defaultView?.dispatchEvent(new KeyboardEvent("keydown", { key: "t", bubbles: true }));
+    expect(visible.at(-1)).toBe(false);
+    runtime.stop();
+  });
+
+  it("does not apply editor delete while a text-entry control is focused", () => {
+    const { document, root } = createTestDocument(`<button id="a">Target</button><textarea id="field">abc</textarea>`);
+    const target = byId(root, "a");
+    const field = byId(root, "field");
+    layoutManagedElement(target, { x: 10, y: 10, width: 80, height: 30 });
+    const runtime = createEditorRuntime(document);
+    runtime.start();
+    runtime.select(target);
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true }));
+    expect(target.style.display).not.toBe("none");
+    document.defaultView?.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true }));
+    expect(target.style.display).toBe("none");
+    runtime.stop();
+  });
+
+  it("resolves one wrapped image for crop and rejects ambiguous media", () => {
+    const { document, root } = createTestDocument(`<div id="one"><span><img id="image"></span></div><div id="many"><img><img></div>`);
+    const one = byId(root, "one"); const image = byId(root, "image"); const many = byId(root, "many");
+    layoutManagedElement(one, { x: 0, y: 0, width: 100, height: 100 });
+    layoutManagedElement(image, { x: 0, y: 0, width: 100, height: 100 });
+    layoutManagedElement(many, { x: 120, y: 0, width: 100, height: 100 });
+    const runtime = createEditorRuntime(document);
+    runtime.select(one);
+    expect(runtime.cropSelection({ top: 5, right: 5, bottom: 5, left: 5 }).ok).toBe(true);
+    expect(image.getAttribute("data-otf-crop")).not.toBeNull();
+    runtime.select(many);
+    expect(runtime.cropSelection({ top: 5, right: 5, bottom: 5, left: 5 }).ok).toBe(false);
+  });
+
+  it("scopes container backgrounds to self and text color to its text subtree", () => {
+    const { document, root } = createTestDocument(`<section id="card"><span id="name">Name</span><p id="copy">Description</p></section>`);
+    const card = byId(root, "card"); const name = byId(root, "name"); const copy = byId(root, "copy");
+    layoutManagedElement(card, { x: 0, y: 0, width: 200, height: 100 });
+    const runtime = createEditorRuntime(document);
+    runtime.select(card);
+    expect(runtime.styleSelection(new Map([["backgroundColor", "red"], ["color", "white"]])).ok).toBe(true);
+    expect(card.style.backgroundColor).toBe("red");
+    expect(card.style.color).toBe("");
+    expect(name.style.color).toBe("white");
+    expect(copy.style.color).toBe("white");
+    expect(runtime.undo().ok).toBe(true);
+    expect(name.style.color).toBe("");
+  });
+
+  it("normalizes formatted text and preserves inline wrapper elements on commit", () => {
+    const { document, root } = createTestDocument(`<span id="copy"> Learn   more <strong>about</strong>   Pages </span>`);
+    const copy = byId(root, "copy");
+    layoutManagedElement(copy, { x: 0, y: 0, width: 200, height: 30 });
+    const runtime = createEditorRuntime(document);
+    runtime.select(copy);
+    expect(runtime.editSelectedText("Learn more about Pages").ok).toBe(true);
+    expect(copy.textContent).toBe("Learn more about Pages");
+    expect(copy.querySelector("strong")).not.toBeNull();
+  });
+
   it("normalizes stale, duplicate, and group+member atoms canonically", () => {
     const groups = new Map<string, RuntimeVirtualGroup>([
       ["g1", { id: "g1", memberIds: ["a", "b"] }],

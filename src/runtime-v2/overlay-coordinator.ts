@@ -15,10 +15,11 @@ export interface OverlayCoordinator {
   clear(): void;
   selectionOutlineRect(): IntendedRect | null;
   setHandlePointerDown(handler: ((kind: "resize-nw" | "resize-ne" | "resize-sw" | "resize-se" | "rotate" | "crop-nw" | "crop-ne" | "crop-sw" | "crop-se", event: PointerEvent) => void) | null): void;
-  setCropMode(active: boolean): void;
+  setCropMode(active: boolean, subjectNodeId?: VisualNodeId): void;
   setMode(mode: InputMode): void;
   configureToolbar(callbacks: FloatingToolbarCallbacks): void;
   setToolbarCommands(commands: readonly FloatingToolbarCommandState[], activeStates?: Record<string, boolean>): void;
+  setToolbarVisible(visible: boolean): void;
   openStylePanel(values: Partial<StylePanelValues>): void;
   closeStylePanel(): void;
   openTextEditor(initialText: string): void;

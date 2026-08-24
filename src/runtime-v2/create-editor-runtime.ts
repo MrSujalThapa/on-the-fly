@@ -7,7 +7,9 @@ import {
 } from "../content/storage-client.js";
 import { waitForDocumentReady, waitForReplayTargets } from "../editor/dom/replay-readiness.js";
 import { OTF_TRANSFORM_ATTR, type StoredTransformState } from "../editor/dom/types.js";
-import { readStoredCropInsets } from "../editor/dom/handlers/crop-handler.js";
+import { readStoredCropInsets, resolveCropSubject } from "../editor/dom/handlers/crop-handler.js";
+import { renderedVisibleText } from "../editor/dom/handlers/text-handler.js";
+import { textSubtreeStyleTargets } from "../editor/dom/handlers/style-handler.js";
 import { captureElementDomSnapshot, restoreElementDomSnapshot, type ElementDomSnapshot } from "../editor/dom/dom-placement-snapshot.js";
 import { isExtensionRoot } from "../editor/measurement/scan-guards.js";
 import { createInputRouter } from "./create-input-router.js";
@@ -54,6 +56,7 @@ const STYLE_CSS_MAP: Record<StyleProperty, string> = {
   fontSize: "font-size", fontWeight: "font-weight", textAlign: "text-align", opacity: "opacity",
   boxShadow: "box-shadow", filter: "filter",
 };
+const TEXT_STYLE_PROPERTIES = new Set<StyleProperty>(["color", "fontSize", "fontWeight", "textAlign"]);
 
 interface PreviewTarget {
   nodeId: VisualNodeId;
@@ -163,6 +166,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   let stylePanelOpen = false;
   let textEditorOpen = false;
   let cropMode = false;
+  let toolbarOpen = false;
   let stylePreview: {
     pending: Map<StyleProperty, string>;
     snapshots: Map<HTMLElement, string | null>;
@@ -257,6 +261,8 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     cropMode = false;
     overlays.setCropMode(false);
     selection = normalizeSelection(next.atoms, groups, next.source);
+    if (selection.atoms.length === 0) toolbarOpen = false;
+    overlays.setToolbarVisible(toolbarOpen);
     renderSelection();
   };
 
@@ -420,18 +426,30 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     return nodeId && element ? { nodeId, element } : null;
   };
 
-  const canEditText = (element: HTMLElement): boolean => {
-    if (element.textContent.trim().length === 0) return false;
-    if (element.childElementCount === 0) return true;
-    if (element.querySelector("img, video, svg, input, textarea, select, [contenteditable=true]")) return false;
-    return Array.from(element.querySelectorAll<HTMLElement>("*")).filter(
-      (candidate) => candidate.childElementCount === 0 && candidate.textContent.trim().length > 0,
-    ).length === 1;
+  const textSurface = (element: HTMLElement): HTMLElement | null => {
+    const full = renderedVisibleText(element);
+    if (!full) return null;
+    const hasUnsafeMedia = Boolean(element.querySelector("img, video, input, textarea, select, [contenteditable=true]"));
+    if (element.matches("p, span, button, a, label, h1, h2, h3, h4, h5, h6, li") && !hasUnsafeMedia) return element;
+    if (element.childElementCount === 0) return element;
+    if (
+      element.tagName === "DIV" &&
+      !hasUnsafeMedia &&
+      !element.querySelector("p, button, a, label, h1, h2, h3, h4, h5, h6, li, article, section, ul, ol")
+    ) {
+      return element;
+    }
+    const candidates = Array.from(element.querySelectorAll<HTMLElement>("p, span, button, a, label, h1, h2, h3, h4, h5, h6, li"))
+      .filter((candidate) => renderedVisibleText(candidate) === full && !candidate.querySelector("img, video, input, textarea, select"))
+      .filter((candidate) => !Array.from(candidate.children).some((child) => child.matches("p, button, a, label, h1, h2, h3, h4, h5, h6, li")));
+    return candidates.length === 1 ? candidates[0] ?? null : null;
   };
 
-  const canCrop = (element: HTMLElement): boolean =>
-    (element instanceof HTMLImageElement || element instanceof HTMLVideoElement) &&
-    (readStoredTransformState(element)?.rotate ?? 0) === 0;
+  const canEditText = (element: HTMLElement): boolean => Boolean(textSurface(element));
+  const canCrop = (element: HTMLElement): boolean => {
+    const subject = resolveCropSubject(element);
+    return Boolean(subject && (readStoredTransformState(subject)?.rotate ?? 0) === 0);
+  };
 
   const restoreStylePreview = (): void => {
     if (!stylePreview) return;
@@ -464,7 +482,13 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       if (!originals) { originals = new Map(); stylePreview.originals.set(element, originals); }
       if (!originals.has(property)) originals.set(property, getComputedStyle(element).getPropertyValue(STYLE_CSS_MAP[property]));
       for (const [pendingProperty, pendingValue] of stylePreview.pending) {
-        element.style.setProperty(STYLE_CSS_MAP[pendingProperty], pendingValue);
+        const wantsSubtree = TEXT_STYLE_PROPERTIES.has(pendingProperty) && textSurface(element) !== element;
+        const subtree = wantsSubtree ? textSubtreeStyleTargets(element) : [];
+        const styleTargets = wantsSubtree && subtree.length > 0 ? subtree : wantsSubtree ? [] : [element];
+        for (const styleTarget of styleTargets) {
+          if (!stylePreview.snapshots.has(styleTarget)) stylePreview.snapshots.set(styleTarget, styleTarget.getAttribute("style"));
+          styleTarget.style.setProperty(STYLE_CSS_MAP[pendingProperty], pendingValue);
+        }
       }
     }
     releaseMutationIgnore();
@@ -607,7 +631,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return;
     }
     if (active.kind.startsWith("crop-")) {
-      runtime.cropSelection(cropInsetsAt(active, pointer));
+      const insets = cropInsetsAt(active, pointer);
+      const cropResult = runtime.cropSelection(insets);
+      logV2("crop-gesture-commit", { ok: cropResult.ok, insets, error: cropResult.ok ? undefined : cropResult.error });
       cropMode = false;
       overlays.setCropMode(false);
       refreshToolbar();
@@ -631,8 +657,15 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     event: PointerEvent,
   ): void => {
     if (transformGesture) finishTransformGesture(false);
-    const roots = effectRoots(selectedIds());
+    let roots = effectRoots(selectedIds());
     if (kind.startsWith("crop-") && roots.length !== 1) return;
+    if (kind.startsWith("crop-")) {
+      const selected = roots[0] ? visualModel.bind(roots[0]) : null;
+      const subject = selected ? resolveCropSubject(selected) : null;
+      const subjectId = subject ? visualModel.adopt(subject) : null;
+      if (!subjectId) return;
+      roots = [subjectId];
+    }
     const measured = visualModel.measure(roots);
     const targets: TransformPreviewTarget[] = [];
     for (const nodeId of roots) {
@@ -666,6 +699,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       ...(kind.startsWith("crop-") && targets[0] ? { cropInsets: readStoredCropInsets(targets[0].element) } : {}),
     };
     transformGesture = active;
+    if (kind.startsWith("crop-")) logV2("crop-gesture-start", { roots, startUnion, pointer: active.startPointer });
     const onMove = (move: PointerEvent): void => {
       if (transformGesture === active) scheduleTransformPreview({ x: move.clientX, y: move.clientY });
     };
@@ -839,6 +873,18 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       keyboardTarget.matches("input, textarea, select") || keyboardTarget.isContentEditable
     );
     if (textEntry) return;
+    if (
+      event.key.toLowerCase() === "t" &&
+      !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+    ) {
+      if (selectedIds().length > 0) {
+        event.preventDefault();
+        toolbarOpen = !toolbarOpen;
+        overlays.setToolbarVisible(toolbarOpen);
+        refreshToolbar();
+      }
+      return;
+    }
     if (event.key === "Escape") {
       if (transformGesture) {
         finishTransformGesture(false);
@@ -1348,21 +1394,28 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         for (const [property, value] of styles) {
           const previousValue = getComputedStyle(element).getPropertyValue(STYLE_CSS_MAP[property]);
           const drafted = buildStyleOperation({ nodeId, signature: identity.signature, rect }, property, value, { pageKey: pageKey(), sourceCommand: "style" }, previousValue, element);
-          operations.push({ ...drafted, id: nextOperationId("style"), status: "approved", target: { nodeId, signature: identity.signature } });
+          const wantsSubtree = TEXT_STYLE_PROPERTIES.has(property) && textSurface(element) !== element;
+          const subtree = wantsSubtree ? textSubtreeStyleTargets(element) : [];
+          if (wantsSubtree && subtree.length === 0) continue;
+          const scope = wantsSubtree ? "text-subtree" as const : "self" as const;
+          operations.push({ ...drafted, payload: { ...drafted.payload, scope }, id: nextOperationId("style"), status: "approved", target: { nodeId, signature: identity.signature } });
         }
       }
+      if (operations.length === 0) return { ok: false, error: "empty_style_transaction", rolledBack: false };
       const result = executor.executeTransaction({ operations });
       if (result.ok) { renderSelection(); refreshSave(); }
       return result;
     },
     editSelectedText(value): ExecutionResult {
       const selected = singleSelectedElement();
-      if (!selected || !canEditText(selected.element)) return { ok: false, error: "text_target_unsafe", rolledBack: false };
-      const identity = visualModel.durableIdentityOf(selected.nodeId);
-      const rect = visualModel.measure([selected.nodeId]).get(selected.nodeId);
+      const surface = selected ? textSurface(selected.element) : null;
+      const surfaceId = surface ? visualModel.adopt(surface) : null;
+      if (!selected || !surface || !surfaceId) return { ok: false, error: "text_target_unsafe", rolledBack: false };
+      const identity = visualModel.durableIdentityOf(surfaceId);
+      const rect = visualModel.measure([surfaceId]).get(surfaceId);
       if (!identity || !rect) return { ok: false, error: "text_target_unresolved", rolledBack: false };
-      const drafted = buildTextOperation({ nodeId: selected.nodeId, signature: identity.signature, rect }, value, { pageKey: pageKey(), sourceCommand: "text-edit" }, selected.element.textContent, selected.element);
-      const operation = { ...drafted, id: nextOperationId("text"), status: "approved" as const, target: { nodeId: selected.nodeId, signature: identity.signature } };
+      const drafted = buildTextOperation({ nodeId: surfaceId, signature: identity.signature, rect }, value, { pageKey: pageKey(), sourceCommand: "text-edit" }, renderedVisibleText(surface), surface);
+      const operation = { ...drafted, id: nextOperationId("text"), status: "approved" as const, target: { nodeId: surfaceId, signature: identity.signature } };
       ignoreMutations = true;
       const result = executor.executeTransaction({ operations: [operation] });
       releaseMutationIgnore();
@@ -1371,12 +1424,14 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     },
     cropSelection(insets): ExecutionResult {
       const selected = singleSelectedElement();
-      if (!selected || !canCrop(selected.element)) return { ok: false, error: "crop_target_unsafe", rolledBack: false };
-      const identity = visualModel.durableIdentityOf(selected.nodeId);
-      const rect = visualModel.measure([selected.nodeId]).get(selected.nodeId);
+      const subject = selected ? resolveCropSubject(selected.element) : null;
+      const subjectId = subject ? visualModel.adopt(subject) : null;
+      if (!selected || !subject || !subjectId || !canCrop(selected.element)) return { ok: false, error: "crop_target_unsafe", rolledBack: false };
+      const identity = visualModel.durableIdentityOf(subjectId);
+      const rect = visualModel.measure([subjectId]).get(subjectId);
       if (!identity || !rect) return { ok: false, error: "crop_target_unresolved", rolledBack: false };
-      const drafted = buildCropOperation({ nodeId: selected.nodeId, signature: identity.signature, rect }, insets, { pageKey: pageKey(), sourceCommand: "crop" });
-      const operation: CropOperation = { ...drafted, id: nextOperationId("crop"), status: "approved", target: { nodeId: selected.nodeId, signature: identity.signature } };
+      const drafted = buildCropOperation({ nodeId: subjectId, signature: identity.signature, rect }, insets, { pageKey: pageKey(), sourceCommand: "crop" });
+      const operation: CropOperation = { ...drafted, id: nextOperationId("crop"), status: "approved", target: { nodeId: subjectId, signature: identity.signature } };
       ignoreMutations = true;
       const result = executor.executeTransaction({ operations: [operation] });
       releaseMutationIgnore();
@@ -1715,15 +1770,18 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       }
       if (commandId === "text-edit") {
         const selected = singleSelectedElement();
-        if (!selected || !canEditText(selected.element)) return;
+        const surface = selected ? textSurface(selected.element) : null;
+        if (!surface) return;
         textEditorOpen = true;
-        overlays.openTextEditor(selected.element.textContent);
+        overlays.openTextEditor(renderedVisibleText(surface));
         refreshToolbar();
         return;
       }
       if (commandId === "crop-mode") {
         cropMode = !cropMode;
-        overlays.setCropMode(cropMode);
+        const selected = singleSelectedElement();
+        const subject = selected && cropMode ? resolveCropSubject(selected.element) : null;
+        overlays.setCropMode(cropMode, subject ? visualModel.adopt(subject) ?? undefined : undefined);
         refreshToolbar();
       }
     },

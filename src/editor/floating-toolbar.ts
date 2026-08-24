@@ -216,7 +216,7 @@ export class FloatingToolbar {
       this.toolbarEl.style.visibility = "visible";
 
       if (this.styleOpen) {
-        this.positionStylePanel(true);
+        this.positionStylePanel();
       }
       this.schedulePositionRefresh();
     });
@@ -235,7 +235,7 @@ export class FloatingToolbar {
     if (this.toolbarWasDragged) return;
     this.positionToolbarNearSelection(anchorRect);
     this.updateToolButtonPositions();
-    if (this.styleOpen) this.positionStylePanel(true);
+    if (this.styleOpen) this.positionStylePanel();
   }
 
   hideToolbarOnly(): void {
@@ -265,7 +265,7 @@ export class FloatingToolbar {
       this.positionStylePanel(true);
       requestAnimationFrame(() => {
         this.stylePanelEl?.classList.add("is-open");
-        this.positionStylePanel(true);
+        this.positionStylePanel();
       });
       this.styleOpen = true;
       this.attachOutsideListener();
@@ -335,6 +335,9 @@ export class FloatingToolbar {
     textarea.className = "otf-text-editor-input";
     textarea.value = initialText;
     textarea.setAttribute("aria-label", "Edit text");
+    textarea.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+    });
     this.textEditorEl.appendChild(textarea);
 
     this.textEditorEl.style.left = `${String(rect.x)}px`;
@@ -701,7 +704,7 @@ export class FloatingToolbar {
       this.positionToolbarNearSelection(this.lastAnchor);
       this.updateToolButtonPositions();
       if (this.styleOpen) {
-        this.positionStylePanel(true);
+        this.positionStylePanel();
       }
     });
   }
@@ -867,6 +870,10 @@ export class FloatingToolbar {
     }
 
     this.panelWasDragged = true;
+    startEvent.preventDefault();
+    startEvent.stopPropagation();
+    const header = startEvent.currentTarget instanceof HTMLElement ? startEvent.currentTarget : this.stylePanelEl;
+    header.setPointerCapture(startEvent.pointerId);
     const startX = startEvent.clientX;
     const startY = startEvent.clientY;
     const currentX = Number.parseFloat(this.stylePanelEl.style.getPropertyValue("--panel-x")) || 0;
@@ -879,13 +886,16 @@ export class FloatingToolbar {
       this.stylePanelEl?.style.setProperty("--panel-y", `${String(y)}px`);
     };
 
-    const onUp = (): void => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
+    const onUp = (event: PointerEvent): void => {
+      if (header.hasPointerCapture(event.pointerId)) header.releasePointerCapture(event.pointerId);
+      header.removeEventListener("pointermove", onMove);
+      header.removeEventListener("pointerup", onUp);
+      header.removeEventListener("pointercancel", onUp);
     };
 
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    header.addEventListener("pointermove", onMove);
+    header.addEventListener("pointerup", onUp);
+    header.addEventListener("pointercancel", onUp);
   }
 
   private attachOutsideListener(): void {
@@ -915,7 +925,7 @@ export class FloatingToolbar {
       this.positionToolbarNearSelection(this.lastAnchor);
       this.updateToolButtonPositions();
       if (this.styleOpen) {
-        this.positionStylePanel(true);
+        this.positionStylePanel();
       }
     };
     window.addEventListener("resize", this.viewportListener);
