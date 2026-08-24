@@ -39,6 +39,14 @@ import {
   normalizeRect,
 } from "./lasso-selection.js";
 import {
+  buildInsidePolygonSamples,
+  isMeaningfulFreeform,
+  polygonQualifiesRect,
+  shouldAppendFreeformPoint,
+  simplifyPolygon,
+  type Point,
+} from "./polygon-geometry.js";
+import {
   emptySelection,
   flattenSelection,
   normalizeSelection,
@@ -92,7 +100,16 @@ interface LassoGesture {
   active: boolean;
 }
 
-type PointerGesture = MovingGesture | LassoGesture;
+interface FreeformLassoGesture {
+  kind: "freeform";
+  pointerId: number;
+  startPointer: { x: number; y: number };
+  points: Point[];
+  additive: boolean;
+}
+
+type PointerGesture = MovingGesture | LassoGesture | FreeformLassoGesture;
+type ArmedLassoMode = "rectangle" | "freeform" | null;
 
 interface TransformPreviewTarget {
   nodeId: VisualNodeId;
@@ -155,6 +172,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   let groupByMember = new Map<VisualNodeId, GroupId>();
   let groupCounter = 0;
   let gesture: PointerGesture | null = null;
+  let armedLassoMode: ArmedLassoMode = null;
   let transformGesture: TransformGesture | null = null;
   let ignoreMutations = false;
   const releaseMutationIgnore = (): void => {
@@ -301,6 +319,36 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     return ids;
   };
 
+  const resolveFreeform = (polygon: readonly Point[]): VisualNodeId[] => {
+    const seenElements = new Set<HTMLElement>();
+    const seenIds = new Set<VisualNodeId>();
+    const ids: VisualNodeId[] = [];
+    const samples = buildInsidePolygonSamples(polygon);
+    for (const point of samples) {
+      for (const candidate of root.elementsFromPoint(point.x, point.y)) {
+        if (!(candidate instanceof HTMLElement) || seenElements.has(candidate) || isExtensionRoot(candidate)) continue;
+        seenElements.add(candidate);
+        const nodeId = visualModel.adopt(candidate);
+        const node = nodeId ? visualModel.get(nodeId) : null;
+        if (!nodeId || !node?.capabilities.movable || seenIds.has(nodeId)) continue;
+        const measured = visualModel.measure([nodeId]).get(nodeId);
+        if (!measured || measured.width <= 1 || measured.height <= 1 || !polygonQualifiesRect(polygon, measured)) continue;
+        seenIds.add(nodeId);
+        ids.push(nodeId);
+      }
+    }
+    return dropNestedAncestors(ids);
+  };
+
+  const dropNestedAncestors = (ids: readonly VisualNodeId[]): VisualNodeId[] => {
+    const bound = ids
+      .map((id) => ({ id, element: visualModel.bind(id) }))
+      .filter((entry): entry is { id: VisualNodeId; element: HTMLElement } => Boolean(entry.element));
+    return bound
+      .filter((entry) => !bound.some((other) => other.element !== entry.element && entry.element.contains(other.element)))
+      .map((entry) => entry.id);
+  };
+
   const reapplyActive = (): void => {
     const checkpoint = projectCanonicalCheckpoint(ledger.activeOperations());
     if (!checkpoint.ok) {
@@ -409,8 +457,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   const cancelGesture = (): void => {
     restorePreview();
     gesture = null;
+    armedLassoMode = null;
     overlays.clearLasso();
     overlays.refreshFromLiveGeometry();
+    refreshToolbar();
   };
 
   const effectRoots = (nodeIds: readonly VisualNodeId[]): VisualNodeId[] => {
@@ -526,11 +576,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       { id: "style-panel", enabled: hasSelection },
       { id: "agent", enabled: false },
       { id: "text-edit", enabled: Boolean(selected && canEditText(selected.element)) },
-      { id: "lasso", enabled: false },
+      { id: "lasso", enabled: true },
       { id: "undo", enabled: ledger.canUndo() },
       { id: "redo", enabled: ledger.canRedo() },
       { id: "more", enabled: false },
-    ], { "crop-mode": cropMode, "style-panel": stylePanelOpen, "text-edit": textEditorOpen });
+    ], { "crop-mode": cropMode, "style-panel": stylePanelOpen, "text-edit": textEditorOpen, "lasso": armedLassoMode !== null });
   };
 
   const initialTransformState = (element: HTMLElement): StoredTransformState => {
@@ -768,6 +818,31 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     if (event.target instanceof Element && isExtensionRoot(event.target)) {
       return;
     }
+    if (overlays.isLassoChooserOpen()) {
+      overlays.closeLassoChooser();
+      return;
+    }
+    if (armedLassoMode === "rectangle") {
+      gesture = {
+        kind: "lasso",
+        startPointer: { x: event.clientX, y: event.clientY },
+        shiftKey: event.shiftKey,
+        picked: null,
+        active: false,
+      };
+      return;
+    }
+    if (armedLassoMode === "freeform") {
+      gesture = {
+        kind: "freeform",
+        pointerId: event.pointerId,
+        startPointer: { x: event.clientX, y: event.clientY },
+        points: [{ x: event.clientX, y: event.clientY }],
+        additive: event.shiftKey,
+      };
+      overlays.showFreeformLasso(gesture.points);
+      return;
+    }
     const picked = visualModel.pick(event.clientX, event.clientY);
     if (event.shiftKey) {
       gesture = {
@@ -810,6 +885,15 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     }
     const dx = event.clientX - gesture.startPointer.x;
     const dy = event.clientY - gesture.startPointer.y;
+    if (gesture.kind === "freeform") {
+      const next = { x: event.clientX, y: event.clientY };
+      const last = gesture.points[gesture.points.length - 1];
+      if (shouldAppendFreeformPoint(last, next) && gesture.points.length < 1024) {
+        gesture.points.push(next);
+      }
+      overlays.showFreeformLasso(gesture.points);
+      return;
+    }
     if (gesture.kind === "lasso") {
       if (!gesture.active && Math.hypot(dx, dy) < LASSO_THRESHOLD_PX) return;
       gesture.active = true;
@@ -832,9 +916,37 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     const active = gesture;
     const dx = event.clientX - active.startPointer.x;
     const dy = event.clientY - active.startPointer.y;
-    if (active.kind === "lasso") {
+    if (active.kind === "freeform") {
+      const rawCount = active.points.length;
+      const polygon = simplifyPolygon(active.points);
+      const additive = active.additive;
       gesture = null;
+      armedLassoMode = null;
       overlays.clearLasso();
+      if (isMeaningfulFreeform(polygon)) {
+        const started = performance.now();
+        const samples = buildInsidePolygonSamples(polygon);
+        runtime.selectPolygon(polygon, additive ? "add" : "replace");
+        overlays.setLassoDiagnostics({
+          raw: rawCount,
+          simplified: polygon.length,
+          samples: samples.length,
+          selected: selectedIds().length,
+          ms: Math.round(performance.now() - started),
+        });
+      }
+      refreshToolbar();
+      return;
+    }
+    if (active.kind === "lasso") {
+      const armed = armedLassoMode === "rectangle";
+      gesture = null;
+      armedLassoMode = null;
+      overlays.clearLasso();
+      if (!active.active && armed) {
+        refreshToolbar();
+        return;
+      }
       if (!active.active && active.picked) {
         setSelection(toggleAtom(selection, atomForNode(active.picked)));
       } else if (active.active) {
@@ -845,6 +957,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       } else if (!active.shiftKey) {
         runtime.clearSelection();
       }
+      refreshToolbar();
       return;
     }
     restorePreview();
@@ -902,6 +1015,16 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return;
     }
     if (event.key === "Escape") {
+      if (overlays.closeLassoChooser()) {
+        event.preventDefault();
+        return;
+      }
+      if (armedLassoMode && !gesture) {
+        armedLassoMode = null;
+        refreshToolbar();
+        event.preventDefault();
+        return;
+      }
       if (transformGesture) {
         finishTransformGesture(false);
       } else if (gesture) {
@@ -1080,6 +1203,16 @@ export function createEditorRuntime(root: Document): EditorRuntime {
           refreshSave();
         },
       });
+      const view = root.defaultView;
+      if (view) {
+        owner().listen(view, "blur", () => {
+          if (gesture?.kind === "freeform" || gesture?.kind === "lasso" && armedLassoMode) cancelGesture();
+          else if (armedLassoMode && !gesture) { armedLassoMode = null; refreshToolbar(); }
+        });
+        owner().listen(view, "scroll", () => {
+          if (gesture?.kind === "freeform") cancelGesture();
+        }, true);
+      }
       attachInvalidation();
       renderSelection();
     },
@@ -1110,6 +1243,16 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const atoms = resolveLasso(rect).map(atomForNode);
       setSelection(selectionFromAtoms(mode === "add" ? [...selection.atoms, ...atoms] : atoms, "lasso"));
       return selection;
+    },
+    selectPolygon(points, mode) {
+      const atoms = resolveFreeform(points).map(atomForNode);
+      setSelection(selectionFromAtoms(mode === "add" ? [...selection.atoms, ...atoms] : atoms, "lasso"));
+      return selection;
+    },
+    armLasso(mode) {
+      overlays.closeLassoChooser();
+      armedLassoMode = mode;
+      refreshToolbar();
     },
     clearSelection() {
       setSelection(emptySelection());
@@ -1778,7 +1921,17 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     onCommand(commandId) {
       if (commandId === "undo") { runtime.undo(); return; }
       if (commandId === "redo") { runtime.redo(); return; }
+      if (commandId === "lasso") {
+        if (stylePanelOpen) { stylePanelOpen = false; cancelStylePreview(); overlays.closeStylePanel(); }
+        if (textEditorOpen) { textEditorOpen = false; overlays.closeTextEditor(true); }
+        overlays.toggleLassoChooser();
+        refreshToolbar();
+        return;
+      }
+      if (commandId === "lasso-rectangle") { runtime.armLasso("rectangle"); return; }
+      if (commandId === "lasso-freeform") { runtime.armLasso("freeform"); return; }
       if (commandId === "style-panel") {
+        overlays.closeLassoChooser();
         stylePanelOpen = !stylePanelOpen;
         if (stylePanelOpen) overlays.openStylePanel(stylePanelValues());
         else { cancelStylePreview(); overlays.closeStylePanel(); }
@@ -1786,6 +1939,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         return;
       }
       if (commandId === "text-edit") {
+        overlays.closeLassoChooser();
         const selected = singleSelectedElement();
         const surface = selected ? textSurface(selected.element) : null;
         if (!surface) return;
@@ -1795,6 +1949,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         return;
       }
       if (commandId === "crop-mode") {
+        overlays.closeLassoChooser();
         cropMode = !cropMode;
         const selected = singleSelectedElement();
         const subject = selected && cropMode ? resolveCropSubject(selected.element) : null;

@@ -446,4 +446,48 @@ describe("Runtime V2 editor parity", () => {
     expect(runtime.deleteSelection().ok).toBe(true);
     expect(runtime.ledger.peekUndoTransaction()).toHaveLength(1);
   });
+
+  it("canonicalizes freeform hits onto an explicit group and ignores tiny overlap", () => {
+    const { document, root } = createTestDocument(`<button id="a">A</button><button id="b">B</button><button id="c">C</button>`);
+    const a = byId(root, "a"); const b = byId(root, "b"); const c = byId(root, "c");
+    layoutManagedElement(a, { x: 0, y: 0, width: 40, height: 30 });
+    layoutManagedElement(b, { x: 60, y: 0, width: 40, height: 30 });
+    layoutManagedElement(c, { x: 200, y: 0, width: 80, height: 60 });
+    document.elementsFromPoint = (x) => x < 50 ? [a] : x < 110 ? [b] : [c];
+    const runtime = createEditorRuntime(document);
+    runtime.select(a); runtime.toggleSelection(b);
+    const groupId = present(runtime.groupSelection());
+    runtime.clearSelection();
+    runtime.selectPolygon([{ x: -2, y: -2 }, { x: 50, y: -2 }, { x: 50, y: 40 }, { x: -2, y: 40 }], "replace");
+    expect(runtime.getSelection().atoms).toEqual([{ kind: "group", groupId }]);
+    runtime.clearSelection();
+    runtime.selectPolygon([{ x: 198, y: -1 }, { x: 202, y: -1 }, { x: 202, y: 3 }, { x: 198, y: 3 }], "replace");
+    expect(runtime.selectedNodeIds()).toEqual([]);
+  });
+
+  it("arms freeform so a page drag selects then exits without starting MOVE", () => {
+    const { document, root } = createTestDocument(`<button id="a">A</button><button id="b">B</button>`);
+    const a = byId(root, "a"); const b = byId(root, "b");
+    layoutManagedElement(a, { x: 10, y: 10, width: 40, height: 30 });
+    layoutManagedElement(b, { x: 80, y: 10, width: 40, height: 30 });
+    document.elementsFromPoint = (x) => x < 60 ? [a] : [b];
+    const runtime = createEditorRuntime(document);
+    runtime.start();
+    runtime.select(a);
+    const before = a.getBoundingClientRect().x;
+    runtime.armLasso("freeform");
+    pointer(a, "pointerdown", 20, 20);
+    pointer(a, "pointermove", 40, 40);
+    pointer(a, "pointermove", 120, 40);
+    pointer(a, "pointermove", 120, 8);
+    pointer(a, "pointerup", 20, 8);
+    expect(runtime.selectedNodeIds()).toEqual([runtime.visualModel.adopt(a), runtime.visualModel.adopt(b)]);
+    expect(a.getBoundingClientRect().x).toBe(before);
+    expect(runtime.ledger.isDirty()).toBe(false);
+    pointer(a, "pointerdown", 20, 20);
+    pointer(a, "pointermove", 50, 20);
+    pointer(a, "pointerup", 50, 20);
+    expect(a.getBoundingClientRect().x).not.toBe(before);
+    runtime.stop();
+  });
 });

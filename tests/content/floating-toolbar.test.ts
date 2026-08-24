@@ -311,6 +311,30 @@ describe("FloatingToolbar", () => {
 
     shell.unmount();
   });
+
+  it("opens a compact lasso chooser and emits mode commands", async () => {
+    const shell = new EditorShell();
+    shell.mount({ onDeactivate: () => undefined });
+    const shadow = shell.getShadowRoot();
+    if (!shadow) throw new Error("expected shadow root");
+    const onCommand = vi.fn();
+    const toolbar = new FloatingToolbar({
+      shadowRoot: shadow,
+      callbacks: { onCommand, onStyleChange: vi.fn(), onTextCommit: vi.fn(), onTextCancel: vi.fn() },
+    });
+    toolbar.mount();
+    toolbar.renderCommandStates([{ id: "lasso", enabled: true }], { x: 40, y: 40, width: 120, height: 36 });
+    await nextFrame();
+    toolbar.toggleLassoChooser();
+    expect(toolbar.isLassoChooserOpen()).toBe(true);
+    const chooser = shadow.querySelector(".otf-lasso-chooser") as HTMLElement;
+    expect(chooser.hidden).toBe(false);
+    expect(chooser.getBoundingClientRect().width).toBeLessThanOrEqual(180);
+    (shadow.querySelector('[data-lasso-mode="rectangle"]') as HTMLButtonElement).click();
+    expect(onCommand).toHaveBeenCalledWith("lasso-rectangle");
+    expect(toolbar.isLassoChooserOpen()).toBe(false);
+    shell.unmount();
+  });
 });
 
 function nextFrame(): Promise<void> {

@@ -22,6 +22,7 @@ const SAVE_BUTTON_CLASS = "otf-save-button";
 const OUTLINE_CLASS = "otf-selection-outline";
 const MEMBER_OUTLINE_CLASS = "otf-selection-member-outline";
 const LASSO_CLASS = "otf-lasso";
+const FREEFORM_LASSO_CLASS = "otf-freeform-lasso";
 const HANDLE_CLASS = "otf-transform-handle";
 const CROP_HANDLE_CLASS = "otf-crop-handle";
 
@@ -102,6 +103,21 @@ function overlayStyles(doc: Document): HTMLStyleElement {
       background: rgba(37, 99, 235, 0.08);
       pointer-events: none;
     }
+    .${FREEFORM_LASSO_CLASS} {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+      pointer-events: none;
+    }
+    .${FREEFORM_LASSO_CLASS} path {
+      fill: rgba(37, 99, 235, 0.08);
+      fill-rule: evenodd;
+      stroke: #2563eb;
+      stroke-width: 1;
+      pointer-events: none;
+    }
     .${HANDLE_CLASS} { position: absolute; width: 10px; height: 10px; box-sizing: border-box; border: 2px solid currentColor; background: white; color: #2563eb; border-radius: 50%; pointer-events: auto; }
     .otf-overlay-layer[data-selection-kind="group"] .${HANDLE_CLASS} { color: #7c3aed; }
     .${HANDLE_CLASS}[data-handle="resize-nw"] { left: -6px; top: -6px; cursor: nwse-resize; }
@@ -141,6 +157,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
   let outline: HTMLElement | null = null;
   let memberOutlines: HTMLElement[] = [];
   let lasso: HTMLElement | null = null;
+  let freeformLasso: SVGSVGElement | null = null;
   let handlePointerDown: ((kind: "resize-nw" | "resize-ne" | "resize-sw" | "resize-se" | "rotate" | "crop-nw" | "crop-ne" | "crop-sw" | "crop-se", event: PointerEvent) => void) | null = null;
   let rafId = 0;
   let mode: InputMode = "edit";
@@ -420,6 +437,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       outline = null;
       memberOutlines = [];
       lasso = null;
+      freeformLasso = null;
       saveButton = null;
       indicatorLabel = null;
       selected = [];
@@ -441,6 +459,8 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     },
     showLasso(rect) {
       if (!layer) return;
+      freeformLasso?.remove();
+      freeformLasso = null;
       if (!lasso) {
         lasso = deps.document.createElement("div");
         lasso.className = LASSO_CLASS;
@@ -448,9 +468,43 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       }
       position(lasso, rect);
     },
+    showFreeformLasso(points) {
+      if (!layer || points.length === 0) return;
+      lasso?.remove();
+      lasso = null;
+      if (!freeformLasso) {
+        freeformLasso = deps.document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        freeformLasso.setAttribute("class", FREEFORM_LASSO_CLASS);
+        const path = deps.document.createElementNS("http://www.w3.org/2000/svg", "path");
+        freeformLasso.append(path);
+        layer.append(freeformLasso);
+      }
+      const path = freeformLasso.querySelector("path");
+      if (!path) return;
+      const first = points[0];
+      if (!first) return;
+      const body = points.slice(1).map((point) => `L ${String(point.x)} ${String(point.y)}`).join(" ");
+      path.setAttribute("d", `M ${String(first.x)} ${String(first.y)} ${body} Z`);
+    },
     clearLasso() {
       lasso?.remove();
       lasso = null;
+      freeformLasso?.remove();
+      freeformLasso = null;
+    },
+    toggleLassoChooser() {
+      toolbar?.toggleLassoChooser();
+    },
+    closeLassoChooser() {
+      return toolbar?.closeLassoChooser() ?? false;
+    },
+    isLassoChooserOpen() {
+      return toolbar?.isLassoChooserOpen() ?? false;
+    },
+    setLassoDiagnostics(stats) {
+      if (!host) return;
+      if (stats) host.setAttribute("data-otf-freeform-stats", JSON.stringify(stats));
+      else host.removeAttribute("data-otf-freeform-stats");
     },
     refreshFromLiveGeometry() {
       render(true);
@@ -463,6 +517,8 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       toolbar?.hide();
       lasso?.remove();
       lasso = null;
+      freeformLasso?.remove();
+      freeformLasso = null;
     },
     selectionOutlineRect() {
       return measureSelected().union;

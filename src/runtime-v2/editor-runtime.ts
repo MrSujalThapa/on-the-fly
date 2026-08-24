@@ -43,6 +43,8 @@ export interface EditorRuntime {
   select(element: HTMLElement): VisualNodeId | null;
   toggleSelection(element: HTMLElement): VisualNodeId | null;
   selectRect(rect: IntendedRect, mode: "add" | "replace"): RuntimeSelection;
+  selectPolygon(points: readonly { x: number; y: number }[], mode: "add" | "replace"): RuntimeSelection;
+  armLasso(mode: "rectangle" | "freeform"): void;
   clearSelection(): void;
   getSelection(): RuntimeSelection;
   selectedNodeIds(): readonly VisualNodeId[];

@@ -60,7 +60,7 @@ const COMMAND_LAYOUT: Array<{ id: string; tool: string; label: string; at: numbe
   { id: "style-panel", tool: "style", label: "Style", at: 0.18 },
   { id: "agent", tool: "agent", label: "Agent (coming soon)", at: 0.3 },
   { id: "text-edit", tool: "text", label: "Edit text", at: 0.42 },
-  { id: "lasso", tool: "lasso", label: "Lasso (coming soon)", at: 0.54 },
+  { id: "lasso", tool: "lasso", label: "Lasso", at: 0.54 },
   { id: "undo", tool: "undo", label: "Undo", at: 0.66 },
   { id: "redo", tool: "redo", label: "Redo", at: 0.78 },
   { id: "more", tool: "more", label: "More (coming soon)", at: 0.9 },
@@ -86,8 +86,10 @@ export class FloatingToolbar {
   private toolbarEl: HTMLElement | null = null;
   private stylePanelEl: HTMLElement | null = null;
   private textEditorEl: HTMLElement | null = null;
+  private lassoChooserEl: HTMLElement | null = null;
   private styleOpen = false;
   private textEditorOpen = false;
+  private lassoChooserOpen = false;
   private toolbarWasDragged = false;
   private panelWasDragged = false;
   private styleAnchorButton: HTMLButtonElement | null = null;
@@ -110,7 +112,7 @@ export class FloatingToolbar {
 
     const staleUi = Array.from(
       this.shadowRoot.querySelectorAll<HTMLElement>(
-        '[data-otf-ui="toolbar"], [data-otf-ui="style-panel"], [data-otf-ui="text-editor"]',
+        '[data-otf-ui="toolbar"], [data-otf-ui="style-panel"], [data-otf-ui="text-editor"], [data-otf-ui="lasso-chooser"]',
       ),
     );
     if (staleUi.length > 0) {
@@ -143,7 +145,15 @@ export class FloatingToolbar {
     this.textEditorEl.setAttribute("data-otf-ui", "text-editor");
     this.textEditorEl.hidden = true;
 
-    this.shadowRoot.append(this.toolbarEl, this.stylePanelEl, this.textEditorEl);
+    this.lassoChooserEl = document.createElement("div");
+    this.lassoChooserEl.className = "otf-lasso-chooser";
+    this.lassoChooserEl.setAttribute("data-otf-ui", "lasso-chooser");
+    this.lassoChooserEl.setAttribute("role", "menu");
+    this.lassoChooserEl.hidden = true;
+    this.lassoChooserEl.innerHTML = createLassoChooserMarkup();
+    this.wireLassoChooser();
+
+    this.shadowRoot.append(this.toolbarEl, this.stylePanelEl, this.textEditorEl, this.lassoChooserEl);
   }
 
   unmount(): void {
@@ -154,11 +164,14 @@ export class FloatingToolbar {
     this.toolbarEl?.remove();
     this.stylePanelEl?.remove();
     this.textEditorEl?.remove();
+    this.lassoChooserEl?.remove();
     this.toolbarEl = null;
     this.stylePanelEl = null;
     this.textEditorEl = null;
+    this.lassoChooserEl = null;
     this.styleOpen = false;
     this.textEditorOpen = false;
+    this.lassoChooserOpen = false;
     this.lastAnchor = null;
   }
 
@@ -218,6 +231,9 @@ export class FloatingToolbar {
       if (this.styleOpen) {
         this.positionStylePanel();
       }
+      if (this.lassoChooserOpen) {
+        this.positionLassoChooser();
+      }
       this.schedulePositionRefresh();
     });
   }
@@ -226,6 +242,7 @@ export class FloatingToolbar {
     this.hideToolbarOnly();
     this.closeStylePanel();
     this.closeTextEditor(true);
+    this.closeLassoChooser();
     this.lastAnchor = null;
   }
 
@@ -236,6 +253,7 @@ export class FloatingToolbar {
     this.positionToolbarNearSelection(anchorRect);
     this.updateToolButtonPositions();
     if (this.styleOpen) this.positionStylePanel();
+    if (this.lassoChooserOpen) this.positionLassoChooser();
   }
 
   hideToolbarOnly(): void {
@@ -255,6 +273,7 @@ export class FloatingToolbar {
       if (!this.toolbarEl || this.toolbarEl.hidden) {
         return;
       }
+      this.closeLassoChooser();
       this.styleAnchorButton =
         this.toolbarEl.querySelector<HTMLButtonElement>('[data-command-id="style-panel"]') ?? null;
       this.panelWasDragged = false;
@@ -281,7 +300,7 @@ export class FloatingToolbar {
     }
     this.styleOpen = false;
     this.stylePanelEl.classList.remove("is-open");
-    this.detachOutsideListener();
+    this.syncOutsideListener();
     window.setTimeout(() => {
       if (this.stylePanelEl && !this.styleOpen) {
         this.stylePanelEl.hidden = true;
@@ -329,6 +348,7 @@ export class FloatingToolbar {
     if (!this.textEditorEl) {
       return;
     }
+    this.closeLassoChooser();
 
     this.textEditorEl.replaceChildren();
     const textarea = document.createElement("textarea");
@@ -405,6 +425,32 @@ export class FloatingToolbar {
     }
   }
 
+  toggleLassoChooser(): void {
+    if (this.lassoChooserOpen) {
+      this.closeLassoChooser();
+      return;
+    }
+    if (this.styleOpen) this.closeStylePanel();
+    if (this.textEditorOpen) this.closeTextEditor(true);
+    if (!this.lassoChooserEl || !this.toolbarEl || this.toolbarEl.hidden) return;
+    this.lassoChooserEl.hidden = false;
+    this.lassoChooserOpen = true;
+    this.positionLassoChooser();
+    this.syncOutsideListener();
+  }
+
+  closeLassoChooser(): boolean {
+    if (!this.lassoChooserOpen) return false;
+    this.lassoChooserOpen = false;
+    if (this.lassoChooserEl) this.lassoChooserEl.hidden = true;
+    this.syncOutsideListener();
+    return true;
+  }
+
+  isLassoChooserOpen(): boolean {
+    return this.lassoChooserOpen;
+  }
+
   private renderToolbarStructure(): void {
     if (!this.toolbarEl) {
       return;
@@ -470,6 +516,38 @@ export class FloatingToolbar {
 
     this.makeToolbarDraggable();
     this.makeToolbarRotatable();
+  }
+
+  private wireLassoChooser(): void {
+    if (!this.lassoChooserEl) return;
+    this.lassoChooserEl.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    for (const button of Array.from(this.lassoChooserEl.querySelectorAll<HTMLButtonElement>("[data-lasso-mode]"))) {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const mode = button.getAttribute("data-lasso-mode");
+        if (mode === "rectangle" || mode === "freeform") {
+          this.closeLassoChooser();
+          this.callbacks.onCommand(`lasso-${mode}`);
+        }
+      });
+    }
+  }
+
+  private positionLassoChooser(): void {
+    if (!this.lassoChooserEl || !this.toolbarEl) return;
+    const button = this.toolbarEl.querySelector<HTMLButtonElement>('[data-command-id="lasso"]');
+    const rect = button?.getBoundingClientRect();
+    if (!rect) return;
+    const width = 168;
+    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
+    const top = rect.bottom + 10;
+    const maxTop = Math.max(8, window.innerHeight - 96);
+    this.lassoChooserEl.style.left = `${String(left)}px`;
+    this.lassoChooserEl.style.top = `${String(Math.min(top, maxTop))}px`;
   }
 
   private wireStylePanel(): void {
@@ -907,9 +985,15 @@ export class FloatingToolbar {
       if (this.isInsideOtfUi(event)) {
         return;
       }
+      this.closeLassoChooser();
       this.closeStylePanel();
     };
     window.addEventListener("pointerdown", this.outsidePointerListener, true);
+  }
+
+  private syncOutsideListener(): void {
+    if (this.styleOpen || this.lassoChooserOpen) this.attachOutsideListener();
+    else this.detachOutsideListener();
   }
 
   private detachOutsideListener(): void {
@@ -929,6 +1013,9 @@ export class FloatingToolbar {
       this.updateToolButtonPositions();
       if (this.styleOpen) {
         this.positionStylePanel();
+      }
+      if (this.lassoChooserOpen) {
+        this.positionLassoChooser();
       }
     };
     window.addEventListener("resize", this.viewportListener);
@@ -966,6 +1053,19 @@ export class FloatingToolbar {
     style.textContent = CURVED_TOOLBAR_CSS;
     this.shadowRoot.appendChild(style);
   }
+}
+
+function createLassoChooserMarkup(): string {
+  return `
+    <button type="button" class="otf-lasso-option" role="menuitem" data-lasso-mode="rectangle">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="1.5"/></svg>
+      Rectangle
+    </button>
+    <button type="button" class="otf-lasso-option" role="menuitem" data-lasso-mode="freeform">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 15c2.2-4 4.2 3 7-1 2.4-3.4 3.4 4.2 6.2.4 1.4-1.8 2.8-3.2 3.8-3.8"/></svg>
+      Freeform
+    </button>
+  `;
 }
 
 function createToolButton(
@@ -1226,6 +1326,44 @@ const CURVED_TOOLBAR_CSS = `
     stroke: currentColor;
     stroke-width: 2.3;
     fill: none;
+  }
+  .otf-lasso-chooser {
+    position: fixed;
+    z-index: 4;
+    width: 168px;
+    padding: 6px;
+    border-radius: 12px;
+    background: radial-gradient(circle at top left, rgba(255,255,255,0.88), transparent 45%), linear-gradient(145deg, #f6f1e6 0%, #e8dfcf 100%);
+    border: 1px solid rgba(255,255,255,0.65);
+    box-shadow: 0 16px 36px rgba(0,0,0,0.36), inset 0 1px 0 rgba(255,255,255,0.9);
+    color: #202020;
+    pointer-events: auto;
+  }
+  .otf-lasso-chooser[hidden] { display: none; }
+  .otf-lasso-option {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font: 600 13px/1.2 Inter, ui-sans-serif, system-ui, sans-serif;
+    cursor: pointer;
+  }
+  .otf-lasso-option:hover { background: rgba(0,0,0,0.08); }
+  .otf-lasso-option svg {
+    width: 18px;
+    height: 18px;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    flex: none;
   }
   .otf-style-panel {
     position: fixed;

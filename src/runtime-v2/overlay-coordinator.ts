@@ -10,7 +10,12 @@ import type { FloatingToolbarCallbacks, FloatingToolbarCommandState, StylePanelV
 export interface OverlayCoordinator {
   showSelection(nodeIds: readonly VisualNodeId[], kind?: "selection" | "group"): void;
   showLasso(rect: IntendedRect): void;
+  showFreeformLasso(points: readonly { x: number; y: number }[]): void;
   clearLasso(): void;
+  toggleLassoChooser(): void;
+  closeLassoChooser(): boolean;
+  isLassoChooserOpen(): boolean;
+  setLassoDiagnostics(stats: Record<string, number> | null): void;
   refreshFromLiveGeometry(): void;
   clear(): void;
   selectionOutlineRect(): IntendedRect | null;
