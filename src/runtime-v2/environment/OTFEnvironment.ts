@@ -12,6 +12,7 @@ import type {
   ElementCapabilities,
   ElementId,
   ElementObservation,
+  EnvironmentRect,
   GeometrySnapshot,
   OTFEnvironment,
   OTFOperation,
@@ -40,7 +41,7 @@ export interface OTFEnvironmentHost {
   groupIdOf(id: ElementId): string | null;
   capabilities(id: ElementId): ElementCapabilities | null;
   move(nodeIds: readonly ElementId[], dx: number, dy: number): BatchExecutionResult;
-  resize(id: ElementId, width: number, height: number): BatchExecutionResult;
+  resize(ids: readonly ElementId[], toBounds: EnvironmentRect): BatchExecutionResult;
   rotate(ids: readonly ElementId[], degrees: number): BatchExecutionResult;
   layer(id: ElementId, command: LayerCommand): ExecutionResult;
   style(ids: readonly ElementId[], styles: ReadonlyMap<StyleProperty, string>): BatchExecutionResult;
@@ -118,6 +119,47 @@ function pageUrl(document: Document): string {
   return document.defaultView?.location.href ?? "";
 }
 
+function withAfter(host: OTFEnvironmentHost, result: OperationResult, target?: ElementId): OperationResult {
+  if (!result.ok || !target) return result;
+  const rebound = bind(host, target);
+  return rebound.ok ? { ...result, after: geometryOf(rebound.element, host.placement) } : result;
+}
+
+function executeSharedTransform(
+  host: OTFEnvironmentHost,
+  operation: Extract<OTFOperation, { type: "resize" | "rotate" }>,
+): OperationResult {
+  const ids = operation.targets;
+  if (ids.length === 0) {
+    return failResult(environmentError("INVALID_OPERATION", "empty_targets"));
+  }
+  for (const id of ids) {
+    const resolved = bind(host, id);
+    if (!resolved.ok) {
+      logEnv("execute-result", { type: operation.type, target: id, ok: false, error: resolved.error });
+      return failResult(resolved.error, id);
+    }
+  }
+  const first = ids[0];
+  if (!first) return failResult(environmentError("INVALID_OPERATION", "empty_targets"));
+  const firstBound = bind(host, first);
+  const before = firstBound.ok ? geometryOf(firstBound.element, host.placement) : undefined;
+  const executed = operation.type === "resize"
+    ? host.resize(ids, operation.toBounds)
+    : host.rotate(ids, operation.degrees);
+  let result = fromExecution(executed, first, before);
+  result = withAfter(host, result, result.target ?? first);
+  logEnv("execute-result", {
+    type: operation.type,
+    targets: ids,
+    ok: result.ok,
+    operationId: result.operationId,
+    revision: host.ledger.cursor,
+    error: result.error,
+  });
+  return { ...result, revision: host.ledger.cursor };
+}
+
 export function createOTFEnvironment(host: OTFEnvironmentHost): OTFEnvironment {
   const checkpoints = new Map<string, { revision: number; label?: string }>();
   let checkpointCounter = 0;
@@ -145,6 +187,9 @@ export function createOTFEnvironment(host: OTFEnvironmentHost): OTFEnvironment {
       if (!groupId) return failResult(environmentError("INVALID_OPERATION", "group_failed"));
       return { ok: true, operationId: groupId, revision: host.ledger.cursor };
     }
+    if (operation.type === "resize" || operation.type === "rotate") {
+      return executeSharedTransform(host, operation);
+    }
 
     const target = operation.target;
     const resolved = bind(host, target);
@@ -157,12 +202,6 @@ export function createOTFEnvironment(host: OTFEnvironmentHost): OTFEnvironment {
     switch (operation.type) {
       case "move":
         result = fromExecution(host.move([target], operation.delta.x, operation.delta.y), target, before);
-        break;
-      case "resize":
-        result = fromExecution(host.resize(target, operation.size.width, operation.size.height), target, before);
-        break;
-      case "rotate":
-        result = fromExecution(host.rotate([target], operation.degrees), target, before);
         break;
       case "layer":
         result = fromExecution(host.layer(target, operation.command), target, before);
@@ -185,10 +224,7 @@ export function createOTFEnvironment(host: OTFEnvironmentHost): OTFEnvironment {
       default:
         result = failResult(environmentError("UNSUPPORTED_OPERATION", "unsupported_operation"), target);
     }
-    if (result.ok && result.target) {
-      const rebound = bind(host, result.target);
-      if (rebound.ok) result = { ...result, after: geometryOf(rebound.element, host.placement) };
-    }
+    result = withAfter(host, result, result.target ?? target);
     logEnv("execute-result", {
       type: operation.type,
       target,
@@ -303,6 +339,11 @@ export function createOTFEnvironment(host: OTFEnvironmentHost): OTFEnvironment {
       return executeOne(operation);
     },
 
+    /**
+     * Same-delta MOVE, homogeneous DELETE, and identical STYLE maps run as one ledger
+     * transaction (`atomic: true`). Every other batch is sequential (`atomic: false`)
+     * and stops on the first failure; later operations are not attempted.
+     */
     async executeBatch(operations) {
       if (operations.length === 0) {
         return { ok: false, atomic: true, results: [], error: environmentError("INVALID_OPERATION", "empty_batch") };
@@ -393,6 +434,7 @@ export function createOTFEnvironment(host: OTFEnvironmentHost): OTFEnvironment {
       return { ok: true, atomic: false, results };
     },
 
+    /** Records the current ledger revision. Not a snapshot of document state. */
     async checkpoint(label) {
       checkpointCounter += 1;
       const id = `otf-cp-${host.sessionId}-${String(host.ledger.cursor)}-${checkpointCounter.toString(36)}`;
@@ -401,6 +443,11 @@ export function createOTFEnvironment(host: OTFEnvironmentHost): OTFEnvironment {
       return id;
     },
 
+    /**
+     * Walks undo/redo to the checkpoint revision.
+     * If later history truncated that revision, fails with `checkpoint_invalidated`
+     * and does not silently land on a different revision.
+     */
     async rollback(id) {
       const checkpoint = checkpoints.get(id);
       if (!checkpoint) {

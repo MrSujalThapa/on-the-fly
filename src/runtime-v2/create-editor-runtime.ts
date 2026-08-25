@@ -2262,11 +2262,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     groupIdOf: (id) => groupByMember.get(id) ?? null,
     capabilities: capabilitiesOf,
     move: (nodeIds, dx, dy) => commitMove(nodeIds, dx, dy),
-    resize: (id, width, height) => {
-      const current = visualModel.measure([id]).get(id);
-      if (!current) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
-      return resizeNodes([id], { ...current, width, height });
-    },
+    resize: (ids, toBounds) => resizeNodes(ids, toBounds),
     rotate: (ids, degrees) => rotateNodes(ids, degrees),
     layer: (id, command) => commitLayer(id, command),
     style: (ids, styles) => styleNodes(ids, styles),

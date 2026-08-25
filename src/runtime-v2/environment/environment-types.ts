@@ -119,10 +119,25 @@ export interface ElementQuery {
   readonly visibleOnly?: boolean;
 }
 
+export interface EnvironmentRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
 export type OTFOperation =
   | { readonly type: "move"; readonly target: ElementId; readonly delta: { readonly x: number; readonly y: number } }
-  | { readonly type: "resize"; readonly target: ElementId; readonly size: { readonly width: number; readonly height: number } }
-  | { readonly type: "rotate"; readonly target: ElementId; readonly degrees: number }
+  | {
+      readonly type: "resize";
+      readonly targets: readonly ElementId[];
+      readonly toBounds: EnvironmentRect;
+    }
+  | {
+      readonly type: "rotate";
+      readonly targets: readonly ElementId[];
+      readonly degrees: number;
+    }
   | { readonly type: "layer"; readonly target: ElementId; readonly command: LayerCommand }
   | { readonly type: "style"; readonly target: ElementId; readonly property: StyleProperty; readonly value: string; readonly scope?: "self" | "text-subtree" }
   | { readonly type: "text"; readonly target: ElementId; readonly value: string }
@@ -163,6 +178,13 @@ export interface OperationResult {
   readonly error?: EnvironmentError;
 }
 
+/**
+ * V1 batching is intentionally limited.
+ *
+ * `atomic: true` only for same-delta MOVE, homogeneous DELETE, or identical STYLE maps.
+ * Mixed or other homogeneous batches run sequentially with `atomic: false` and **stop on the
+ * first failure**. Remaining operations are not executed; `results` contains only attempts.
+ */
 export interface BatchResult {
   readonly ok: boolean;
   readonly atomic: boolean;
