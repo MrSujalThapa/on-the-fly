@@ -91,11 +91,14 @@ function parentDiscovery(element: HTMLElement): {
   binding: HTMLElement;
   role: VisualRole;
 } | null {
-  const parent = element.parentElement;
-  if (!(parent instanceof HTMLElement) || !isSelectable(parent)) {
-    return null;
+  let parent = element.parentElement;
+  while (parent instanceof HTMLElement) {
+    if (isSelectable(parent) && (!isPaintlessLayoutWrapper(parent) || isCollection(parent))) {
+      return { binding: parent, role: roleFor(parent) };
+    }
+    parent = parent.parentElement;
   }
-  return { binding: parent, role: roleFor(parent) };
+  return null;
 }
 
 /**

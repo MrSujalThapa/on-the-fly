@@ -88,6 +88,8 @@ describe("PlacementEngine", () => {
     expect(plan.flowSlotRemains).toBe(false);
     expect(plan.payload.detached).toBe(true);
     expect(plan.payload.detachedTop).toBe(130);
+    expect(plan.payload.detachedWidth).toBe(80);
+    expect(plan.payload.detachedHeight).toBe(30);
   });
 
   it("uses the same independent placement when a standalone link leaves its container", () => {

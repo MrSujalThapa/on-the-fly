@@ -12,7 +12,7 @@ import {
 import { resolvePlacementRect, unionRectWithPadding } from "../editor/create/placement-geometry.js";
 import { defaultAppearance, renderCreatedElement } from "../editor/create/render-created-element.js";
 import { appearanceForFamily, sampleAppearance } from "../editor/create/sample-appearance.js";
-import { BACK_LAYER, MANAGED_Z_INDEX_BASELINE, parseLayer } from "../editor/transform/layer-order.js";
+import { MANAGED_Z_INDEX_BASELINE, parseLayer } from "../editor/transform/layer-order.js";
 import { computeDocumentPageKey } from "../content/page-identity.js";
 import {
   loadPageOperations,
@@ -976,9 +976,18 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return;
     }
 
-    const selectedRect = unionRects(visualModel.measure(selectedIds()).values());
-    const hitSelected = Boolean(selectedRect && event.clientX >= selectedRect.x && event.clientX <= selectedRect.x + selectedRect.width && event.clientY >= selectedRect.y && event.clientY <= selectedRect.y + selectedRect.height);
-    if (hitSelected && beginMoveGesture(event, picked)) return;
+    const pickBelongsToSelection = (): boolean => {
+      if (!picked) return false;
+      const ids = selectedIds();
+      if (ids.includes(picked)) return true;
+      const pickedElement = visualModel.bind(picked);
+      if (!pickedElement) return false;
+      return ids.some((id) => {
+        const selected = visualModel.bind(id);
+        return Boolean(selected && (selected.contains(pickedElement) || pickedElement.contains(selected)));
+      });
+    };
+    if (pickBelongsToSelection() && beginMoveGesture(event, picked)) return;
 
     if (picked) {
       const element = visualModel.bind(picked);
@@ -990,6 +999,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       beginMoveGesture(event);
       return;
     }
+
+    const selectedRect = unionRects(visualModel.measure(selectedIds()).values());
+    const hitSelected = Boolean(selectedRect && event.clientX >= selectedRect.x && event.clientX <= selectedRect.x + selectedRect.width && event.clientY >= selectedRect.y && event.clientY <= selectedRect.y + selectedRect.height);
+    if (hitSelected && beginMoveGesture(event)) return;
 
     gesture = {
       kind: "lasso",
@@ -1431,69 +1444,29 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         rollbackWrap();
         return { ok: false, error: "create_missing_id", rolledBack: true };
       }
-      const inPlaceLayer = (nodeId: VisualNodeId, layer: number): ZIndexOperation | null => {
-        const element = visualModel.bind(nodeId);
-        const identity = visualModel.durableIdentityOf(nodeId);
-        if (!element || !identity) return null;
-        const previous = parseLayer(element.style.zIndex || element.ownerDocument.defaultView?.getComputedStyle(element).zIndex);
+      const containerEl = visualModel.bind(containerId);
+      const identity = visualModel.durableIdentityOf(containerId);
+      if (containerEl && identity) {
+        const previous = parseLayer(containerEl.style.zIndex || containerEl.ownerDocument.defaultView?.getComputedStyle(containerEl).zIndex);
         const drafted = buildZIndexOperation(
-          { nodeId, signature: identity.signature, rect: rectFromElement(element) },
-          layer,
+          { nodeId: containerId, signature: identity.signature, rect: rectFromElement(containerEl) },
+          MANAGED_Z_INDEX_BASELINE,
           previous,
           { pageKey: pageKey(), sourceCommand: "container-around-selection" },
-          element,
+          containerEl,
         );
-        return freezeCommittedOperation({
+        const behind: ZIndexOperation = freezeCommittedOperation({
           ...drafted,
-          status: "approved" as const,
-          target: { nodeId, signature: identity.signature },
+          status: "approved",
+          target: { nodeId: containerId, signature: identity.signature },
           metadata: { ...drafted.metadata, sourceCommand: "container-around-selection" },
         });
-      };
-      const layerOps = [
-        inPlaceLayer(containerId, BACK_LAYER),
-        ...members.map((memberId, index) => inPlaceLayer(memberId, MANAGED_Z_INDEX_BASELINE + 10 + index)),
-      ].filter((operation): operation is ZIndexOperation => Boolean(operation));
-      if (layerOps.length > 0) {
         ignoreMutations = true;
-        for (const operation of layerOps) {
-          const layered = executor.executeTransaction({ operations: [operation] });
-          if (!layered.ok && operation.target.nodeId === containerId) {
-            releaseMutationIgnore();
-            rollbackWrap();
-            return layered;
-          }
-          if (!layered.ok) {
-            const element = operation.target.nodeId ? visualModel.bind(operation.target.nodeId) : null;
-            if (element) {
-              const view = element.ownerDocument.defaultView;
-              if (view && view.getComputedStyle(element).position === "static") element.style.position = "relative";
-              element.style.zIndex = String(operation.payload.layer);
-            }
-          }
-        }
+        const layered = executor.executeTransaction({ operations: [behind] });
         releaseMutationIgnore();
+        if (layered.ok) ledger.coalesceLastCommits(ledger.cursor - cursorBefore);
       }
-      const coversMembers = (): boolean => {
-        const containerEl = visualModel.bind(containerId);
-        if (!containerEl) return false;
-        return members.some((memberId) => {
-          const member = visualModel.bind(memberId);
-          if (!member) return false;
-          const box = member.getBoundingClientRect();
-          const stack = root.elementsFromPoint(box.x + box.width / 2, box.y + box.height / 2)
-            .filter((node): node is HTMLElement => node instanceof HTMLElement && !isExtensionRoot(node));
-          const containerAt = stack.indexOf(containerEl);
-          const memberAt = stack.findIndex((node) => node === member || member.contains(node));
-          return containerAt >= 0 && (memberAt < 0 || containerAt < memberAt);
-        });
-      };
-      if (coversMembers()) {
-        rollbackWrap();
-        return { ok: false, error: "wrap_covers_members", rolledBack: true };
-      }
-      ledger.coalesceLastCommits(ledger.cursor - cursorBefore);
-      setSelection(selectionFromAtoms([atomForNode(containerId)], "click"));
+      setSelection(selectionFromAtoms([{ kind: "node", nodeId: containerId }], "click"));
       wrapSessions.set(transactionKey(ledger.peekUndoTransaction()), {
         priorAtoms,
         containerId,

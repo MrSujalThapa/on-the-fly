@@ -57,9 +57,27 @@ export function realizeIndependentPlacement(
   element.style.height = `${String(viewportRect.height)}px`;
   element.style.margin = "0";
   element.style.boxSizing = "border-box";
+  element.style.maxWidth = "none";
+  element.style.maxHeight = "none";
+  element.style.flexGrow = "0";
+  element.style.flexShrink = "0";
   element.style.transform = rotate !== 0 ? `rotate(${String(rotate)}deg)` : "";
   const layer = options?.zIndex ?? element.style.zIndex;
   element.style.zIndex = layer && layer !== "auto" ? layer : INDEPENDENT_BASE_LAYER;
+  const actual = element.getBoundingClientRect();
+  const dx = viewportRect.x - actual.x;
+  const dy = viewportRect.y - actual.y;
+  if (dx !== 0 || dy !== 0) {
+    element.style.left = `${String(left + dx)}px`;
+    element.style.top = `${String(top + dy)}px`;
+  }
+  const sized = element.getBoundingClientRect();
+  const dw = viewportRect.width - sized.width;
+  const dh = viewportRect.height - sized.height;
+  if (dw !== 0 || dh !== 0) {
+    element.style.width = `${String(viewportRect.width + dw)}px`;
+    element.style.height = `${String(viewportRect.height + dh)}px`;
+  }
 }
 
 export interface DetachPlacement {

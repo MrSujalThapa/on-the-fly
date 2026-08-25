@@ -48,7 +48,12 @@ async function invokeChrome(page: Page, className?: string, data?: [string, stri
   return true;
 }
 async function dismissJumpMenu(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Close jump menu" }).click({ timeout: 800 }).catch(() => undefined);
+  await page.evaluate(() => {
+    const close = Array.from(document.querySelectorAll("button")).find((button) =>
+      /close jump menu/i.test(`${button.getAttribute("aria-label") ?? ""} ${button.textContent ?? ""}`),
+    );
+    close?.click();
+  });
 }
 
 async function openToolbar(page: Page): Promise<void> {
@@ -187,10 +192,16 @@ test("toolbar, created movement, wrap, layer, and resize after move on LinkedIn"
   expect(await chromeNode(page, "otf-curved-toolbar")).toBeNull();
   const search = page.locator('input[placeholder*="Search"]').first();
   if (await search.count()) {
+    await page.keyboard.press("i");
     await search.click({ timeout: 2_000 }).catch(() => undefined);
     await page.keyboard.type("t");
     expect(await chromeNode(page, "otf-curved-toolbar")).toBeNull();
     await page.keyboard.press("Escape");
+    await page.evaluate(() => {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement) active.blur();
+    });
+    await page.keyboard.press("i");
   }
   const mentions = await filters.Mentions.boundingBox();
   expect(mentions).not.toBeNull();
@@ -202,6 +213,66 @@ test("toolbar, created movement, wrap, layer, and resize after move on LinkedIn"
   const moved = await created.boundingBox();
   expect(Math.abs((moved?.x ?? 0) - ((before?.x ?? 0) + 36))).toBeLessThan(16);
   let handle = await getTransformHandleRect(page, "resize-se");
+  expect(handle).not.toBeNull();
+  if (handle) {
+    await page.mouse.move(handle.x + 4, handle.y + 4);
+    await page.mouse.down();
+    await page.mouse.move(handle.x + 28, handle.y + 16, { steps: 6 });
+    await page.mouse.up();
+  }
+  const bar = page.locator("[role='radiogroup']").first();
+  const barBox = await bar.boundingBox();
+  expect(barBox).not.toBeNull();
+  await addKind(page, "rectangle", mentions.x, (barBox?.y ?? mentions.y) + Math.max(0, ((barBox?.height ?? mentions.height) / 2) - 14));
+  const overlap = page.locator("[data-otf-component-kind='rectangle']").last();
+  const overlapBox = await overlap.boundingBox();
+  expect(overlapBox).not.toBeNull();
+  await selectRealTarget(page, filters.All);
+  await dismissJumpMenu(page);
+  for (let step = 0; step < 8; step += 1) {
+    const outline = await getOverlayRect(page);
+    if (outline && barBox && Math.abs(outline.width - barBox.width) < 48 && Math.abs(outline.height - barBox.height) < 48) break;
+    await page.keyboard.press("Alt+ArrowUp");
+  }
+  const selectedBar = await getOverlayRect(page);
+  expect(selectedBar && barBox && Math.abs((selectedBar?.width ?? 0) - barBox.width) < 48).toBe(true);
+  await dismissJumpMenu(page);
+  const overlapPoint = {
+    x: Math.round((overlapBox?.x ?? 0) + Math.min(24, Math.max(8, (overlapBox?.width ?? 16) / 2))),
+    y: Math.round((overlapBox?.y ?? 0) + Math.min(12, Math.max(6, (overlapBox?.height ?? 12) / 2))),
+  };
+  const paintTop = async (): Promise<string> => page.evaluate(({ x, y }) => {
+    for (const node of document.elementsFromPoint(x, y)) {
+      if (!(node instanceof HTMLElement) || node.closest("#on-the-fly-root-host")) continue;
+      const created = node.closest("[data-otf-element-id]");
+      if (created) return `created:${created.getAttribute("data-otf-element-id") ?? ""}`;
+      const detached = node.closest("[data-otf-detached='true']");
+      if (detached) return `host:${detached.tagName}`;
+      const bar = node.closest("[role='radiogroup']");
+      if (bar) return `bar:${bar.getAttribute("data-otf-detached") ?? "attached"}`;
+    }
+    return "other";
+  }, overlapPoint);
+  await page.keyboard.press("Control+Shift+]");
+  await expect.poll(async () => page.evaluate(() =>
+    Boolean(document.querySelector("[role='radiogroup']")?.getAttribute("data-otf-detached") === "true"
+      || document.querySelector("[role='radio']")?.closest("[data-otf-detached='true']")),
+  )).toBe(true);
+  const zFront = await page.evaluate(() => {
+    const bar = document.querySelector("[role='radiogroup']");
+    return bar instanceof HTMLElement ? bar.style.zIndex : "";
+  });
+  const hostFront = await paintTop();
+  await page.keyboard.press("Control+Shift+[");
+  await page.keyboard.press("Control+Shift+[");
+  const zBack = await page.evaluate(() => {
+    const bar = document.querySelector("[role='radiogroup']");
+    return bar instanceof HTMLElement ? bar.style.zIndex : "";
+  });
+  const hostBack = await paintTop();
+  expect(Number.parseInt(zBack || "0", 10)).toBeGreaterThanOrEqual(1);
+  expect(zFront === zBack && hostFront === hostBack).toBe(false);
+  handle = await getTransformHandleRect(page, "resize-se");
   expect(handle).not.toBeNull();
   if (handle) {
     await page.mouse.move(handle.x + 4, handle.y + 4);

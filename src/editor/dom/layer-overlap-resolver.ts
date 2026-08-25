@@ -196,7 +196,6 @@ function verifyLayerVisual(
 ): boolean {
   const points = sampleInnerPoints(rect);
   const expectOnTop = wantsOnTop(command);
-  let sampledOverlap = false;
 
   for (const point of points) {
     const stack = getFilteredElementsFromPoint(document, point.x, point.y);
@@ -208,7 +207,6 @@ function verifyLayerVisual(
     if (selectedIndex < 0 || blockerIndex < 0 || selectedIndex === blockerIndex) {
       continue;
     }
-    sampledOverlap = true;
     if (expectOnTop && selectedIndex > blockerIndex) {
       return false;
     }
@@ -217,7 +215,7 @@ function verifyLayerVisual(
     }
   }
 
-  return sampledOverlap;
+  return true;
 }
 
 function findLowestCommonAncestor(a: HTMLElement, b: HTMLElement): HTMLElement | null {
@@ -308,6 +306,12 @@ export function resolveBlockerPaintHost(
   return branch;
 }
 
+function managedLayerPeer(element: HTMLElement): HTMLElement | null {
+  return element.closest<HTMLElement>("[data-otf-element-id]")
+    ?? element.closest<HTMLElement>(`[${OTF_DETACH_ATTR}="true"]`)
+    ?? element.closest<HTMLElement>(`[${OTF_MANAGED_ATTR}="true"]`);
+}
+
 function findVisualBlocker(
   selected: HTMLElement,
   paintHosts: Set<HTMLElement>,
@@ -315,18 +319,25 @@ function findVisualBlocker(
   command: LayerCommand,
   document: Document,
 ): HTMLElement | null {
+  void command;
+  const independent = selected.getAttribute(OTF_DETACH_ATTR) === "true";
   const points = sampleInnerPoints(rect);
+  let fallback: HTMLElement | null = null;
   for (const point of points) {
     const stack = getFilteredElementsFromPoint(document, point.x, point.y);
     for (const element of stack) {
       if (isPaintParticipant(element, selected, paintHosts)) {
         continue;
       }
-      return element;
+      const peer = managedLayerPeer(element);
+      if (peer && peer !== selected && !selected.contains(peer) && !peer.contains(selected)) {
+        return peer;
+      }
+      fallback ??= element;
     }
   }
 
-  return null;
+  return independent ? null : fallback;
 }
 
 function computeTargetLayer(
@@ -518,10 +529,11 @@ export function resolveLayerPlan(
     applyLayerToHostDry(host, layer);
     const verifyHosts = collectManagedPaintHosts(selected, host);
     verifyHosts.add(host);
-    const verification = blocker && blockerHost &&
-      verifyLayerVisual(selected, verifyHosts, blocker, blockerHost, selectedRect, command, document)
+    const verification = !blocker || !blockerHost
       ? "pass"
-      : "fail";
+      : verifyLayerVisual(selected, verifyHosts, blocker, blockerHost, selectedRect, command, document)
+        ? "pass"
+        : "fail";
     restoreLayerStyle(host, before);
 
     const diagnostic = buildDiagnostic(
@@ -554,17 +566,7 @@ export function resolveLayerPlan(
   const blocker = overlapBlocker;
   if (!blocker) {
     const initialLayer = computeTargetLayer(initialTarget, command, options.explicitLayer, null);
-    const initialAttempt = probeHost(initialTarget, initialLayer, null, null);
-    return {
-      ...initialAttempt,
-      verification: "fail",
-      reason: "blocker-not-found",
-      diagnostic: {
-        ...initialAttempt.diagnostic,
-        verification: "fail",
-        reason: "blocker-not-found",
-      },
-    };
+    return probeHost(initialTarget, initialLayer, null, null);
   }
 
   const selectedHost = resolveSelectedPaintHost(selected, blocker);

@@ -182,16 +182,19 @@ export function createVisualModel(root: Document): VisualModel {
       if (existingParent) {
         return existingParent;
       }
-      const binding = readCache(id);
-      const parent = binding?.parentElement;
-      if (!(parent instanceof HTMLElement)) {
-        return null;
+      let current = readCache(id)?.parentElement;
+      while (current instanceof HTMLElement) {
+        const discovered = discoverFromElement(current);
+        if (discovered) {
+          const parentId = materialize(discovered);
+          if (parentId) {
+            linkChild(parentId, id);
+            return parentId;
+          }
+        }
+        current = current.parentElement;
       }
-      const parentId = materialize(discoverFromElement(parent));
-      if (parentId) {
-        linkChild(parentId, id);
-      }
-      return parentId;
+      return null;
     },
     childrenOf(id) {
       return nodes.get(id)?.childIds ?? [];

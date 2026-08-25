@@ -47,7 +47,7 @@ describe("layer overlap resolver", () => {
     expect(resolveInitialLayerTarget(chip)).not.toBe(card);
   });
 
-  it("fails closed when no overlapping paint peer can verify the command", () => {
+  it("applies a numeric layer when no overlapping paint peer exists", () => {
     const { document, root } = createTestDocument(`<main><div class="box">A</div></main>`);
     const box = root.querySelector(".box") as HTMLElement;
     layoutElement(box, { x: 20, y: 20, width: 100, height: 40 });
@@ -56,8 +56,7 @@ describe("layer overlap resolver", () => {
     const plan = resolveLayerPlan(box, "forward", new ElementSnapshotStore());
     expect(plan.host).toBe(box);
     expect(plan.layer).toBeGreaterThan(1);
-    expect(plan.verification).toBe("fail");
-    expect(plan.reason).toBe("blocker-not-found");
+    expect(plan.verification).toBe("pass");
   });
 
   it("never lifts a shared selected-side branch above a navbar blocker", () => {

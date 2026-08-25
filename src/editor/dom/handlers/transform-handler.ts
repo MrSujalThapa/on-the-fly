@@ -107,38 +107,16 @@ function applyMoveToFinalRect(
   }
 
   if (operation.payload.detached && !operation.payload.interactionSafeFixed && !isLegacyTransformOnlyMovePayload(operation)) {
-    applyPersistedDetachPlacement(element, operation);
-
-    // `detachedLeft/detachedTop` are page coordinates (viewport + scroll at save
-    // time), so they reproduce the saved position regardless of the scroll
-    // offset when replay runs. Only fall back to the viewport `finalRect` plus
-    // the current scroll for legacy ops that predate page-coordinate placement.
-    const hasPersistedPlacement =
-      operation.payload.detachedLeft !== undefined &&
-      operation.payload.detachedTop !== undefined;
-    if (!hasPersistedPlacement) {
-      const view = element.ownerDocument.defaultView;
-      element.style.position = "absolute";
-      element.style.left = `${String(finalRect.x + (view?.scrollX ?? 0))}px`;
-      element.style.top = `${String(finalRect.y + (view?.scrollY ?? 0))}px`;
-    }
-
-    const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
-    state.dx = 0;
-    state.dy = 0;
-    state.position = "absolute";
-    // Carry the saved size in the transform state so `commitTransformState`
-    // applies it. Setting width/height directly would be wiped by the trailing
-    // `applyStoredTransformState`, which removes them when state.width is null.
-    const localWidth = operation.payload.detachedWidth ?? finalRect.width;
-    const localHeight = operation.payload.detachedHeight ?? finalRect.height;
-    if (localWidth > 0) {
-      state.width = localWidth;
-    }
-    if (localHeight > 0) {
-      state.height = localHeight;
-    }
-    return commitTransformState(element, state, previousSerialized);
+    const previousSerialized = element.getAttribute(OTF_TRANSFORM_ATTR);
+    realizeIndependentPlacement(element, {
+      x: finalRect.x,
+      y: finalRect.y,
+      width: operation.payload.detachedWidth ?? finalRect.width,
+      height: operation.payload.detachedHeight ?? finalRect.height,
+    }, { zIndex: operation.payload.detachedZIndex ?? element.style.zIndex });
+    return [
+      { kind: "transform-state" as const, previousState: previousSerialized },
+    ];
   }
 
   const current = extractBoundingBox(element);

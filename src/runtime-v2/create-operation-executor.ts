@@ -517,6 +517,12 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       if ("error" in resolved) {
         return resolved;
       }
+      const promoted: EditorOperation[] = [];
+      const rollbackPromotion = (): void => {
+        for (const operation of [...promoted].reverse()) {
+          this.revertCommitted(operation);
+        }
+      };
       if (!deps.placement.isIndependent(resolved.element)) {
         const currentRect = rectFromElement(resolved.element);
         const independentPlan = deps.placement.planMove({
@@ -542,16 +548,18 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
           element: resolved.element,
           operation: independentOperation,
           expected: currentRect,
-          commit: true,
+          commit: false,
           captureEffect: true,
         });
         if (!independentResult.ok) {
           return independentResult;
         }
+        promoted.push(independentResult.operation);
       }
       const plan = resolveLayerPlan(resolved.element, input.command, snapshotStore, { onDebug: debugLayer });
       if (plan.verification !== "pass") {
-        return failure(plan.reason ?? "layer_verification_failed", false);
+        rollbackPromotion();
+        return failure(plan.reason ?? "layer_verification_failed", promoted.length > 0);
       }
       const snapshot = captureElementDomSnapshot(plan.host, deps.document);
       const drafted = buildZIndexOperation(
@@ -568,17 +576,20 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       };
       const validation = validateOperation(operation);
       if (!validation.ok) {
-        return failure(validation.errors.join("; ") || "invalid_operation", false);
+        rollbackPromotion();
+        return failure(validation.errors.join("; ") || "invalid_operation", promoted.length > 0);
       }
       applyLayerToHost(plan.host, plan.layer, snapshotStore);
       const verified = resolveLayerPlan(resolved.element, input.command, snapshotStore, {
         explicitLayer: plan.layer,
       });
       if (verified.verification !== "pass" || !verifyIdentity(input.nodeId, identity, resolved.element)) {
-        return failure("layer_verification_failed", rollback(plan.host, snapshot));
+        rollback(plan.host, snapshot);
+        rollbackPromotion();
+        return failure("layer_verification_failed", true);
       }
       layerEffects.set(operation.id, { element: plan.host, snapshot });
-      deps.ledger.commit(operation);
+      deps.ledger.commitBatch([...promoted, operation]);
       const box = rectFromElement(resolved.element);
       return { ok: true, operation, verification: { ok: true, expected: box, actual: box } };
     },

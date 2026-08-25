@@ -45,7 +45,7 @@ describe("RuntimeLifecycle", () => {
     expect(document.getElementById(OTF_ROOT_HOST_ID)).toBeNull();
   });
 
-  it("keeps the active selection as drag owner when a blocker is topmost", () => {
+  it("drags the paint-front target even if another node is already selected", () => {
     const { document, root } = createTestDocument(`<article id="selected">A</article><article id="blocker">B</article>`);
     const selected = root.querySelector("#selected") as HTMLElement;
     const blocker = root.querySelector("#blocker") as HTMLElement;
@@ -63,8 +63,8 @@ describe("RuntimeLifecycle", () => {
     view.dispatchEvent(new PointerEvent("pointerdown", { clientX: 30, clientY: 30, button: 0 }));
     view.dispatchEvent(new PointerEvent("pointermove", { clientX: 50, clientY: 40, button: 0 }));
 
-    expect(selected.style.transform).toContain("translate(20px, 10px)");
-    expect(blocker.style.transform).toBe("");
+    expect(blocker.style.transform).toContain("translate(20px, 10px)");
+    expect(selected.style.transform).toBe("");
     runtime.stop();
   });
 

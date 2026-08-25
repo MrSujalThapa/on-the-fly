@@ -122,6 +122,7 @@ describe("created elements", () => {
     layoutManagedElement(a, { x: 200, y: 120, width: 40, height: 20 });
     layoutManagedElement(b, { x: 280, y: 140, width: 50, height: 22 });
     const parent = a.parentElement;
+    const hostZ = a.style.zIndex;
     patchRects(document);
     document.elementsFromPoint = (x, y) => paintAt(document, x, y);
     const runtime = createEditorRuntime(document);
@@ -136,13 +137,20 @@ describe("created elements", () => {
     expect(checkpoint.ok).toBe(true);
     if (checkpoint.ok) {
       expect(checkpoint.operations.some((operation) => operation.type === "createElement")).toBe(true);
+      expect(checkpoint.operations.some((operation) => operation.type === "group")).toBe(false);
     }
     const container = document.querySelector<HTMLElement>('[data-otf-component-kind="container"]');
     expect(container).not.toBeNull();
     expect(a.parentElement).toBe(parent);
+    expect(a.style.zIndex).toBe(hostZ);
+    expect(b.style.zIndex).toBe(hostZ);
     expect(runtime.getSelection().atoms).toEqual([{ kind: "node", nodeId: container?.getAttribute(OTF_ELEMENT_ID_ATTR) }]);
     expect(runtime.getGroup("otf-group-1")).toBeNull();
     expect(runtime.groupSelection()).toBeNull();
+    expect(runtime.styleSelection(new Map([["backgroundColor", "red"]])).ok).toBe(true);
+    expect(container?.style.backgroundColor).toBe("red");
+    expect(a.style.backgroundColor).not.toBe("red");
+    expect(runtime.undo().ok).toBe(true);
     if (container && expected) {
       const box = container.getBoundingClientRect();
       expect(Math.abs(box.x - expected.x)).toBeLessThan(2);
@@ -207,10 +215,19 @@ describe("created elements", () => {
     expect(host.getAttribute(OTF_DETACH_ATTR)).toBe("true");
     expect(runtime.layer(hostId, "back").ok).toBe(true);
     expect(Number.parseInt(host.style.zIndex || "1", 10)).toBeGreaterThanOrEqual(1);
+    expect(runtime.move(hostId, 12, 0).ok).toBe(true);
+    runtime.select(host);
+    const movedHost = host.getBoundingClientRect();
+    expect(runtime.resizeSelection({ x: movedHost.x, y: movedHost.y, width: 150, height: 50 }).ok).toBe(true);
+    expect(host.getAttribute(OTF_DETACH_ATTR)).toBe("true");
     host.style.zIndex = "2";
     createdEl.style.zIndex = "1";
     document.elementsFromPoint = () => [host, createdEl, document.body];
     expect(runtime.visualModel.pick(80, 50)).toBe(hostId);
+    runtime.select(createdEl);
+    document.defaultView?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: 80, clientY: 50, pointerId: 1 }));
+    document.defaultView?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, clientX: 80, clientY: 50, pointerId: 1 }));
+    expect(runtime.selectedNodeIds()[0]).toBe(hostId);
     document.elementsFromPoint = () => [createdEl, host, document.body];
     expect(runtime.visualModel.pick(80, 50)).toBe(createdId);
     runtime.stop();

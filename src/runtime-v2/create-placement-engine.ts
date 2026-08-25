@@ -79,8 +79,8 @@ export function createPlacementEngine(): PlacementEngine {
             interactionSafeFixed: false,
             detachedLeft: expected.x + scrollX,
             detachedTop: expected.y + scrollY,
-            detachedWidth: request.element.offsetWidth,
-            detachedHeight: request.element.offsetHeight,
+            detachedWidth: request.currentRect.width,
+            detachedHeight: request.currentRect.height,
             detachedZIndex: originalSiblingLayer(request.element),
           },
         };

@@ -272,12 +272,20 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     return { union: unionRects(members), members };
   };
 
+  const syncToolbar = (anchor: IntendedRect | null): void => {
+    if (mode === "edit" && toolbarVisible) {
+      toolbar?.renderCommandStates(toolbarCommands, anchor, toolbarActiveStates);
+      return;
+    }
+    toolbar?.hide();
+  };
+
   const render = (force = false): void => {
     const measured = measureSelected();
     const rect = measured.union;
     if (!rect) {
       paint(null);
-      toolbar?.hide();
+      syncToolbar(null);
       return;
     }
     if (!force && painted && rectsNear(rect, painted, 0.5)) {
@@ -535,7 +543,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       attachNestedScroll();
       cancelLoop();
       paint(null);
-      toolbar?.hide();
+      syncToolbar(null);
       lasso?.remove();
       lasso = null;
       freeformLasso?.remove();
@@ -567,8 +575,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     },
     setToolbarVisible(visible) {
       toolbarVisible = visible;
-      if (visible && mode === "edit") toolbar?.renderCommandStates(toolbarCommands, measureSelected().union, toolbarActiveStates);
-      else toolbar?.hide();
+      syncToolbar(measureSelected().union);
     },
     openStylePanel(values) {
       toolbar?.toggleStylePanel(true, values);
