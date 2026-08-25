@@ -146,6 +146,13 @@ function applyBox(
   root.style.height = `${String(rect.height)}px`;
   root.style.boxSizing = "border-box";
   root.style.margin = "0";
+  root.style.minWidth = "0";
+  root.style.minHeight = "0";
+  root.style.maxWidth = "none";
+  root.style.maxHeight = "none";
+  root.style.flexGrow = "0";
+  root.style.flexShrink = "0";
+  root.style.pointerEvents = "auto";
   root.style.display = kind === "button" || kind === "badge" || kind === "header" || kind === "search" || kind === "input" ? "flex" : "block";
   root.style.alignItems = "center";
   root.style.justifyContent = kind === "header" ? "flex-start" : "center";
@@ -213,7 +220,7 @@ function createInput(document: Document, placeholder: string, appearance: Create
   input.style.outline = "none";
   input.style.background = "transparent";
   input.style.width = "100%";
-  input.style.minWidth = "0";
+  input.style.setProperty("min-width", "0px", "important");
   input.style.pointerEvents = "none";
   applyType(input, appearance);
   return input;

@@ -1,4 +1,4 @@
-import { readStoredTransformState, writeStoredTransformState, applyStoredTransformState } from "./element-snapshot.js";
+import { readStoredTransformState, writeStoredTransformState, applyStoredTransformState, realizeIndependentBox } from "./element-snapshot.js";
 import { MANAGED_Z_INDEX_BASELINE } from "../transform/layer-order.js";
 import { OTF_INTERACTION_FIXED_ATTR, OTF_MANAGED_ATTR, OTF_TRANSFORM_ONLY_ATTR, type StoredTransformState } from "./types.js";
 import type { MoveOperation } from "../operations.js";
@@ -30,9 +30,6 @@ export function realizeIndependentPlacement(
   options?: { zIndex?: string },
 ): void {
   const document = element.ownerDocument;
-  const view = document.defaultView;
-  const left = viewportRect.x + (view?.scrollX ?? 0);
-  const top = viewportRect.y + (view?.scrollY ?? 0);
   if (element.parentElement !== document.body) {
     document.body.appendChild(element);
   }
@@ -41,43 +38,18 @@ export function realizeIndependentPlacement(
   element.removeAttribute(OTF_INTERACTION_FIXED_ATTR);
   element.removeAttribute(OTF_TRANSFORM_ONLY_ATTR);
   const rotate = readStoredTransformState(element)?.rotate ?? 0;
+  const live = realizeIndependentBox(element, viewportRect, rotate);
   const nextState: StoredTransformState = {
     dx: 0,
     dy: 0,
-    width: viewportRect.width,
-    height: viewportRect.height,
+    width: live.width,
+    height: live.height,
     rotate,
     position: "absolute",
   };
   writeStoredTransformState(element, nextState);
-  element.style.position = "absolute";
-  element.style.left = `${String(left)}px`;
-  element.style.top = `${String(top)}px`;
-  element.style.width = `${String(viewportRect.width)}px`;
-  element.style.height = `${String(viewportRect.height)}px`;
-  element.style.margin = "0";
-  element.style.boxSizing = "border-box";
-  element.style.maxWidth = "none";
-  element.style.maxHeight = "none";
-  element.style.flexGrow = "0";
-  element.style.flexShrink = "0";
-  element.style.transform = rotate !== 0 ? `rotate(${String(rotate)}deg)` : "";
   const layer = options?.zIndex ?? element.style.zIndex;
   element.style.zIndex = layer && layer !== "auto" ? layer : INDEPENDENT_BASE_LAYER;
-  const actual = element.getBoundingClientRect();
-  const dx = viewportRect.x - actual.x;
-  const dy = viewportRect.y - actual.y;
-  if (dx !== 0 || dy !== 0) {
-    element.style.left = `${String(left + dx)}px`;
-    element.style.top = `${String(top + dy)}px`;
-  }
-  const sized = element.getBoundingClientRect();
-  const dw = viewportRect.width - sized.width;
-  const dh = viewportRect.height - sized.height;
-  if (dw !== 0 || dh !== 0) {
-    element.style.width = `${String(viewportRect.width + dw)}px`;
-    element.style.height = `${String(viewportRect.height + dh)}px`;
-  }
 }
 
 export interface DetachPlacement {
@@ -306,6 +278,13 @@ export function promoteElementToManagedLayer(
   element.style.top = `${String(placement.top)}px`;
   element.style.width = placement.width;
   element.style.height = placement.height;
+  element.style.boxSizing = "border-box";
+  element.style.minWidth = "0";
+  element.style.minHeight = "0";
+  element.style.maxWidth = "none";
+  element.style.maxHeight = "none";
+  element.style.flexGrow = "0";
+  element.style.flexShrink = "0";
   element.style.transform = `rotate(${String(nextState.rotate)}deg)`;
   element.style.zIndex = placement.zIndex;
   element.setAttribute(OTF_MANAGED_ATTR, "true");
@@ -367,6 +346,12 @@ export function applyPersistedDetachPlacement(
     element.style.height = `${String(pixelHeight)}px`;
   }
   element.style.boxSizing = "border-box";
+  element.style.minWidth = "0";
+  element.style.minHeight = "0";
+  element.style.maxWidth = "none";
+  element.style.maxHeight = "none";
+  element.style.flexGrow = "0";
+  element.style.flexShrink = "0";
   const intended = operation.metadata?.finalRect;
   if (intended) {
     const actual = element.getBoundingClientRect();

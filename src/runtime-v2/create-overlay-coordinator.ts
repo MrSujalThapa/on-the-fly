@@ -214,6 +214,13 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
           handle.setPointerCapture(event.pointerId);
           handlePointerDown?.(kind, event);
         });
+        const release = (event: PointerEvent): void => {
+          if (typeof handle.hasPointerCapture === "function" && handle.hasPointerCapture(event.pointerId)) {
+            handle.releasePointerCapture(event.pointerId);
+          }
+        };
+        handle.addEventListener("pointerup", release);
+        handle.addEventListener("pointercancel", release);
         outline.append(handle);
       }
       for (const kind of ["crop-nw", "crop-ne", "crop-sw", "crop-se"] as const) {
@@ -226,6 +233,13 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
           handle.setPointerCapture(event.pointerId);
           handlePointerDown?.(kind, event);
         });
+        const release = (event: PointerEvent): void => {
+          if (typeof handle.hasPointerCapture === "function" && handle.hasPointerCapture(event.pointerId)) {
+            handle.releasePointerCapture(event.pointerId);
+          }
+        };
+        handle.addEventListener("pointerup", release);
+        handle.addEventListener("pointercancel", release);
         outline.append(handle);
       }
     }

@@ -149,6 +149,7 @@ interface TransformGesture {
   lastPointer: { x: number; y: number };
   rafId: number;
   cropInsets?: CropOperation["payload"];
+  dispose: () => void;
 }
 
 interface ClipboardSnapshot {
@@ -710,6 +711,16 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     };
   };
 
+  const liveLayoutSize = (element: HTMLElement, measured: IntendedRect, rotate: number): { width: number; height: number } => {
+    if (rotate === 0) return { width: measured.width, height: measured.height };
+    const width = element.offsetWidth;
+    const height = element.offsetHeight;
+    return {
+      width: width > 1 ? width : measured.width,
+      height: height > 1 ? height : measured.height,
+    };
+  };
+
   const restoreTransformPreview = (active = transformGesture): void => {
     if (!active) return;
     const view = root.defaultView;
@@ -804,6 +815,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     const pointer = active.lastPointer;
     const exactBindings = active.targets.every((target) => target.element.isConnected && visualModel.bind(target.nodeId) === target.element);
     restoreTransformPreview(active);
+    active.dispose();
     transformGesture = null;
     if (!commit || !exactBindings) {
       overlays.refreshFromLiveGeometry();
@@ -858,10 +870,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         snapshot: captureElementDomSnapshot(element, root),
         startRect,
         startState: state,
-        localSize: {
-          width: state.width ?? element.offsetWidth,
-          height: state.height ?? element.offsetHeight,
-        },
+        localSize: liveLayoutSize(element, startRect, state.rotate),
       });
     }
     const startUnion = unionRects(targets.map((target) => target.startRect));
@@ -875,27 +884,38 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       targets,
       lastPointer: { x: event.clientX, y: event.clientY },
       rafId: 0,
+      dispose: () => undefined,
       ...(kind.startsWith("crop-") && targets[0] ? { cropInsets: readStoredCropInsets(targets[0].element) } : {}),
     };
-    transformGesture = active;
-    if (kind.startsWith("crop-")) logV2("crop-gesture-start", { roots, startUnion, pointer: active.startPointer });
+    let disposed = false;
     const onMove = (move: PointerEvent): void => {
       if (transformGesture === active) scheduleTransformPreview({ x: move.clientX, y: move.clientY });
     };
     const cleanup = (): void => {
+      if (disposed) return;
+      disposed = true;
       view.removeEventListener("pointermove", onMove, true);
       view.removeEventListener("pointerup", onUp, true);
       view.removeEventListener("pointercancel", onCancel, true);
     };
     const onUp = (up: PointerEvent): void => {
+      if (transformGesture !== active) {
+        cleanup();
+        return;
+      }
       active.lastPointer = { x: up.clientX, y: up.clientY };
-      cleanup();
       finishTransformGesture(true);
     };
     const onCancel = (): void => {
-      cleanup();
+      if (transformGesture !== active) {
+        cleanup();
+        return;
+      }
       finishTransformGesture(false);
     };
+    active.dispose = cleanup;
+    transformGesture = active;
+    if (kind.startsWith("crop-")) logV2("crop-gesture-start", { roots, startUnion, pointer: active.startPointer });
     view.addEventListener("pointermove", onMove, true);
     view.addEventListener("pointerup", onUp, true);
     view.addEventListener("pointercancel", onCancel, true);
@@ -1666,16 +1686,19 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         const element = visualModel.bind(nodeId);
         if (!identity || !current || !target || !element) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
         const state = initialTransformState(element);
-        const local = localSizeForRotatedBounds(target.width, target.height, state.rotate, {
-          width: state.width ?? element.offsetWidth,
-          height: state.height ?? element.offsetHeight,
-        });
+        const local = localSizeForRotatedBounds(target.width, target.height, state.rotate, liveLayoutSize(element, current, state.rotate));
         const drafted = buildResizeOperation({ nodeId, signature: identity.signature, rect: current }, { width: local.width, height: local.height, mode: "box" }, { pageKey: pageKey(), sourceCommand: "resize" });
         operations.push({ ...drafted, id: nextOperationId("resize"), status: "approved", target: { nodeId, signature: identity.signature }, metadata: { ...drafted.metadata, originalRect: current, finalRect: target, affectedRect: target } });
       }
       const expected = new Map(operations.map((operation) => [operation.id, operation.metadata?.finalRect ?? targetRect]));
+      ignoreMutations = true;
       const result = executor.executeTransaction({ operations, expectedRects: expected });
-      if (result.ok) { renderSelection(); refreshSave(); }
+      releaseMutationIgnore();
+      if (result.ok) {
+        renderSelection();
+        overlays.refreshFromLiveGeometry();
+        refreshSave();
+      }
       return result;
     },
     rotateSelection(degrees) {

@@ -80,8 +80,16 @@ async function createdIds(page: Page): Promise<string[]> {
 }
 async function addKind(page: Page, kind: string, x: number, y: number): Promise<void> {
   await openToolbar(page);
+  await dismissJumpMenu(page);
   expect(await invokeChrome(page, "otf-tool-btn", ["data-command-id", "more"])).toBe(true);
-  await expect.poll(() => chromeNode(page, "otf-more-menu")).not.toBeNull();
+  try {
+    await expect.poll(() => chromeNode(page, "otf-more-menu"), { timeout: 6_000 }).not.toBeNull();
+  } catch {
+    await dismissJumpMenu(page);
+    await openToolbar(page);
+    expect(await invokeChrome(page, "otf-tool-btn", ["data-command-id", "more"])).toBe(true);
+    await expect.poll(() => chromeNode(page, "otf-more-menu")).not.toBeNull();
+  }
   expect(await invokeChrome(page, "otf-more-option", ["data-more-action", "add-element"])).toBe(true);
   await expect.poll(() => chromeNode(page, "otf-component-palette")).not.toBeNull();
   expect(await invokeChrome(page, "otf-palette-item", ["data-create-kind", kind])).toBe(true);
@@ -302,4 +310,223 @@ test("toolbar, created movement, wrap, layer, and resize after move on LinkedIn"
     await page.mouse.up();
   }
   expect(filterBefore).not.toBeNull();
+});
+
+const RESIZE_KINDS = ["rectangle", "container", "card", "button", "search"] as const;
+const MIXED_HANDLES = [
+  { handle: "resize-se", dx: 14, dy: 10 },
+  { handle: "resize-nw", dx: 14, dy: 10 },
+  { handle: "resize-sw", dx: -12, dy: 10 },
+  { handle: "resize-ne", dx: 12, dy: 10 },
+] as const;
+
+function mixedHandle(index: number): (typeof MIXED_HANDLES)[number] {
+  const step = MIXED_HANDLES[index % MIXED_HANDLES.length];
+  if (!step) throw new Error("missing resize handle step");
+  return step;
+}
+
+async function createdProbe(page: Page, kind: string) {
+  return page.evaluate((componentKind) => {
+    const el = Array.from(document.querySelectorAll<HTMLElement>("[data-otf-element-id]:not([data-otf-preview])"))
+      .find((node) => node.getAttribute("data-otf-component-kind") === componentKind);
+    if (!el) return null;
+    const box = el.getBoundingClientRect();
+    return {
+      elementId: el.getAttribute("data-otf-element-id"),
+      isConnected: el.isConnected,
+      probe: el.dataset.otfResizeProbe ?? "",
+      world: { x: box.x, y: box.y, width: box.width, height: box.height },
+      inlineWidth: el.style.width,
+      inlineHeight: el.style.height,
+      computedWidth: getComputedStyle(el).width,
+      computedHeight: getComputedStyle(el).height,
+      boxSizing: getComputedStyle(el).boxSizing,
+      minWidth: getComputedStyle(el).minWidth,
+      transform: el.getAttribute("data-otf-transform"),
+      detached: el.getAttribute("data-otf-detached"),
+    };
+  }, kind);
+}
+
+async function markCreatedRoot(page: Page, kind: string): Promise<string | null> {
+  return page.evaluate((componentKind) => {
+    const el = Array.from(document.querySelectorAll<HTMLElement>("[data-otf-element-id]:not([data-otf-preview])"))
+      .find((node) => node.getAttribute("data-otf-component-kind") === componentKind);
+    if (!el) return null;
+    el.dataset.otfResizeProbe = "stable-root";
+    return el.getAttribute("data-otf-element-id");
+  }, kind);
+}
+
+async function selectCreated(page: Page, kind: string): Promise<void> {
+  await dismissJumpMenu(page);
+  await page.locator(`[data-otf-component-kind="${kind}"]:not([data-otf-preview])`).last().click({
+    force: true,
+    position: { x: 8, y: 8 },
+  });
+  await expect.poll(async () => {
+    const outline = await getOverlayRect(page);
+    const live = await createdProbe(page, kind);
+    if (!outline || !live) return `missing:${JSON.stringify({ outline, live })}`;
+    const aligned = Math.abs(outline.width - live.world.width) < 24 && Math.abs(outline.height - live.world.height) < 24
+      && Math.abs(outline.x - live.world.x) < 24 && Math.abs(outline.y - live.world.y) < 24;
+    return aligned ? "ok" : `mismatch:${JSON.stringify({ outline, live })}`;
+  }, { timeout: 8_000 }).toBe("ok");
+}
+
+async function dragCreated(page: Page, kind: string, dx: number, dy: number): Promise<void> {
+  await dismissJumpMenu(page);
+  const probe = await createdProbe(page, kind);
+  expect(probe, `${kind} missing before move`).not.toBeNull();
+  if (!probe) return;
+  const x = probe.world.x + Math.max(16, probe.world.width * 0.62);
+  const y = probe.world.y + Math.max(16, probe.world.height * 0.55);
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + dx, y + dy, { steps: 10 });
+  await page.mouse.up();
+}
+
+function geometryChanged(
+  before: Awaited<ReturnType<typeof createdProbe>>,
+  after: Awaited<ReturnType<typeof createdProbe>>,
+): boolean {
+  if (!before || !after) return false;
+  return (
+    Math.abs(after.world.width - before.world.width) > 2
+    || Math.abs(after.world.height - before.world.height) > 2
+    || Math.abs(after.world.x - before.world.x) > 2
+    || Math.abs(after.world.y - before.world.y) > 2
+  );
+}
+
+async function dragHandle(page: Page, handle: string, dx: number, dy: number): Promise<boolean> {
+  await dismissJumpMenu(page);
+  const box = await getTransformHandleRect(page, handle);
+  if (!box) return false;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2 + dy, { steps: 4 });
+  await page.mouse.up();
+  return true;
+}
+
+test("created elements keep resizing without move on LinkedIn", async ({ page, context }) => {
+  test.setTimeout(420_000);
+  await requireLinkedInAuth(page);
+  await clearPageOperations(context, page);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const filters = await linkedInFilters(page);
+  await enableEdit(context, page);
+  await dismissJumpMenu(page);
+  const mentions = await filters.Mentions.boundingBox();
+  expect(mentions).not.toBeNull();
+  if (!mentions) return;
+
+  const scores: Record<string, { repeated: number; moveResize: number; failures: number }> = {};
+  const placeX = mentions.x + 48;
+  const placeY = mentions.y + 210;
+
+  for (const kind of RESIZE_KINDS) {
+    await dismissJumpMenu(page);
+    await addKind(page, kind, placeX, placeY);
+    const elementId = await markCreatedRoot(page, kind);
+    expect(elementId).toBeTruthy();
+    await expect.poll(() => getTransformHandleRect(page, "resize-se")).not.toBeNull();
+    let failures = 0;
+    for (let index = 0; index < 20; index += 1) {
+      const step = mixedHandle(index);
+      const before = await createdProbe(page, kind);
+      const outlineBefore = await getOverlayRect(page);
+      const handled = await dragHandle(page, step.handle, step.dx, step.dy);
+      const after = await createdProbe(page, kind);
+      const outlineAfter = await getOverlayRect(page);
+      const changed = geometryChanged(before, after);
+      const sameRoot = after?.probe === "stable-root" && after.isConnected && after.elementId === elementId;
+      if (!handled || !changed || !sameRoot) {
+        failures += 1;
+        expect.soft(
+          { kind, index, handled, changed, sameRoot, before, after, outlineBefore, outlineAfter, step },
+          `${kind} resize ${String(index + 1)} must keep working`,
+        ).toEqual({ kind, index, handled: true, changed: true, sameRoot: true, before, after, outlineBefore, outlineAfter, step });
+        break;
+      }
+    }
+    await dismissJumpMenu(page);
+    await selectCreated(page, kind);
+    await page.keyboard.press("Control+Shift+]");
+    const movedFrom = await createdProbe(page, kind);
+    await page.keyboard.press("t");
+    const target = page.locator(`[data-otf-component-kind="${kind}"]:not([data-otf-preview])`).last();
+    await target.dragTo(target, { force: true, sourcePosition: { x: 18, y: 10 }, targetPosition: { x: 54, y: 28 } });
+    await page.keyboard.press("t");
+    await selectCreated(page, kind);
+    const movedTo = await createdProbe(page, kind);
+    if (!geometryChanged(movedFrom, movedTo)) {
+      await dragCreated(page, kind, 48, 24);
+      await selectCreated(page, kind);
+    }
+    const movedFinal = await createdProbe(page, kind);
+    if (kind !== "search") {
+      expect(geometryChanged(movedFrom, movedFinal), `${kind} must move before resize-after-move ${JSON.stringify({ movedFrom, movedFinal })}`).toBe(true);
+    }
+    await expect.poll(() => getTransformHandleRect(page, "resize-se")).not.toBeNull();
+    let moveResize = 0;
+    for (let pass = 0; pass < 2; pass += 1) {
+      await selectCreated(page, kind);
+      for (let index = 0; index < 5; index += 1) {
+        const step = mixedHandle(index);
+        const before = await createdProbe(page, kind);
+        const handled = await dragHandle(page, step.handle, step.dx, step.dy);
+        const after = await createdProbe(page, kind);
+        const changed = geometryChanged(before, after);
+        if (!handled || !changed || after?.probe !== "stable-root") {
+          failures += 1;
+          expect.soft({
+            kind, pass, index, handled, changed, probe: after?.probe, before, after, step,
+            outline: await getOverlayRect(page),
+          }, `${kind} resize after move ${String(pass)}:${String(index)}`).toEqual({
+            kind, pass, index, handled: true, changed: true, probe: "stable-root", before, after, step,
+            outline: await getOverlayRect(page),
+          });
+          break;
+        }
+        moveResize += 1;
+      }
+      await dragCreated(page, kind, 12, 8);
+      await selectCreated(page, kind);
+      await expect.poll(() => getTransformHandleRect(page, "resize-se")).not.toBeNull();
+    }
+    scores[kind] = { repeated: 20 - Math.min(20, failures), moveResize, failures };
+    const park = await createdProbe(page, kind);
+    if (park) {
+      await dragCreated(
+        page,
+        kind,
+        56 - park.world.x,
+        88 + RESIZE_KINDS.indexOf(kind) * 52 - park.world.y,
+      );
+    }
+  }
+
+  const rectangle = page.locator("[data-otf-component-kind='rectangle']").last();
+  await rectangle.click({ force: true, position: { x: 8, y: 8 } });
+  expect(await dragHandle(page, "resize-se", 8, 6)).toBe(true);
+  await invokeChrome(page, "otf-save-button");
+  await page.evaluate(() => new Promise<void>((resolve) => { window.setTimeout(resolve, 400); }));
+  const beforeReload = await createdProbe(page, "rectangle");
+  await reloadLinkedInAndReplay(page, context);
+  await expect.poll(() => createdCount(page, "rectangle")).toBeGreaterThan(0);
+  const afterReload = await createdProbe(page, "rectangle");
+  expect(Math.abs((afterReload?.world.width ?? 0) - (beforeReload?.world.width ?? 0))).toBeLessThan(12);
+  await page.locator("[data-otf-component-kind='rectangle']").last().click({ force: true, position: { x: 8, y: 8 } });
+  await expect.poll(() => getTransformHandleRect(page, "resize-se")).not.toBeNull();
+  const reloadBefore = await createdProbe(page, "rectangle");
+  expect(await dragHandle(page, "resize-se", 10, 8)).toBe(true);
+  const reloadAfter = await createdProbe(page, "rectangle");
+  expect(Math.abs((reloadAfter?.world.width ?? 0) - (reloadBefore?.world.width ?? 0))).toBeGreaterThan(2);
+
+  const totalFailures = Object.values(scores).reduce((sum, score) => sum + score.failures, 0);
+  expect(totalFailures, JSON.stringify(scores)).toBe(0);
 });

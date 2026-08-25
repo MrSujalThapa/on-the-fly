@@ -140,10 +140,81 @@ function ensureTransformableFormattingBox(element: HTMLElement): void {
   }
 }
 
+function applyManagedSize(element: HTMLElement, state: StoredTransformState): void {
+  if (state.width !== null) {
+    element.style.width = `${String(state.width)}px`;
+  } else {
+    element.style.removeProperty("width");
+  }
+  if (state.height !== null) {
+    element.style.height = `${String(state.height)}px`;
+  } else {
+    element.style.removeProperty("height");
+  }
+}
+
+function applyManagedRotate(element: HTMLElement, rotate: number): void {
+  element.style.transform = rotate !== 0 ? `rotate(${String(rotate)}deg)` : "";
+}
+
+/**
+ * Write one independent viewport box onto an existing managed element.
+ * Does not reparent or replace the node. Preview and commit share this so
+ * resize math and rendered border-box dimensions cannot drift apart.
+ */
+export function realizeIndependentBox(
+  element: HTMLElement,
+  viewportRect: { x: number; y: number; width: number; height: number },
+  rotate: number,
+): { width: number; height: number } {
+  const view = element.ownerDocument.defaultView;
+  const left = viewportRect.x + (view?.scrollX ?? 0);
+  const top = viewportRect.y + (view?.scrollY ?? 0);
+  element.style.position = "absolute";
+  element.style.left = `${String(left)}px`;
+  element.style.top = `${String(top)}px`;
+  element.style.setProperty("width", `${String(viewportRect.width)}px`, "important");
+  element.style.setProperty("height", `${String(viewportRect.height)}px`, "important");
+  element.style.margin = "0";
+  element.style.setProperty("box-sizing", "border-box");
+  element.style.setProperty("max-width", "none");
+  element.style.setProperty("max-height", "none");
+  element.style.setProperty("min-width", "0px", "important");
+  element.style.setProperty("min-height", "0px", "important");
+  element.style.flexGrow = "0";
+  element.style.flexShrink = "0";
+  element.style.alignSelf = "auto";
+  applyManagedRotate(element, rotate);
+  const actual = element.getBoundingClientRect();
+  const dx = viewportRect.x - actual.x;
+  const dy = viewportRect.y - actual.y;
+  if (dx !== 0 || dy !== 0) {
+    element.style.left = `${String(left + dx)}px`;
+    element.style.top = `${String(top + dy)}px`;
+  }
+  const sized = element.getBoundingClientRect();
+  const dw = viewportRect.width - sized.width;
+  const dh = viewportRect.height - sized.height;
+  if (dw !== 0 || dh !== 0) {
+    element.style.setProperty("width", `${String(viewportRect.width + dw)}px`, "important");
+    element.style.setProperty("height", `${String(viewportRect.height + dh)}px`, "important");
+  }
+  const live = element.getBoundingClientRect();
+  return { width: live.width, height: live.height };
+}
+
 export function applyStoredTransformState(
   element: HTMLElement,
   state: StoredTransformState,
 ): void {
+  if (element.getAttribute("data-otf-detached") === "true") {
+    element.style.position = "absolute";
+    element.style.boxSizing = "border-box";
+    applyManagedRotate(element, state.rotate);
+    applyManagedSize(element, state);
+    return;
+  }
+
   if (
     state.position === "fixed" ||
     state.position === "absolute"
@@ -157,21 +228,8 @@ export function applyStoredTransformState(
       element.style.position = state.position;
       element.style.left = `${String(state.fixedLeft)}px`;
       element.style.top = `${String(state.fixedTop)}px`;
-      if (state.rotate !== 0) {
-        element.style.transform = `rotate(${String(state.rotate)}deg)`;
-      } else {
-        element.style.transform = "";
-      }
-      if (state.width !== null) {
-        element.style.width = `${String(state.width)}px`;
-      } else {
-        element.style.removeProperty("width");
-      }
-      if (state.height !== null) {
-        element.style.height = `${String(state.height)}px`;
-      } else {
-        element.style.removeProperty("height");
-      }
+      applyManagedRotate(element, state.rotate);
+      applyManagedSize(element, state);
       return;
     }
   }
@@ -179,18 +237,7 @@ export function applyStoredTransformState(
   ensureTransformableFormattingBox(element);
   element.style.position = state.position;
   element.style.transform = `translate(${String(state.dx)}px, ${String(state.dy)}px) rotate(${String(state.rotate)}deg)`;
-
-  if (state.width !== null) {
-    element.style.width = `${String(state.width)}px`;
-  } else {
-    element.style.removeProperty("width");
-  }
-
-  if (state.height !== null) {
-    element.style.height = `${String(state.height)}px`;
-  } else {
-    element.style.removeProperty("height");
-  }
+  applyManagedSize(element, state);
 }
 
 /**
@@ -205,24 +252,20 @@ export function applyStoredTransformStateToRect(
 ): void {
   state.width = target.width;
   state.height = target.height;
+  if (element.getAttribute("data-otf-detached") === "true") {
+    const live = realizeIndependentBox(element, target, state.rotate);
+    state.dx = 0;
+    state.dy = 0;
+    state.position = "absolute";
+    state.width = live.width;
+    state.height = live.height;
+    writeStoredTransformState(element, state);
+    return;
+  }
   applyStoredTransformState(element, state);
   const current = element.getBoundingClientRect();
   const dx = target.x - current.x;
   const dy = target.y - current.y;
-  if (element.getAttribute("data-otf-detached") === "true") {
-    const view = element.ownerDocument.defaultView;
-    state.dx = 0;
-    state.dy = 0;
-    state.position = "absolute";
-    element.style.position = "absolute";
-    element.style.left = `${String(target.x + (view?.scrollX ?? 0))}px`;
-    element.style.top = `${String(target.y + (view?.scrollY ?? 0))}px`;
-    element.style.width = `${String(target.width)}px`;
-    element.style.height = `${String(target.height)}px`;
-    element.style.transform = state.rotate !== 0 ? `rotate(${String(state.rotate)}deg)` : "";
-    writeStoredTransformState(element, state);
-    return;
-  }
   if (
     (state.position === "fixed" || state.position === "absolute") &&
     state.fixedLeft !== null && state.fixedLeft !== undefined &&

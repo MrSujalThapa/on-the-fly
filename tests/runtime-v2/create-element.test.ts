@@ -9,6 +9,7 @@ import { renderCreatedElement } from "../../src/editor/create/render-created-ele
 import { appearanceForFamily, appearanceHasLayoutProps, sampleAppearance } from "../../src/editor/create/sample-appearance.js";
 import { createEmptyBoundingBoxHint } from "../../src/editor/element-signature.js";
 import { OTF_DETACH_ATTR } from "../../src/editor/dom/managed-detach.js";
+import { applyStoredTransformState, readStoredTransformState } from "../../src/editor/dom/element-snapshot.js";
 import type { CreateElementOperation, EditorOperation, MoveOperation } from "../../src/editor/operations.js";
 import { createEditorRuntime } from "../../src/runtime-v2/create-editor-runtime.js";
 import { projectCanonicalCheckpoint } from "../../src/runtime-v2/canonical-checkpoint.js";
@@ -251,5 +252,94 @@ describe("created elements", () => {
     expect(restored).not.toBeNull();
     expect(restored?.getAttribute("data-otf-component-kind")).toBe("button");
     expect(restored?.getAttribute(OTF_DETACH_ATTR)).toBe("true");
+  });
+
+  it("repeated created resize uses live geometry and keeps the same root", () => {
+    const { document } = createTestDocument("");
+    patchRects(document);
+    const runtime = createEditorRuntime(document);
+    runtime.start();
+    const created = runtime.createElement({ kind: "rectangle", rect: { x: 40, y: 40, width: 120, height: 80 } });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const createdId = created.operation.target.nodeId ?? "";
+    const createdEl = runtime.visualModel.bind(createdId);
+    expect(createdEl).not.toBeNull();
+    if (!createdEl) return;
+    const steps = [
+      (rect: DOMRect) => ({ x: rect.x, y: rect.y, width: rect.width + 16, height: rect.height + 10 }),
+      (rect: DOMRect) => ({ x: rect.x - 8, y: rect.y - 6, width: rect.width + 8, height: rect.height + 6 }),
+      (rect: DOMRect) => ({ x: rect.x, y: rect.y - 12, width: rect.width + 14, height: rect.height + 12 }),
+      (rect: DOMRect) => ({ x: rect.x - 10, y: rect.y, width: rect.width + 10, height: rect.height + 8 }),
+    ];
+    for (let index = 0; index < 20; index += 1) {
+      const live = createdEl.getBoundingClientRect();
+      const next = steps[index % steps.length]?.(live);
+      expect(next).toBeDefined();
+      if (!next) return;
+      const result = runtime.resizeSelection(next);
+      expect(result.ok, `resize ${String(index + 1)} ${result.ok ? "" : result.error}`).toBe(true);
+      expect(createdEl.isConnected).toBe(true);
+      expect(runtime.visualModel.bind(createdId)).toBe(createdEl);
+      const after = createdEl.getBoundingClientRect();
+      expect(after.width).toBeCloseTo(next.width, 1);
+      expect(after.height).toBeCloseTo(next.height, 1);
+      const stored = readStoredTransformState(createdEl);
+      expect(stored?.width).toBeCloseTo(after.width, 1);
+      expect(stored?.height).toBeCloseTo(after.height, 1);
+      expect(runtime.overlays.selectionOutlineRect()).toEqual({
+        x: after.x, y: after.y, width: after.width, height: after.height,
+      });
+    }
+    const live = createdEl.getBoundingClientRect();
+    const poisoned = readStoredTransformState(createdEl);
+    expect(poisoned).not.toBeNull();
+    if (poisoned) {
+      createdEl.setAttribute("data-otf-transform", JSON.stringify({ ...poisoned, width: 10, height: 10, dx: 40 }));
+    }
+    applyStoredTransformState(createdEl, { dx: 40, dy: 12, width: 10, height: 10, rotate: 0, position: "absolute" });
+    expect(createdEl.style.transform).not.toContain("translate");
+    expect(createdEl.style.left).toBe(`${String(live.x)}px`);
+    expect(runtime.resizeSelection({ x: live.x, y: live.y, width: live.width + 20, height: live.height + 12 }).ok).toBe(true);
+    expect(createdEl.getBoundingClientRect().width).toBe(live.width + 20);
+    expect(runtime.visualModel.bind(createdId)).toBe(createdEl);
+    expect(runtime.move(createdId, 24, 16).ok).toBe(true);
+    const moved = createdEl.getBoundingClientRect();
+    expect(runtime.resizeSelection({ x: moved.x, y: moved.y, width: moved.width + 18, height: moved.height + 10 }).ok).toBe(true);
+    expect(runtime.visualModel.bind(createdId)).toBe(createdEl);
+    runtime.stop();
+  });
+
+  it("created recipes keep the same root through resize then move then resize", () => {
+    const kinds = ["rectangle", "container", "card", "button", "search"] as const;
+    for (const kind of kinds) {
+      const { document } = createTestDocument("");
+      patchRects(document);
+      const runtime = createEditorRuntime(document);
+      runtime.start();
+      const created = runtime.createElement({ kind, rect: { x: 48, y: 64, width: 160, height: 48 } });
+      expect(created.ok, kind).toBe(true);
+      if (!created.ok) continue;
+      const createdId = created.operation.target.nodeId ?? "";
+      const createdEl = runtime.visualModel.bind(createdId);
+      expect(createdEl, kind).not.toBeNull();
+      if (!createdEl) continue;
+      for (let index = 0; index < 8; index += 1) {
+        const live = createdEl.getBoundingClientRect();
+        const result = runtime.resizeSelection({
+          x: live.x - (index % 2 === 0 ? 0 : 6),
+          y: live.y - (index % 2 === 0 ? 0 : 4),
+          width: live.width + 8,
+          height: live.height + 6,
+        });
+        expect(result.ok, `${kind} resize ${String(index + 1)}`).toBe(true);
+        expect(runtime.visualModel.bind(createdId)).toBe(createdEl);
+      }
+      expect(runtime.move(createdId, 20, 12).ok, `${kind} move`).toBe(true);
+      const moved = createdEl.getBoundingClientRect();
+      expect(runtime.resizeSelection({ x: moved.x, y: moved.y, width: moved.width + 14, height: moved.height + 8 }).ok, `${kind} resize after move`).toBe(true);
+      expect(runtime.visualModel.bind(createdId)).toBe(createdEl);
+      runtime.stop();
+    }
   });
 });
