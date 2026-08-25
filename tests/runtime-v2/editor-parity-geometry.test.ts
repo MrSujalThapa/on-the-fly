@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resizeRectFromCorner, rotatePointAroundCenter, rotatedMemberRect, scaleRects } from "../../src/runtime-v2/editor-parity-geometry.js";
+import { planMultiTargetResize, resizeRectFromCorner, rotatePointAroundCenter, rotatedMemberRect, scaleRects } from "../../src/runtime-v2/editor-parity-geometry.js";
 
 describe("Runtime V2 resize/rotate geometry", () => {
   it.each([
@@ -31,5 +31,12 @@ describe("Runtime V2 resize/rotate geometry", () => {
       { x: 0, y: 0, width: 100, height: 100 },
       180,
     )).toEqual({ x: 80, y: 90, width: 20, height: 10 });
+  });
+
+  it("planMultiTargetResize is the committed union scale", () => {
+    const members = [{ x: 0, y: 0, width: 20, height: 20 }, { x: 80, y: 80, width: 20, height: 20 }];
+    const fromBounds = { x: 0, y: 0, width: 100, height: 100 };
+    const toBounds = { x: 10, y: 20, width: 200, height: 50 };
+    expect(planMultiTargetResize(members, fromBounds, toBounds)).toEqual(scaleRects(fromBounds, toBounds, members));
   });
 });

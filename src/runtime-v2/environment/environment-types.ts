@@ -132,6 +132,7 @@ export type OTFOperation =
       readonly type: "resize";
       readonly targets: readonly ElementId[];
       readonly toBounds: EnvironmentRect;
+      readonly fromBounds?: EnvironmentRect;
     }
   | {
       readonly type: "rotate";

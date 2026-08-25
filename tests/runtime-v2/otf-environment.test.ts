@@ -193,7 +193,7 @@ describe("OTFEnvironment v1", () => {
     expect(runtime.undo().ok).toBe(true);
     const decoyBefore = geometryOf(decoy.element);
     runtime.select(decoy.element);
-    const envResult = await runtime.environment.execute({ type: "resize", targets: [a.id, b.id, c.id], toBounds });
+    const envResult = await runtime.environment.execute({ type: "resize", targets: [a.id, b.id, c.id], toBounds, fromBounds: startUnion });
     expect(envResult.ok, envResult.error?.message ?? "env resize").toBe(true);
     expectGeometryNear(geometryOf(a.element), human.a, "A");
     expectGeometryNear(geometryOf(b.element), human.b, "B");

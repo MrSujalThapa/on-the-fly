@@ -47,7 +47,7 @@ import { projectCanonicalCheckpoint } from "./canonical-checkpoint.js";
 import { buildDuplicateFromClipboardEntry } from "../editor/duplicate/duplicate-element.js";
 import { buildCropOperation, buildHideOperation, buildMoveOperation, buildResizeOperation, buildRotateOperation, buildStyleOperation, buildTextOperation, buildZIndexOperation } from "../editor/transform/operation-factory.js";
 import { applyStoredTransformState, applyStoredTransformStateToRect, readStoredTransformState, writeStoredTransformState } from "../editor/dom/element-snapshot.js";
-import { localSizeForRotatedBounds, resizeRectFromCorner, rotatePointAroundCenter, rotatedMemberRect, scaleRects, type ResizeCorner } from "./editor-parity-geometry.js";
+import { localSizeForRotatedBounds, planMultiTargetResize, planMultiTargetRotate, resizeRectFromCorner, rotatePointAroundCenter, scaleRects, type ResizeCorner, type ResizeIntent } from "./editor-parity-geometry.js";
 import {
   buildLassoSampleGrid,
   LASSO_THRESHOLD_PX,
@@ -852,12 +852,17 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const current = Math.atan2(pointer.y - center.y, pointer.x - center.x);
       runtime.rotateSelection((current - initial) * 180 / Math.PI);
     } else {
-      runtime.resizeSelection(resizeRectFromCorner(
-        active.startUnion,
-        active.kind.slice(-2) as ResizeCorner,
-        pointer.x - active.startPointer.x,
-        pointer.y - active.startPointer.y,
-      ));
+      const intent: ResizeIntent = {
+        toBounds: resizeRectFromCorner(
+          active.startUnion,
+          active.kind.slice(-2) as ResizeCorner,
+          pointer.x - active.startPointer.x,
+          pointer.y - active.startPointer.y,
+        ),
+        fromBounds: active.startUnion,
+        memberRects: active.targets.map((target) => target.startRect),
+      };
+      resizeNodes(active.targets.map((target) => target.nodeId), intent);
     }
   };
 
@@ -1353,13 +1358,16 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     return result;
   };
 
-  const resizeNodes = (nodeIds: readonly VisualNodeId[], targetRect: IntendedRect): BatchExecutionResult => {
-    const roots = effectRoots(nodeIds);
-    const measured = visualModel.measure(roots);
-    const rects = roots.map((id) => measured.get(id)).filter((rect): rect is IntendedRect => Boolean(rect));
-    const startUnion = unionRects(rects);
-    if (!startUnion || rects.length !== roots.length) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
-    const targets = scaleRects(startUnion, targetRect, rects);
+  const resizeNodes = (nodeIds: readonly VisualNodeId[], intent: ResizeIntent): BatchExecutionResult => {
+    const snapshotRects = intent.memberRects;
+    const roots = snapshotRects && snapshotRects.length === nodeIds.length ? [...nodeIds] : effectRoots(nodeIds);
+    const measured = snapshotRects && snapshotRects.length === roots.length ? null : visualModel.measure(roots);
+    const rects = snapshotRects && snapshotRects.length === roots.length
+      ? [...snapshotRects]
+      : roots.map((id) => measured?.get(id)).filter((rect): rect is IntendedRect => Boolean(rect));
+    const fromBounds = intent.fromBounds ?? unionRects(rects);
+    if (!fromBounds || rects.length !== roots.length) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
+    const targets = planMultiTargetResize(rects, fromBounds, intent.toBounds);
     const operations: ResizeOperation[] = [];
     for (const [index, nodeId] of roots.entries()) {
       const identity = visualModel.durableIdentityOf(nodeId);
@@ -1372,7 +1380,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const drafted = buildResizeOperation({ nodeId, signature: identity.signature, rect: current }, { width: local.width, height: local.height, mode: "box" }, { pageKey: pageKey(), sourceCommand: "resize" });
       operations.push({ ...drafted, id: nextOperationId("resize"), status: "approved", target: { nodeId, signature: identity.signature }, metadata: { ...drafted.metadata, originalRect: current, finalRect: target, affectedRect: target } });
     }
-    const expected = new Map(operations.map((operation) => [operation.id, operation.metadata?.finalRect ?? targetRect]));
+    const expected = new Map(operations.map((operation) => [operation.id, operation.metadata?.finalRect ?? intent.toBounds]));
     ignoreMutations = true;
     const result = executor.executeTransaction({ operations, expectedRects: expected });
     releaseMutationIgnore();
@@ -1384,24 +1392,32 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     return result;
   };
 
-  const rotateNodes = (nodeIds: readonly VisualNodeId[], degrees: number): BatchExecutionResult => {
-    const roots = effectRoots(nodeIds);
-    const measured = visualModel.measure(roots);
-    const rects = roots.map((id) => measured.get(id)).filter((rect): rect is IntendedRect => Boolean(rect));
-    const union = unionRects(rects);
+  const rotateNodes = (
+    nodeIds: readonly VisualNodeId[],
+    degrees: number,
+    intent?: { fromBounds: IntendedRect; memberRects: readonly IntendedRect[] },
+  ): BatchExecutionResult => {
+    const snapshotRects = intent?.memberRects;
+    const roots = snapshotRects && snapshotRects.length === nodeIds.length ? [...nodeIds] : effectRoots(nodeIds);
+    const measured = snapshotRects && snapshotRects.length === roots.length ? null : visualModel.measure(roots);
+    const rects = snapshotRects && snapshotRects.length === roots.length
+      ? [...snapshotRects]
+      : roots.map((id) => measured?.get(id)).filter((rect): rect is IntendedRect => Boolean(rect));
+    const union = intent?.fromBounds ?? unionRects(rects);
     if (!union || rects.length !== roots.length) return { ok: false, error: "rotate_target_unresolved", rolledBack: false };
+    const planned = planMultiTargetRotate(rects, union, degrees);
     const operations: EditorOperation[] = [];
     const expected = new Map<string, IntendedRect>();
     for (const [index, nodeId] of roots.entries()) {
       const identity = visualModel.durableIdentityOf(nodeId);
       const current = rects[index];
+      const target = planned[index];
       const element = visualModel.bind(nodeId);
-      if (!identity || !current || !element) return { ok: false, error: "rotate_target_unresolved", rolledBack: false };
-      const target = rotatedMemberRect(current, union, degrees);
+      if (!identity || !current || !target || !element) return { ok: false, error: "rotate_target_unresolved", rolledBack: false };
       const dx = target.x - current.x;
       const dy = target.y - current.y;
       if (Math.hypot(dx, dy) > 0.01) {
-        const plan = placement.planMove({ element, currentRect: current, dx, dy });
+        const plan = placement.planMove({ element, currentRect: current, dx, dy, forceIndependent: true });
         const move = buildMoveOperation({ nodeId, signature: identity.signature, rect: current }, dx, dy, { pageKey: pageKey(), sourceCommand: "rotate:move" });
         const committed: MoveOperation = { ...move, id: nextOperationId("move"), status: "approved", payload: { ...move.payload, ...plan.payload }, metadata: { ...move.metadata, originalRect: current, finalRect: plan.expectedRect, affectedRect: plan.expectedRect } };
         operations.push(committed); expected.set(committed.id, plan.expectedRect);
@@ -1410,8 +1426,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const rotate = buildRotateOperation({ nodeId, signature: identity.signature, rect: target }, existing + degrees, { pageKey: pageKey(), sourceCommand: "rotate" });
       operations.push({ ...rotate, id: nextOperationId("rotate"), status: "approved", target: { nodeId, signature: identity.signature }, metadata: { ...rotate.metadata, originalRect: current, finalRect: target, affectedRect: target } });
     }
+    ignoreMutations = true;
     const result = executor.executeTransaction({ operations, expectedRects: expected });
-    if (result.ok) { renderSelection(); refreshSave(); }
+    releaseMutationIgnore();
+    if (result.ok) { renderSelection(); overlays.refreshFromLiveGeometry(); refreshSave(); }
     return result;
   };
 
@@ -1856,7 +1874,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return deleteNodes(selectedIds());
     },
     resizeSelection(targetRect) {
-      return resizeNodes(selectedIds(), targetRect);
+      return resizeNodes(selectedIds(), { toBounds: targetRect });
     },
     rotateSelection(degrees) {
       return rotateNodes(selectedIds(), degrees);
@@ -2262,7 +2280,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     groupIdOf: (id) => groupByMember.get(id) ?? null,
     capabilities: capabilitiesOf,
     move: (nodeIds, dx, dy) => commitMove(nodeIds, dx, dy),
-    resize: (ids, toBounds) => resizeNodes(ids, toBounds),
+    resize: (ids, intent) => resizeNodes(ids, intent.fromBounds
+      ? { toBounds: { ...intent.toBounds }, fromBounds: { ...intent.fromBounds } }
+      : { toBounds: { ...intent.toBounds } }),
     rotate: (ids, degrees) => rotateNodes(ids, degrees),
     layer: (id, command) => commitLayer(id, command),
     style: (ids, styles) => styleNodes(ids, styles),

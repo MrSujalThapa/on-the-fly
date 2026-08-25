@@ -41,7 +41,7 @@ export interface OTFEnvironmentHost {
   groupIdOf(id: ElementId): string | null;
   capabilities(id: ElementId): ElementCapabilities | null;
   move(nodeIds: readonly ElementId[], dx: number, dy: number): BatchExecutionResult;
-  resize(ids: readonly ElementId[], toBounds: EnvironmentRect): BatchExecutionResult;
+  resize(ids: readonly ElementId[], intent: { toBounds: EnvironmentRect; fromBounds?: EnvironmentRect }): BatchExecutionResult;
   rotate(ids: readonly ElementId[], degrees: number): BatchExecutionResult;
   layer(id: ElementId, command: LayerCommand): ExecutionResult;
   style(ids: readonly ElementId[], styles: ReadonlyMap<StyleProperty, string>): BatchExecutionResult;
@@ -145,7 +145,9 @@ function executeSharedTransform(
   const firstBound = bind(host, first);
   const before = firstBound.ok ? geometryOf(firstBound.element, host.placement) : undefined;
   const executed = operation.type === "resize"
-    ? host.resize(ids, operation.toBounds)
+    ? host.resize(ids, operation.fromBounds
+      ? { toBounds: operation.toBounds, fromBounds: operation.fromBounds }
+      : { toBounds: operation.toBounds })
     : host.rotate(ids, operation.degrees);
   let result = fromExecution(executed, first, before);
   result = withAfter(host, result, result.target ?? first);

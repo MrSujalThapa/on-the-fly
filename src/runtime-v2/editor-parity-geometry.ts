@@ -23,6 +23,28 @@ export function scaleRects(startUnion: IntendedRect, targetUnion: IntendedRect, 
   }));
 }
 
+export interface ResizeIntent {
+  readonly toBounds: IntendedRect;
+  readonly fromBounds?: IntendedRect;
+  readonly memberRects?: readonly IntendedRect[];
+}
+
+export function planMultiTargetResize(
+  memberRects: readonly IntendedRect[],
+  fromBounds: IntendedRect,
+  toBounds: IntendedRect,
+): IntendedRect[] {
+  return scaleRects(fromBounds, toBounds, memberRects);
+}
+
+export function planMultiTargetRotate(
+  memberRects: readonly IntendedRect[],
+  union: IntendedRect,
+  degrees: number,
+): IntendedRect[] {
+  return memberRects.map((rect) => rotatedMemberRect(rect, union, degrees));
+}
+
 export function rotatePointAroundCenter(point: { x: number; y: number }, center: { x: number; y: number }, degrees: number): { x: number; y: number } {
   const radians = degrees * Math.PI / 180;
   const cos = Math.cos(radians);
