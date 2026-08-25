@@ -174,6 +174,9 @@ export function createVisualModel(root: Document): VisualModel {
       }
       return null;
     },
+    knownIds() {
+      return [...nodes.keys()];
+    },
     get(id) {
       return nodes.get(id) ?? null;
     },

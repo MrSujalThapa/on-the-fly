@@ -34,6 +34,8 @@ import { createPlacementEngine } from "./create-placement-engine.js";
 import { createVisualModel } from "./create-visual-model.js";
 import { DisposableOwner } from "./disposable-owner.js";
 import type { EditorRuntime, PersistResult, ReplayResult } from "./editor-runtime.js";
+import { createOTFEnvironment } from "./environment/OTFEnvironment.js";
+import type { ElementCapabilities, ElementId } from "./environment/environment-types.js";
 import type { NormalizedPointer } from "./input-router.js";
 import { rectFromElement, rectsNear } from "./geometry.js";
 import type { BatchExecutionResult, ExecutionResult } from "./operation-executor.js";
@@ -184,6 +186,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   });
   const overlays = createOverlayCoordinator({ document: root, visualModel });
   const input = createInputRouter(root);
+  const sessionId = `otf-session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
   const ownerHolder: { current: DisposableOwner } = { current: new DisposableOwner() };
   const owner = (): DisposableOwner => ownerHolder.current;
@@ -222,6 +225,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   let textEditorOpen = false;
   let cropMode = false;
   let toolbarOpen = false;
+  let environment: ReturnType<typeof createOTFEnvironment> | null = null;
+  const env = (): ReturnType<typeof createOTFEnvironment> => {
+    if (!environment) throw new Error("environment_uninitialized");
+    return environment;
+  };
   let stylePreview: {
     pending: Map<StyleProperty, string>;
     snapshots: Map<HTMLElement, string | null>;
@@ -308,6 +316,16 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     else overlays.clear();
     observeSelected();
     refreshToolbar();
+  };
+
+  const commitMove = (nodeIds: readonly VisualNodeId[], dx: number, dy: number): BatchExecutionResult => {
+    ignoreMutations = true;
+    const result = executor.executeMoveBatch({ nodeIds, dx, dy, pageKey: pageKey() });
+    releaseMutationIgnore();
+    refreshSave();
+    renderSelection();
+    overlays.refreshFromLiveGeometry();
+    return result;
   };
 
   const setSelection = (next: RuntimeSelection): void => {
@@ -823,8 +841,8 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     }
     if (active.kind.startsWith("crop-")) {
       const insets = cropInsetsAt(active, pointer);
-      const cropResult = runtime.cropSelection(insets);
-      logV2("crop-gesture-commit", { ok: cropResult.ok, insets, error: cropResult.ok ? undefined : cropResult.error });
+      const selected = singleSelectedElement();
+      if (selected) void env().execute({ type: "crop", target: selected.nodeId, insets });
       cropMode = false;
       overlays.setCropMode(false);
       refreshToolbar();
@@ -1083,7 +1101,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       armedCreate = null;
       if (armed) {
         const rect = resolvePlacementRect(armed.kind, active.startPointer.x, active.startPointer.y, event.clientX, event.clientY);
-        commitCreatedElement(armed.kind, rect, armed.appearance);
+        void env().execute({ type: "create", kind: armed.kind, rect, appearance: armed.appearance });
       }
       refreshToolbar();
       return;
@@ -1144,28 +1162,22 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return;
     }
 
-    ignoreMutations = true;
-    const result = executor.executeMoveBatch({
-      nodeIds: active.targets.map((target) => target.nodeId),
-      dx,
-      dy,
-      pageKey: pageKey(),
+    const result = env().executeBatch(active.targets.map((target) => ({
+      type: "move" as const,
+      target: target.nodeId,
+      delta: { x: dx, y: dy },
+    })));
+    void result.then((batch) => {
+      logV2("move", {
+        owner: "EXECUTION",
+        ok: batch.ok,
+        dx,
+        dy,
+        nodeIds: active.targets.map((target) => target.nodeId),
+        error: batch.ok ? undefined : batch.error?.message,
+      });
+      if (!batch.ok) logV2("move-failed", { owner: "EXECUTION", error: batch.error?.message });
     });
-    releaseMutationIgnore();
-    logV2("move", {
-      owner: result.ok ? "EXECUTION" : "EXECUTION",
-      ok: result.ok,
-      dx,
-      dy,
-      nodeIds: active.targets.map((target) => target.nodeId),
-      error: result.ok ? undefined : result.error,
-    });
-    renderSelection();
-    refreshSave();
-    overlays.refreshFromLiveGeometry();
-    if (!result.ok) {
-      logV2("move-failed", { owner: "EXECUTION", error: result.error });
-    }
   };
 
   const onKeyDown = (event: KeyboardEvent): void => {
@@ -1231,7 +1243,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       event.preventDefault(); runtime.redo(); return;
     }
     if (event.key === "Delete" || event.key === "Backspace") {
-      if (selectedIds().length > 0) { event.preventDefault(); runtime.deleteSelection(); }
+      const ids = selectedIds();
+      if (ids.length > 0) {
+        event.preventDefault();
+        void env().executeBatch(ids.map((id) => ({ type: "delete" as const, target: id })));
+      }
       return;
     }
     if (modifier && event.key.toLowerCase() === "g") {
@@ -1249,7 +1265,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         const command = bracketRight
           ? event.shiftKey ? "front" : "forward"
           : event.shiftKey ? "back" : "backward";
-        runtime.layer(primary.nodeId, command);
+        void env().execute({ type: "layer", target: primary.nodeId, command });
       }
       return;
     }
@@ -1318,6 +1334,185 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     owner().observe(observer);
   };
 
+  const deleteNodes = (nodeIds: readonly VisualNodeId[]): BatchExecutionResult => {
+    const roots = effectRoots(nodeIds);
+    const operations = roots.flatMap((nodeId) => {
+      const element = visualModel.bind(nodeId);
+      const identity = visualModel.durableIdentityOf(nodeId);
+      const measured = visualModel.measure([nodeId]).get(nodeId);
+      if (!element || !identity || !measured) return [];
+      const operation = buildHideOperation({ nodeId, signature: identity.signature, rect: measured }, true, { pageKey: pageKey(), sourceCommand: "delete" }, element.style.display || getComputedStyle(element).display, element);
+      return [{ ...operation, id: nextOperationId("hide"), status: "approved" as const, target: { nodeId, signature: identity.signature }, metadata: { ...operation.metadata, originalRect: measured, finalRect: measured, affectedRect: measured } }];
+    });
+    if (operations.length !== roots.length) return { ok: false, error: "delete_target_unresolved", rolledBack: false };
+    ignoreMutations = true;
+    const result = executor.executeTransaction({ operations });
+    releaseMutationIgnore();
+    logV2("delete", { ok: result.ok, selectedNodeIds: roots, operationIds: operations.map((operation) => operation.id), error: result.ok ? undefined : result.error });
+    if (result.ok) { runtime.clearSelection(); refreshSave(); }
+    return result;
+  };
+
+  const resizeNodes = (nodeIds: readonly VisualNodeId[], targetRect: IntendedRect): BatchExecutionResult => {
+    const roots = effectRoots(nodeIds);
+    const measured = visualModel.measure(roots);
+    const rects = roots.map((id) => measured.get(id)).filter((rect): rect is IntendedRect => Boolean(rect));
+    const startUnion = unionRects(rects);
+    if (!startUnion || rects.length !== roots.length) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
+    const targets = scaleRects(startUnion, targetRect, rects);
+    const operations: ResizeOperation[] = [];
+    for (const [index, nodeId] of roots.entries()) {
+      const identity = visualModel.durableIdentityOf(nodeId);
+      const current = rects[index];
+      const target = targets[index];
+      const element = visualModel.bind(nodeId);
+      if (!identity || !current || !target || !element) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
+      const state = initialTransformState(element);
+      const local = localSizeForRotatedBounds(target.width, target.height, state.rotate, liveLayoutSize(element, current, state.rotate));
+      const drafted = buildResizeOperation({ nodeId, signature: identity.signature, rect: current }, { width: local.width, height: local.height, mode: "box" }, { pageKey: pageKey(), sourceCommand: "resize" });
+      operations.push({ ...drafted, id: nextOperationId("resize"), status: "approved", target: { nodeId, signature: identity.signature }, metadata: { ...drafted.metadata, originalRect: current, finalRect: target, affectedRect: target } });
+    }
+    const expected = new Map(operations.map((operation) => [operation.id, operation.metadata?.finalRect ?? targetRect]));
+    ignoreMutations = true;
+    const result = executor.executeTransaction({ operations, expectedRects: expected });
+    releaseMutationIgnore();
+    if (result.ok) {
+      renderSelection();
+      overlays.refreshFromLiveGeometry();
+      refreshSave();
+    }
+    return result;
+  };
+
+  const rotateNodes = (nodeIds: readonly VisualNodeId[], degrees: number): BatchExecutionResult => {
+    const roots = effectRoots(nodeIds);
+    const measured = visualModel.measure(roots);
+    const rects = roots.map((id) => measured.get(id)).filter((rect): rect is IntendedRect => Boolean(rect));
+    const union = unionRects(rects);
+    if (!union || rects.length !== roots.length) return { ok: false, error: "rotate_target_unresolved", rolledBack: false };
+    const operations: EditorOperation[] = [];
+    const expected = new Map<string, IntendedRect>();
+    for (const [index, nodeId] of roots.entries()) {
+      const identity = visualModel.durableIdentityOf(nodeId);
+      const current = rects[index];
+      const element = visualModel.bind(nodeId);
+      if (!identity || !current || !element) return { ok: false, error: "rotate_target_unresolved", rolledBack: false };
+      const target = rotatedMemberRect(current, union, degrees);
+      const dx = target.x - current.x;
+      const dy = target.y - current.y;
+      if (Math.hypot(dx, dy) > 0.01) {
+        const plan = placement.planMove({ element, currentRect: current, dx, dy });
+        const move = buildMoveOperation({ nodeId, signature: identity.signature, rect: current }, dx, dy, { pageKey: pageKey(), sourceCommand: "rotate:move" });
+        const committed: MoveOperation = { ...move, id: nextOperationId("move"), status: "approved", payload: { ...move.payload, ...plan.payload }, metadata: { ...move.metadata, originalRect: current, finalRect: plan.expectedRect, affectedRect: plan.expectedRect } };
+        operations.push(committed); expected.set(committed.id, plan.expectedRect);
+      }
+      const existing = readStoredTransformState(element)?.rotate ?? 0;
+      const rotate = buildRotateOperation({ nodeId, signature: identity.signature, rect: target }, existing + degrees, { pageKey: pageKey(), sourceCommand: "rotate" });
+      operations.push({ ...rotate, id: nextOperationId("rotate"), status: "approved", target: { nodeId, signature: identity.signature }, metadata: { ...rotate.metadata, originalRect: current, finalRect: target, affectedRect: target } });
+    }
+    const result = executor.executeTransaction({ operations, expectedRects: expected });
+    if (result.ok) { renderSelection(); refreshSave(); }
+    return result;
+  };
+
+  const styleNodes = (nodeIds: readonly VisualNodeId[], styles: ReadonlyMap<StyleProperty, string>): BatchExecutionResult => {
+    cancelStylePreview();
+    const pending = exclusiveFillStyles(styles);
+    const roots = effectRoots(nodeIds);
+    if (roots.length === 0 || pending.size === 0) return { ok: false, error: "empty_style_transaction", rolledBack: false };
+    const operations: EditorOperation[] = [];
+    for (const nodeId of roots) {
+      const element = visualModel.bind(nodeId);
+      const identity = visualModel.durableIdentityOf(nodeId);
+      const rect = visualModel.measure([nodeId]).get(nodeId);
+      if (!element || !identity || !rect) return { ok: false, error: "style_target_unresolved", rolledBack: false };
+      for (const [property, value] of pending) {
+        const previousValue = getComputedStyle(resolveStyleRealizationTarget(element, property)).getPropertyValue(STYLE_CSS_MAP[property]);
+        const drafted = buildStyleOperation({ nodeId, signature: identity.signature, rect }, property, value, { pageKey: pageKey(), sourceCommand: "style" }, previousValue, element);
+        const wantsSubtree = TEXT_STYLE_PROPERTIES.has(property) && textSurface(element) !== element;
+        const subtree = wantsSubtree ? textSubtreeStyleTargets(element) : [];
+        if (wantsSubtree && subtree.length === 0) continue;
+        const scope = wantsSubtree ? "text-subtree" as const : "self" as const;
+        operations.push({ ...drafted, payload: { ...drafted.payload, scope }, id: nextOperationId("style"), status: "approved", target: { nodeId, signature: identity.signature } });
+      }
+    }
+    if (operations.length === 0) return { ok: false, error: "empty_style_transaction", rolledBack: false };
+    const result = executor.executeTransaction({ operations });
+    if (result.ok) { renderSelection(); refreshSave(); }
+    return result;
+  };
+
+  const editTextNode = (nodeId: VisualNodeId, value: string): ExecutionResult => {
+    const element = visualModel.bind(nodeId);
+    const surface = element ? textSurface(element) : null;
+    const surfaceId = surface ? visualModel.adopt(surface) : null;
+    if (!element || !surface || !surfaceId) return { ok: false, error: "text_target_unsafe", rolledBack: false };
+    const identity = visualModel.durableIdentityOf(surfaceId);
+    const rect = visualModel.measure([surfaceId]).get(surfaceId);
+    if (!identity || !rect) return { ok: false, error: "text_target_unresolved", rolledBack: false };
+    const drafted = buildTextOperation({ nodeId: surfaceId, signature: identity.signature, rect }, value, { pageKey: pageKey(), sourceCommand: "text-edit" }, renderedVisibleText(surface), surface);
+    const operation = { ...drafted, id: nextOperationId("text"), status: "approved" as const, target: { nodeId: surfaceId, signature: identity.signature } };
+    ignoreMutations = true;
+    const result = executor.executeTransaction({ operations: [operation] });
+    releaseMutationIgnore();
+    if (result.ok) { renderSelection(); refreshSave(); return { ok: true, operation: result.operations[0] ?? operation, verification: result.verifications[0] ?? { ok: true, expected: rect, actual: rect } }; }
+    return result;
+  };
+
+  const cropNode = (nodeId: VisualNodeId, insets: CropOperation["payload"]): ExecutionResult => {
+    const element = visualModel.bind(nodeId);
+    const subject = element ? resolveCropSubject(element) : null;
+    const subjectId = subject ? visualModel.adopt(subject) : null;
+    if (!element || !subject || !subjectId || !canCrop(element)) return { ok: false, error: "crop_target_unsafe", rolledBack: false };
+    const identity = visualModel.durableIdentityOf(subjectId);
+    const rect = visualModel.measure([subjectId]).get(subjectId);
+    if (!identity || !rect) return { ok: false, error: "crop_target_unresolved", rolledBack: false };
+    const drafted = buildCropOperation({ nodeId: subjectId, signature: identity.signature, rect }, insets, { pageKey: pageKey(), sourceCommand: "crop" });
+    const operation: CropOperation = { ...drafted, id: nextOperationId("crop"), status: "approved", target: { nodeId: subjectId, signature: identity.signature } };
+    ignoreMutations = true;
+    const result = executor.executeTransaction({ operations: [operation] });
+    releaseMutationIgnore();
+    if (result.ok) { renderSelection(); refreshSave(); return { ok: true, operation: result.operations[0] ?? operation, verification: result.verifications[0] ?? { ok: true, expected: rect, actual: rect } }; }
+    return result;
+  };
+
+  const commitLayer = (nodeId: VisualNodeId, command: Parameters<EditorRuntime["layer"]>[1]): ExecutionResult => {
+    ignoreMutations = true;
+    const result = executor.executeLayer({ nodeId, command, pageKey: pageKey() });
+    releaseMutationIgnore();
+    refreshSave();
+    overlays.refreshFromLiveGeometry();
+    logV2("layer", { owner: "EXECUTION", ok: result.ok, command, error: result.ok ? undefined : result.error });
+    return result;
+  };
+
+  const duplicateNode = (nodeId: VisualNodeId): BatchExecutionResult => {
+    const prior = selection;
+    setSelection(selectionFromAtoms([atomForNode(nodeId)], "click"));
+    if (!runtime.copySelection()) {
+      setSelection(prior);
+      return { ok: false, error: "duplicate_copy_failed", rolledBack: false };
+    }
+    return runtime.pasteClipboard();
+  };
+
+  const capabilitiesOf = (id: ElementId): ElementCapabilities | null => {
+    const element = visualModel.bind(id);
+    if (!element) return null;
+    const movable = visualModel.get(id)?.capabilities.movable ?? true;
+    return {
+      move: movable,
+      resize: true,
+      rotate: true,
+      style: true,
+      editText: canEditText(element),
+      crop: canCrop(element),
+      delete: true,
+      duplicate: true,
+      layer: true,
+    };
+  };
+
   const runtime: EditorRuntime = {
     visualModel,
     placement,
@@ -1325,6 +1520,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     ledger,
     overlays,
     input,
+    get environment() {
+      if (!environment) throw new Error("environment_uninitialized");
+      return environment;
+    },
     lifecycle: {
       start() {
         runtime.start();
@@ -1654,91 +1853,16 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return result;
     },
     deleteSelection() {
-      const roots = effectRoots(selectedIds());
-      const operations = roots.flatMap((nodeId) => {
-        const element = visualModel.bind(nodeId);
-        const identity = visualModel.durableIdentityOf(nodeId);
-        const measured = visualModel.measure([nodeId]).get(nodeId);
-        if (!element || !identity || !measured) return [];
-        const operation = buildHideOperation({ nodeId, signature: identity.signature, rect: measured }, true, { pageKey: pageKey(), sourceCommand: "delete" }, element.style.display || getComputedStyle(element).display, element);
-        return [{ ...operation, id: nextOperationId("hide"), status: "approved" as const, target: { nodeId, signature: identity.signature }, metadata: { ...operation.metadata, originalRect: measured, finalRect: measured, affectedRect: measured } }];
-      });
-      if (operations.length !== roots.length) return { ok: false, error: "delete_target_unresolved", rolledBack: false };
-      ignoreMutations = true;
-      const result = executor.executeTransaction({ operations });
-      releaseMutationIgnore();
-      logV2("delete", { ok: result.ok, selectedNodeIds: roots, operationIds: operations.map((operation) => operation.id), error: result.ok ? undefined : result.error });
-      if (result.ok) { runtime.clearSelection(); refreshSave(); }
-      return result;
+      return deleteNodes(selectedIds());
     },
     resizeSelection(targetRect) {
-      const roots = effectRoots(selectedIds());
-      const measured = visualModel.measure(roots);
-      const rects = roots.map((id) => measured.get(id)).filter((rect): rect is IntendedRect => Boolean(rect));
-      const startUnion = unionRects(rects);
-      if (!startUnion || rects.length !== roots.length) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
-      const targets = scaleRects(startUnion, targetRect, rects);
-      const operations: ResizeOperation[] = [];
-      for (const [index, nodeId] of roots.entries()) {
-        const identity = visualModel.durableIdentityOf(nodeId);
-        const current = rects[index];
-        const target = targets[index];
-        const element = visualModel.bind(nodeId);
-        if (!identity || !current || !target || !element) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
-        const state = initialTransformState(element);
-        const local = localSizeForRotatedBounds(target.width, target.height, state.rotate, liveLayoutSize(element, current, state.rotate));
-        const drafted = buildResizeOperation({ nodeId, signature: identity.signature, rect: current }, { width: local.width, height: local.height, mode: "box" }, { pageKey: pageKey(), sourceCommand: "resize" });
-        operations.push({ ...drafted, id: nextOperationId("resize"), status: "approved", target: { nodeId, signature: identity.signature }, metadata: { ...drafted.metadata, originalRect: current, finalRect: target, affectedRect: target } });
-      }
-      const expected = new Map(operations.map((operation) => [operation.id, operation.metadata?.finalRect ?? targetRect]));
-      ignoreMutations = true;
-      const result = executor.executeTransaction({ operations, expectedRects: expected });
-      releaseMutationIgnore();
-      if (result.ok) {
-        renderSelection();
-        overlays.refreshFromLiveGeometry();
-        refreshSave();
-      }
-      return result;
+      return resizeNodes(selectedIds(), targetRect);
     },
     rotateSelection(degrees) {
-      const roots = effectRoots(selectedIds());
-      const measured = visualModel.measure(roots);
-      const rects = roots.map((id) => measured.get(id)).filter((rect): rect is IntendedRect => Boolean(rect));
-      const union = unionRects(rects);
-      if (!union || rects.length !== roots.length) return { ok: false, error: "rotate_target_unresolved", rolledBack: false };
-      const operations: EditorOperation[] = [];
-      const expected = new Map<string, IntendedRect>();
-      for (const [index, nodeId] of roots.entries()) {
-        const identity = visualModel.durableIdentityOf(nodeId);
-        const current = rects[index];
-        const element = visualModel.bind(nodeId);
-        if (!identity || !current || !element) return { ok: false, error: "rotate_target_unresolved", rolledBack: false };
-        const target = rotatedMemberRect(current, union, degrees);
-        const dx = target.x - current.x;
-        const dy = target.y - current.y;
-        if (Math.hypot(dx, dy) > 0.01) {
-          const plan = placement.planMove({ element, currentRect: current, dx, dy });
-          const move = buildMoveOperation({ nodeId, signature: identity.signature, rect: current }, dx, dy, { pageKey: pageKey(), sourceCommand: "rotate:move" });
-          const committed: MoveOperation = { ...move, id: nextOperationId("move"), status: "approved", payload: { ...move.payload, ...plan.payload }, metadata: { ...move.metadata, originalRect: current, finalRect: plan.expectedRect, affectedRect: plan.expectedRect } };
-          operations.push(committed); expected.set(committed.id, plan.expectedRect);
-        }
-        const existing = readStoredTransformState(element)?.rotate ?? 0;
-        const rotate = buildRotateOperation({ nodeId, signature: identity.signature, rect: target }, existing + degrees, { pageKey: pageKey(), sourceCommand: "rotate" });
-        operations.push({ ...rotate, id: nextOperationId("rotate"), status: "approved", target: { nodeId, signature: identity.signature }, metadata: { ...rotate.metadata, originalRect: current, finalRect: target, affectedRect: target } });
-      }
-      const result = executor.executeTransaction({ operations, expectedRects: expected });
-      if (result.ok) { renderSelection(); refreshSave(); }
-      return result;
+      return rotateNodes(selectedIds(), degrees);
     },
     moveSelection(dx, dy): BatchExecutionResult {
-      const roots = effectRoots(selectedIds());
-      ignoreMutations = true;
-      const result = executor.executeMoveBatch({ nodeIds: roots, dx, dy, pageKey: pageKey() });
-      releaseMutationIgnore();
-      refreshSave();
-      renderSelection();
-      return result;
+      return commitMove(effectRoots(selectedIds()), dx, dy);
     },
     selectParent() {
       const primary = selection.primary;
@@ -1773,74 +1897,24 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return result;
     },
     layer(nodeId, command): ExecutionResult {
-      ignoreMutations = true;
-      const result = executor.executeLayer({ nodeId, command, pageKey: pageKey() });
-      releaseMutationIgnore();
+      const result = commitLayer(nodeId, command);
       if (result.ok) {
         setSelection(selectionFromAtoms([atomForNode(nodeId)], "click"));
       }
-      refreshSave();
-      overlays.refreshFromLiveGeometry();
-      logV2("layer", { owner: "EXECUTION", ok: result.ok, command, error: result.ok ? undefined : result.error });
       return result;
     },
     styleSelection(styles): BatchExecutionResult {
-      cancelStylePreview();
-      const pending = exclusiveFillStyles(styles);
-      const roots = effectRoots(selectedIds());
-      if (roots.length === 0 || pending.size === 0) return { ok: false, error: "empty_style_transaction", rolledBack: false };
-      const operations: EditorOperation[] = [];
-      for (const nodeId of roots) {
-        const element = visualModel.bind(nodeId);
-        const identity = visualModel.durableIdentityOf(nodeId);
-        const rect = visualModel.measure([nodeId]).get(nodeId);
-        if (!element || !identity || !rect) return { ok: false, error: "style_target_unresolved", rolledBack: false };
-        for (const [property, value] of pending) {
-          const previousValue = getComputedStyle(resolveStyleRealizationTarget(element, property)).getPropertyValue(STYLE_CSS_MAP[property]);
-          const drafted = buildStyleOperation({ nodeId, signature: identity.signature, rect }, property, value, { pageKey: pageKey(), sourceCommand: "style" }, previousValue, element);
-          const wantsSubtree = TEXT_STYLE_PROPERTIES.has(property) && textSurface(element) !== element;
-          const subtree = wantsSubtree ? textSubtreeStyleTargets(element) : [];
-          if (wantsSubtree && subtree.length === 0) continue;
-          const scope = wantsSubtree ? "text-subtree" as const : "self" as const;
-          operations.push({ ...drafted, payload: { ...drafted.payload, scope }, id: nextOperationId("style"), status: "approved", target: { nodeId, signature: identity.signature } });
-        }
-      }
-      if (operations.length === 0) return { ok: false, error: "empty_style_transaction", rolledBack: false };
-      const result = executor.executeTransaction({ operations });
-      if (result.ok) { renderSelection(); refreshSave(); }
-      return result;
+      return styleNodes(selectedIds(), styles);
     },
     editSelectedText(value): ExecutionResult {
       const selected = singleSelectedElement();
-      const surface = selected ? textSurface(selected.element) : null;
-      const surfaceId = surface ? visualModel.adopt(surface) : null;
-      if (!selected || !surface || !surfaceId) return { ok: false, error: "text_target_unsafe", rolledBack: false };
-      const identity = visualModel.durableIdentityOf(surfaceId);
-      const rect = visualModel.measure([surfaceId]).get(surfaceId);
-      if (!identity || !rect) return { ok: false, error: "text_target_unresolved", rolledBack: false };
-      const drafted = buildTextOperation({ nodeId: surfaceId, signature: identity.signature, rect }, value, { pageKey: pageKey(), sourceCommand: "text-edit" }, renderedVisibleText(surface), surface);
-      const operation = { ...drafted, id: nextOperationId("text"), status: "approved" as const, target: { nodeId: surfaceId, signature: identity.signature } };
-      ignoreMutations = true;
-      const result = executor.executeTransaction({ operations: [operation] });
-      releaseMutationIgnore();
-      if (result.ok) { renderSelection(); refreshSave(); return { ok: true, operation: result.operations[0] ?? operation, verification: result.verifications[0] ?? { ok: true, expected: rect, actual: rect } }; }
-      return result;
+      if (!selected) return { ok: false, error: "text_target_unsafe", rolledBack: false };
+      return editTextNode(selected.nodeId, value);
     },
     cropSelection(insets): ExecutionResult {
       const selected = singleSelectedElement();
-      const subject = selected ? resolveCropSubject(selected.element) : null;
-      const subjectId = subject ? visualModel.adopt(subject) : null;
-      if (!selected || !subject || !subjectId || !canCrop(selected.element)) return { ok: false, error: "crop_target_unsafe", rolledBack: false };
-      const identity = visualModel.durableIdentityOf(subjectId);
-      const rect = visualModel.measure([subjectId]).get(subjectId);
-      if (!identity || !rect) return { ok: false, error: "crop_target_unresolved", rolledBack: false };
-      const drafted = buildCropOperation({ nodeId: subjectId, signature: identity.signature, rect }, insets, { pageKey: pageKey(), sourceCommand: "crop" });
-      const operation: CropOperation = { ...drafted, id: nextOperationId("crop"), status: "approved", target: { nodeId: subjectId, signature: identity.signature } };
-      ignoreMutations = true;
-      const result = executor.executeTransaction({ operations: [operation] });
-      releaseMutationIgnore();
-      if (result.ok) { renderSelection(); refreshSave(); return { ok: true, operation: result.operations[0] ?? operation, verification: result.verifications[0] ?? { ok: true, expected: rect, actual: rect } }; }
-      return result;
+      if (!selected) return { ok: false, error: "crop_target_unsafe", rolledBack: false };
+      return cropNode(selected.nodeId, insets);
     },
     canUndo() { return ledger.canUndo(); },
     canRedo() { return ledger.canRedo(); },
@@ -2178,6 +2252,38 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     },
   };
 
+  environment = createOTFEnvironment({
+    document: root,
+    sessionId,
+    visualModel,
+    placement,
+    ledger,
+    selectedIds,
+    groupIdOf: (id) => groupByMember.get(id) ?? null,
+    capabilities: capabilitiesOf,
+    move: (nodeIds, dx, dy) => commitMove(nodeIds, dx, dy),
+    resize: (id, width, height) => {
+      const current = visualModel.measure([id]).get(id);
+      if (!current) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
+      return resizeNodes([id], { ...current, width, height });
+    },
+    rotate: (ids, degrees) => rotateNodes(ids, degrees),
+    layer: (id, command) => commitLayer(id, command),
+    style: (ids, styles) => styleNodes(ids, styles),
+    editText: (id, value) => editTextNode(id, value),
+    crop: (id, insets) => cropNode(id, insets),
+    create: (input) => runtime.createElement(input),
+    delete: (ids) => deleteNodes(ids),
+    duplicate: (id) => duplicateNode(id),
+    group: (ids) => {
+      setSelection(selectionFromAtoms(ids.map(atomForNode), "click"));
+      return runtime.groupSelection();
+    },
+    ungroup: () => runtime.ungroupSelection(),
+    undo: () => runtime.undo(),
+    redo: () => runtime.redo(),
+  });
+
   overlays.configureToolbar({
     onCommand(commandId) {
       if (commandId === "undo") { runtime.undo(); return; }
@@ -2267,7 +2373,15 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     onStylePanelApply() {
       const pending = new Map(stylePreview?.pending ?? []);
       cancelStylePreview();
-      if (pending.size > 0) runtime.styleSelection(pending);
+      const ids = selectedIds();
+      if (pending.size > 0 && ids.length > 0) {
+        void env().executeBatch(ids.flatMap((id) => [...pending].map(([property, value]) => ({
+          type: "style" as const,
+          target: id,
+          property,
+          value,
+        }))));
+      }
       stylePanelOpen = false;
       refreshToolbar();
     },
@@ -2281,7 +2395,8 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       refreshToolbar();
     },
     onTextCommit(value) {
-      runtime.editSelectedText(value);
+      const selected = singleSelectedElement();
+      if (selected) void env().execute({ type: "text", target: selected.nodeId, value });
       textEditorOpen = false;
       refreshToolbar();
     },

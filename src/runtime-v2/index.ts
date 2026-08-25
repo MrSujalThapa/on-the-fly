@@ -1,5 +1,14 @@
 export type { EditorRuntime, PersistResult, ReplayResult } from "./editor-runtime.js";
 export { createEditorRuntime } from "./create-editor-runtime.js";
+export type { OTFEnvironment } from "./environment/environment-types.js";
+export type {
+  ElementId,
+  OTFOperation,
+  PageObservation,
+  ElementObservation,
+} from "./environment/environment-types.js";
+export { createOTFEnvironment } from "./environment/OTFEnvironment.js";
+export { OTFEnvironmentError } from "./environment/environment-errors.js";
 export type {
   AmbiguousVisual,
   DurableVisualIdentity,

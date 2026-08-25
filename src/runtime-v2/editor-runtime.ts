@@ -11,6 +11,7 @@ import type { IntendedRect } from "./placement-engine.js";
 import type { RuntimeSelection, RuntimeVirtualGroup } from "./runtime-selection.js";
 import type { CropOperation, StyleProperty } from "../editor/operations.js";
 import type { CreatedElementAppearance, CreatedElementContent, CreatedElementKind } from "../editor/create/created-element.js";
+import type { OTFEnvironment } from "./environment/environment-types.js";
 
 export interface PersistResult {
   readonly ok: boolean;
@@ -39,6 +40,7 @@ export interface EditorRuntime {
   readonly overlays: OverlayCoordinator;
   readonly input: InputRouter;
   readonly lifecycle: RuntimeLifecycle;
+  readonly environment: OTFEnvironment;
   start(): void;
   stop(): void;
   select(element: HTMLElement): VisualNodeId | null;
