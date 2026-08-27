@@ -83,6 +83,20 @@ describe("transform composition", () => {
     expect(element.style.transform).toBe("");
   });
 
+  it("keeps a rotated element's later move in world-axis translation", () => {
+    const { root } = createTestDocument(`<main><p class="target">Shape</p></main>`);
+    const adapter = new DomRuntimeAdapter(root);
+    const element = root.querySelector("p.target") as HTMLElement;
+    const target = targetSignature("Shape");
+    const rotate: RotateOperation = { ...createRotateOperation({ id: "rotate-first", payload: { degrees: 37 } }), target };
+    const move: MoveOperation = { ...createMoveOperation({ id: "move-after", payload: { dx: 200, dy: 50 } }), target };
+
+    expect(adapter.applyOperation(rotate).ok).toBe(true);
+    expect(adapter.applyOperation(move).ok).toBe(true);
+    expect(readStoredTransformState(element)).toMatchObject({ dx: 200, dy: 50, rotate: 37 });
+    expect(element.style.transform).toBe("translate(200px, 50px) rotate(37deg)");
+  });
+
   it("rejects unsupported DOM operations with typed errors", () => {
     const { root } = createTestDocument(`<main><p class="target">Block</p></main>`);
     const adapter = new DomRuntimeAdapter(root);

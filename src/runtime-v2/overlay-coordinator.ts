@@ -13,6 +13,7 @@ export interface OverlayCoordinator {
   showFreeformLasso(points: readonly { x: number; y: number }[]): void;
   clearLasso(): void;
   toggleLassoChooser(): void;
+  setLassoPreference(mode: "rectangle" | "freeform"): void;
   closeLassoChooser(): boolean;
   isLassoChooserOpen(): boolean;
   toggleMoreMenu(): void;

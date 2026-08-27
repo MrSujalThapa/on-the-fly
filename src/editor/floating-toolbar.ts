@@ -475,6 +475,18 @@ export class FloatingToolbar {
     this.syncOutsideListener();
   }
 
+  setLassoPreference(mode: "rectangle" | "freeform"): void {
+    if (!this.lassoChooserEl) return;
+    const buttons = Array.from(
+      this.lassoChooserEl.querySelectorAll("[data-lasso-mode]"),
+    ).filter((button): button is HTMLButtonElement => button instanceof HTMLButtonElement);
+    for (const button of buttons) {
+      const active = button.dataset.lassoMode === mode;
+      button.dataset.active = String(active);
+      button.setAttribute("aria-checked", String(active));
+    }
+  }
+
   closeLassoChooser(): boolean {
     if (!this.lassoChooserOpen) return false;
     this.lassoChooserOpen = false;
@@ -1218,11 +1230,11 @@ export class FloatingToolbar {
 
 function createLassoChooserMarkup(): string {
   return `
-    <button type="button" class="otf-lasso-option" role="menuitem" data-lasso-mode="rectangle">
+    <button type="button" class="otf-lasso-option" role="menuitemradio" data-lasso-mode="rectangle" data-active="true" aria-checked="true">
       <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="1.5"/></svg>
       Rectangle
     </button>
-    <button type="button" class="otf-lasso-option" role="menuitem" data-lasso-mode="freeform">
+    <button type="button" class="otf-lasso-option" role="menuitemradio" data-lasso-mode="freeform" data-active="false" aria-checked="false">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 15c2.2-4 4.2 3 7-1 2.4-3.4 3.4 4.2 6.2.4 1.4-1.8 2.8-3.2 3.8-3.8"/></svg>
       Freeform
     </button>
@@ -1552,6 +1564,7 @@ const CURVED_TOOLBAR_CSS = `
     cursor: pointer;
   }
   .otf-lasso-option:hover { background: rgba(0,0,0,0.08); }
+  .otf-lasso-option[data-active="true"]::after { content: "✓"; margin-left: auto; }
   .otf-lasso-option svg {
     width: 18px;
     height: 18px;

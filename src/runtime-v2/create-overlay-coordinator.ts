@@ -517,6 +517,9 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     toggleLassoChooser() {
       toolbar?.toggleLassoChooser();
     },
+    setLassoPreference(mode) {
+      toolbar?.setLassoPreference(mode);
+    },
     closeLassoChooser() {
       return toolbar?.closeLassoChooser() ?? false;
     },

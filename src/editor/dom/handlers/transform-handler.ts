@@ -108,12 +108,19 @@ function applyMoveToFinalRect(
 
   if (operation.payload.detached && !operation.payload.interactionSafeFixed && !isLegacyTransformOnlyMovePayload(operation)) {
     const previousSerialized = element.getAttribute(OTF_TRANSFORM_ATTR);
-    realizeIndependentPlacement(element, {
-      x: finalRect.x,
-      y: finalRect.y,
-      width: operation.payload.detachedWidth ?? finalRect.width,
-      height: operation.payload.detachedHeight ?? finalRect.height,
-    }, { zIndex: operation.payload.detachedZIndex ?? element.style.zIndex });
+    // Persisted detach coordinates are page-space. Reusing the viewport rect
+    // here adds the current scroll offset during replay and makes the same
+    // operation drift each time it is applied.
+    if (operation.payload.detachedLeft !== undefined && operation.payload.detachedTop !== undefined) {
+      applyPersistedDetachPlacement(element, operation);
+    } else {
+      realizeIndependentPlacement(element, {
+        x: finalRect.x,
+        y: finalRect.y,
+        width: operation.payload.detachedWidth ?? finalRect.width,
+        height: operation.payload.detachedHeight ?? finalRect.height,
+      }, { zIndex: operation.payload.detachedZIndex ?? element.style.zIndex });
+    }
     return [
       { kind: "transform-state" as const, previousState: previousSerialized },
     ];

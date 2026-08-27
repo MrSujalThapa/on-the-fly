@@ -26,6 +26,8 @@ export interface ReplayResult {
   readonly failureKind?: "LEDGER" | "PERSISTENCE" | "IDENTITY" | "EXECUTION";
 }
 
+export type RuntimeReadiness = "STARTING" | "REPLAYING" | "RECONCILING" | "READY";
+
 /**
  * Human and future agent entry point. No agent-specific API.
  *
@@ -39,6 +41,7 @@ export interface EditorRuntime {
   readonly overlays: OverlayCoordinator;
   readonly input: InputRouter;
   readonly lifecycle: RuntimeLifecycle;
+  getReadiness(): RuntimeReadiness;
   start(): void;
   stop(): void;
   select(element: HTMLElement): VisualNodeId | null;

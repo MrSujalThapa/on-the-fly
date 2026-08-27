@@ -56,6 +56,7 @@ describe("duplicate clipboard", () => {
     expect(clone.parentElement).toBe(document.body);
     expect(clone.style.left).toBe("22px");
     expect(clone.style.top).toBe("32px");
+    expect(Number(clone.style.zIndex)).toBeGreaterThan(0);
   });
 
   it("duplicates grouped selections", () => {

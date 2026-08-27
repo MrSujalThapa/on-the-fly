@@ -33,7 +33,7 @@ import { createOverlayCoordinator } from "./create-overlay-coordinator.js";
 import { createPlacementEngine } from "./create-placement-engine.js";
 import { createVisualModel } from "./create-visual-model.js";
 import { DisposableOwner } from "./disposable-owner.js";
-import type { EditorRuntime, PersistResult, ReplayResult } from "./editor-runtime.js";
+import type { EditorRuntime, PersistResult, ReplayResult, RuntimeReadiness } from "./editor-runtime.js";
 import type { NormalizedPointer } from "./input-router.js";
 import { rectFromElement, rectsNear } from "./geometry.js";
 import type { BatchExecutionResult, ExecutionResult } from "./operation-executor.js";
@@ -194,6 +194,8 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   let groupCounter = 0;
   let gesture: PointerGesture | null = null;
   let armedLassoMode: ArmedLassoMode = null;
+  let lassoPreference: Exclude<ArmedLassoMode, null> = "rectangle";
+  let lassoPreferenceExplicit = false;
   let armedCreate: { kind: CreatedElementKind; appearance: CreatedElementAppearance } | null = null;
   let paletteSampling = false;
   const wrapSessions = new Map<string, {
@@ -202,8 +204,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   }>();
   let transformGesture: TransformGesture | null = null;
   let ignoreMutations = false;
+  let mutationObserver: MutationObserver | null = null;
   const releaseMutationIgnore = (): void => {
     queueMicrotask(() => {
+      mutationObserver?.takeRecords();
       ignoreMutations = false;
     });
   };
@@ -215,6 +219,8 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   const pastePartitions = new Map<string, readonly (readonly number[])[]>();
   let operationCounter = 0;
   let replayGeneration = 0;
+  let readiness: RuntimeReadiness = "READY";
+  let startRequested = false;
   let saveStatus: "idle" | "saving" | "saved" | "failed" = "idle";
   let lastSaveError: string | undefined;
   let refreshToolbar = (): void => undefined;
@@ -1305,9 +1311,14 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       if (!relevant) {
         return;
       }
-      reapplyActive();
-      overlays.refreshFromLiveGeometry();
+      const observedCursor = ledger.cursor;
+      view.requestAnimationFrame(() => {
+        if (readiness !== "READY" || observedCursor !== ledger.cursor) return;
+        reapplyActive();
+        overlays.refreshFromLiveGeometry();
+      });
     });
+    mutationObserver = observer;
     observer.observe(root.documentElement, {
       subtree: true,
       childList: true,
@@ -1316,6 +1327,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       characterData: false,
     });
     owner().observe(observer);
+    owner().add(() => {
+      if (mutationObserver === observer) mutationObserver = null;
+    });
   };
 
   const runtime: EditorRuntime = {
@@ -1340,7 +1354,12 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         overlays.refreshFromLiveGeometry();
       },
     },
+    getReadiness() {
+      return readiness;
+    },
     start() {
+      startRequested = true;
+      if (readiness !== "READY") return;
       if (started) {
         return;
       }
@@ -1389,6 +1408,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       renderSelection();
     },
     stop() {
+      startRequested = false;
       finishTransformGesture(false);
       cancelGesture();
       resizeObserver?.disconnect();
@@ -1423,6 +1443,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     },
     armLasso(mode) {
       overlays.closeLassoChooser();
+      lassoPreference = mode;
+      lassoPreferenceExplicit = true;
+      overlays.setLassoPreference(mode);
       armedLassoMode = mode;
       refreshToolbar();
     },
@@ -1997,6 +2020,14 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         logV2("replay-skipped-active-edit", { owner: "LEDGER", generation, startingRevision, dirty: ledger.isDirty() });
         return { ok: true, applied: 0, unresolved: 0, failed: 0 };
       }
+      readiness = "REPLAYING";
+      const finishReadiness = (): void => {
+        if (generation !== replayGeneration) return;
+        readiness = "RECONCILING";
+        mutationObserver?.takeRecords();
+        readiness = "READY";
+        if (startRequested) runtime.start();
+      };
       // Edit mode may turn on while this replay is awaiting load. Do not abort
       // an in-flight replay just because `started` flipped; that dropped
       // createElement/duplicate reconstruction after a live-page reload.
@@ -2005,6 +2036,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const loaded = await loadPageOperations(pageKey());
       if (superseded()) {
         logV2("replay-superseded", { owner: "LEDGER", generation, startingRevision, currentRevision: ledger.cursor });
+        finishReadiness();
         return { ok: true, applied: 0, unresolved: 0, failed: 0 };
       }
       const checkpoint = projectCanonicalCheckpoint(loaded);
@@ -2022,11 +2054,12 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         operation.type === "style" || operation.type === "text" || operation.type === "hide");
       if ((duplicates.length > 0 || created.length > 0) && root.readyState !== "complete") {
         await new Promise<void>((resolve) => {
-          root.defaultView?.addEventListener("load", () => { resolve(); }, { once: true });
-          root.defaultView?.setTimeout(resolve, 2_000);
+          const view = root.defaultView;
+          if (!view) { resolve(); return; }
+          view.addEventListener("load", () => { resolve(); }, { once: true });
         });
       }
-      if (superseded()) return { ok: true, applied: 0, unresolved: 0, failed: 0 };
+      if (superseded()) { finishReadiness(); return { ok: true, applied: 0, unresolved: 0, failed: 0 }; }
       const ownedNodeIds = new Set([
         ...created.map((operation) => operation.payload.elementId),
         ...duplicates.map((operation) => operation.payload.cloneId),
@@ -2049,6 +2082,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       });
       if (superseded()) {
         logV2("replay-superseded", { owner: "LEDGER", generation, startingRevision, currentRevision: ledger.cursor });
+        finishReadiness();
         return { ok: true, applied: 0, unresolved: 0, failed: 0 };
       }
       const createdResults = created.map((operation) => executor.replayOperation(operation));
@@ -2158,9 +2192,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       releaseMutationIgnore();
       if (superseded()) {
         logV2("replay-hydrate-superseded", { owner: "LEDGER", generation, startingRevision, currentRevision: ledger.cursor });
+        finishReadiness();
         return { ok: false, applied, unresolved, failed: failed + 1, failureKind: "LEDGER" };
       }
       ledger.hydratePersisted(toApply);
+      finishReadiness();
       const ok = unresolved === 0 && failed === 0;
       logV2("replay", {
         owner: ok ? "LEDGER" : failureKind ?? "LEDGER",
@@ -2186,7 +2222,8 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         if (stylePanelOpen) { stylePanelOpen = false; cancelStylePreview(); overlays.closeStylePanel(); }
         if (textEditorOpen) { textEditorOpen = false; overlays.closeTextEditor(true); }
         closeCreateChrome();
-        overlays.toggleLassoChooser();
+        if (!lassoPreferenceExplicit || armedLassoMode) overlays.toggleLassoChooser();
+        else runtime.armLasso(lassoPreference);
         refreshToolbar();
         return;
       }
