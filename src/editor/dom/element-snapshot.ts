@@ -166,6 +166,7 @@ export function realizeIndependentBox(
   element: HTMLElement,
   viewportRect: { x: number; y: number; width: number; height: number },
   rotate: number,
+  options: { preserveLocalSize?: boolean } = {},
 ): { width: number; height: number } {
   const view = element.ownerDocument.defaultView;
   const left = viewportRect.x + (view?.scrollX ?? 0);
@@ -192,12 +193,14 @@ export function realizeIndependentBox(
     element.style.left = `${String(left + dx)}px`;
     element.style.top = `${String(top + dy)}px`;
   }
-  const sized = element.getBoundingClientRect();
-  const dw = viewportRect.width - sized.width;
-  const dh = viewportRect.height - sized.height;
-  if (dw !== 0 || dh !== 0) {
-    element.style.setProperty("width", `${String(viewportRect.width + dw)}px`, "important");
-    element.style.setProperty("height", `${String(viewportRect.height + dh)}px`, "important");
+  if (!options.preserveLocalSize) {
+    const sized = element.getBoundingClientRect();
+    const dw = viewportRect.width - sized.width;
+    const dh = viewportRect.height - sized.height;
+    if (dw !== 0 || dh !== 0) {
+      element.style.setProperty("width", `${String(viewportRect.width + dw)}px`, "important");
+      element.style.setProperty("height", `${String(viewportRect.height + dh)}px`, "important");
+    }
   }
   const live = element.getBoundingClientRect();
   return { width: live.width, height: live.height };

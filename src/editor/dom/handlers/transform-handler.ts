@@ -108,12 +108,16 @@ function applyMoveToFinalRect(
 
   if (operation.payload.detached && !operation.payload.interactionSafeFixed && !isLegacyTransformOnlyMovePayload(operation)) {
     const previousSerialized = element.getAttribute(OTF_TRANSFORM_ATTR);
-    realizeIndependentPlacement(element, {
-      x: finalRect.x,
-      y: finalRect.y,
-      width: operation.payload.detachedWidth ?? finalRect.width,
-      height: operation.payload.detachedHeight ?? finalRect.height,
-    }, { zIndex: operation.payload.detachedZIndex ?? element.style.zIndex });
+    if (operation.payload.detachedLeft !== undefined && operation.payload.detachedTop !== undefined) {
+      applyPersistedDetachPlacement(element, operation);
+    } else {
+      realizeIndependentPlacement(element, {
+        x: finalRect.x,
+        y: finalRect.y,
+        width: operation.payload.detachedWidth ?? finalRect.width,
+        height: operation.payload.detachedHeight ?? finalRect.height,
+      }, { zIndex: operation.payload.detachedZIndex ?? element.style.zIndex });
+    }
     return [
       { kind: "transform-state" as const, previousState: previousSerialized },
     ];
@@ -157,7 +161,7 @@ export function applyResizeOperation(
         ...finalRect,
         width: operation.payload.width,
         height: operation.payload.height,
-      }, { zIndex: element.style.zIndex });
+      }, { zIndex: element.style.zIndex, preserveLocalSize: true });
       return [
         { kind: "transform-state" as const, previousState: previousSerialized },
         { kind: "size", previousWidth, previousHeight, previousBoxSizing },

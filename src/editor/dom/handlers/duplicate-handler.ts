@@ -11,6 +11,7 @@ import {
 } from "../element-snapshot.js";
 import { OTF_DETACH_ATTR } from "../managed-detach.js";
 import { OTF_MANAGED_ATTR, type AppliedDomEffect, type StoredTransformState } from "../types.js";
+import { applyLayerToHost, resolveLayerPlan } from "../layer-overlap-resolver.js";
 
 export function applyDuplicateOperation(
   document: Document,
@@ -52,6 +53,15 @@ export function applyDuplicateOperation(
   writeStoredTransformState(element, state);
   applyStoredTransformState(element, state);
 
+  const source = operation.payload.sourceCssPath
+    ? document.querySelector(operation.payload.sourceCssPath)
+    : null;
+  const layerChanges: AppliedDomEffect["changes"] = [];
+  if (source instanceof HTMLElement && source !== element) {
+    const plan = resolveLayerPlan(element, "forward", snapshotStore);
+    layerChanges.push(...applyLayerToHost(element, plan.layer, snapshotStore));
+  }
+
   const viewport = document.defaultView
     ? { width: document.documentElement.clientWidth, height: document.documentElement.clientHeight }
     : undefined;
@@ -65,6 +75,7 @@ export function applyDuplicateOperation(
         previousHtml,
         previousParent,
       },
+      ...layerChanges,
     ],
   };
 }

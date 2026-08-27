@@ -224,6 +224,32 @@ describe("Runtime V2 editor parity", () => {
     expect(runtime.visualModel.pick(40, 40)).toBe(runtime.visualModel.adopt(child));
   });
 
+  it("picks a paintless clone root instead of an underlying host section", () => {
+    const { document, root } = createTestDocument(`<section id="source"><button>Host</button></section><div id="clone" data-otf-clone-id="clone-1"><button id="clone-child">Clone</button></div>`);
+    const source = byId(root, "source"); const clone = byId(root, "clone"); const child = byId(root, "clone-child");
+    layoutManagedElement(source, { x: 0, y: 0, width: 160, height: 80 });
+    layoutManagedElement(clone, { x: 0, y: 0, width: 160, height: 80 });
+    layoutManagedElement(child, { x: 10, y: 10, width: 60, height: 30 });
+    document.elementsFromPoint = () => [child, clone, source];
+    const model = createVisualModel(document);
+    expect(model.pick(20, 20)).toBe("clone-1");
+    expect(model.bind("clone-1")).toBe(clone);
+  });
+
+  it("keeps an explicit parent authoritative when clicking its nested child", () => {
+    const { document, root } = createTestDocument(`<div id="parent"><button id="child">Child</button></div>`);
+    const parent = byId(root, "parent"); const child = byId(root, "child");
+    layoutManagedElement(parent, { x: 10, y: 10, width: 160, height: 80 });
+    layoutManagedElement(child, { x: 30, y: 30, width: 70, height: 30 });
+    document.elementsFromPoint = () => [child, parent];
+    const runtime = createEditorRuntime(document);
+    runtime.start();
+    const parentId = present(runtime.select(parent));
+    click(child, 40, 40);
+    expect(runtime.selectedNodeIds()).toEqual([parentId]);
+    runtime.stop();
+  });
+
   it("lasso returns only canonical IDs and adds to existing selection", () => {
     const { document, root } = createTestDocument(`<article id="a">A</article><article id="b">B</article><article id="c">C</article>`);
     const a = byId(root, "a"); const b = byId(root, "b"); const c = byId(root, "c");

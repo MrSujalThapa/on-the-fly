@@ -202,8 +202,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   }>();
   let transformGesture: TransformGesture | null = null;
   let ignoreMutations = false;
+  let mutationObserver: MutationObserver | null = null;
   const releaseMutationIgnore = (): void => {
     queueMicrotask(() => {
+      mutationObserver?.takeRecords();
       ignoreMutations = false;
     });
   };
@@ -915,6 +917,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     };
     active.dispose = cleanup;
     transformGesture = active;
+    logV2("transform-gesture-start", {
+      kind,
+      targets: targets.map((target) => ({ nodeId: target.nodeId, element: target.element, rect: target.startRect, state: target.startState })),
+    });
     if (kind.startsWith("crop-")) logV2("crop-gesture-start", { roots, startUnion, pointer: active.startPointer });
     view.addEventListener("pointermove", onMove, true);
     view.addEventListener("pointerup", onUp, true);
@@ -1007,7 +1013,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         return Boolean(selected && (selected.contains(pickedElement) || pickedElement.contains(selected)));
       });
     };
-    if (pickBelongsToSelection() && beginMoveGesture(event, picked)) return;
+    // Pointer activity inside the current visual entity must keep that entity
+    // authoritative. Passing the nested hit as clickPick caused pointerup to
+    // silently replace an explicitly selected collection with one child; the
+    // following resize/delete then correctly mutated the wrong HTMLElement.
+    if (pickBelongsToSelection() && beginMoveGesture(event)) return;
 
     if (picked) {
       const element = visualModel.bind(picked);
@@ -1308,6 +1318,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       reapplyActive();
       overlays.refreshFromLiveGeometry();
     });
+    mutationObserver = observer;
     observer.observe(root.documentElement, {
       subtree: true,
       childList: true,
@@ -1316,6 +1327,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       characterData: false,
     });
     owner().observe(observer);
+    owner().add(() => {
+      if (mutationObserver === observer) mutationObserver = null;
+    });
   };
 
   const runtime: EditorRuntime = {
@@ -1694,6 +1708,13 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       ignoreMutations = true;
       const result = executor.executeTransaction({ operations, expectedRects: expected });
       releaseMutationIgnore();
+      logV2("resize-commit", {
+        ok: result.ok,
+        error: result.ok ? undefined : result.error,
+        roots,
+        requested: targetRect,
+        actual: roots.map((nodeId) => ({ nodeId, element: visualModel.bind(nodeId), rect: visualModel.measure([nodeId]).get(nodeId) })),
+      });
       if (result.ok) {
         renderSelection();
         overlays.refreshFromLiveGeometry();
@@ -1727,7 +1748,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         const rotate = buildRotateOperation({ nodeId, signature: identity.signature, rect: target }, existing + degrees, { pageKey: pageKey(), sourceCommand: "rotate" });
         operations.push({ ...rotate, id: nextOperationId("rotate"), status: "approved", target: { nodeId, signature: identity.signature }, metadata: { ...rotate.metadata, originalRect: current, finalRect: target, affectedRect: target } });
       }
+      ignoreMutations = true;
       const result = executor.executeTransaction({ operations, expectedRects: expected });
+      releaseMutationIgnore();
       if (result.ok) { renderSelection(); refreshSave(); }
       return result;
     },

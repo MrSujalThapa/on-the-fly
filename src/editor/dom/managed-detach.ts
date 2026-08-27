@@ -27,7 +27,7 @@ const INDEPENDENT_BASE_LAYER = String(MANAGED_Z_INDEX_BASELINE + 1);
 export function realizeIndependentPlacement(
   element: HTMLElement,
   viewportRect: { x: number; y: number; width: number; height: number },
-  options?: { zIndex?: string },
+  options?: { zIndex?: string; preserveLocalSize?: boolean },
 ): void {
   const document = element.ownerDocument;
   if (element.parentElement !== document.body) {
@@ -38,12 +38,14 @@ export function realizeIndependentPlacement(
   element.removeAttribute(OTF_INTERACTION_FIXED_ATTR);
   element.removeAttribute(OTF_TRANSFORM_ONLY_ATTR);
   const rotate = readStoredTransformState(element)?.rotate ?? 0;
-  const live = realizeIndependentBox(element, viewportRect, rotate);
+  const live = realizeIndependentBox(element, viewportRect, rotate, options?.preserveLocalSize
+    ? { preserveLocalSize: true }
+    : {});
   const nextState: StoredTransformState = {
     dx: 0,
     dy: 0,
-    width: live.width,
-    height: live.height,
+    width: options?.preserveLocalSize ? viewportRect.width : live.width,
+    height: options?.preserveLocalSize ? viewportRect.height : live.height,
     rotate,
     position: "absolute",
   };

@@ -111,7 +111,8 @@ export function discoverFromPath(path: readonly Element[]): VisualDiscovery | nu
     if (!(candidate instanceof HTMLElement) || !isSelectable(candidate)) {
       continue;
     }
-    if (isPaintlessLayoutWrapper(candidate)) {
+    const ownedEntity = candidate.hasAttribute("data-otf-clone-id") || candidate.hasAttribute("data-otf-element-id");
+    if (!ownedEntity && isPaintlessLayoutWrapper(candidate)) {
       continue;
     }
     const parent = parentDiscovery(candidate);
