@@ -18,7 +18,9 @@ if (counts.host < 15 || counts.clone < 20 || counts.created < 15 || counts.layer
 
 const SLOW_FAMILIES = new Set<Family>(["persist", "delete", "deep"]);
 
-test.describe.serial("LinkedIn 100-case state-transition acceptance", () => {
+// Not serial: every case asserts a clean editor surface first, so one failure
+// must not skip the remaining cases.
+test.describe("LinkedIn 100-case state-transition acceptance", () => {
   test.beforeEach(async ({ page, context }) => {
     await requireLinkedInAuth(page);
     await resetPersistedPage(context, page);

@@ -37,9 +37,20 @@ export async function readLinkedInSession(page: Page): Promise<ReturnType<typeof
 }
 
 export async function requireLinkedInAuth(page: Page): Promise<void> {
-  await gotoLinkedInNotifications(page);
-  const status = await readLinkedInSession(page);
-  requireAuthenticated(status, "LinkedIn");
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await gotoLinkedInNotifications(page);
+    // LinkedIn intermittently serves a "We're signing you in" interstitial that
+    // resolves on its own. Treating it as a lost session fails every later case.
+    await page
+      .waitForFunction(() => !/signing you in/iu.test(document.body?.innerText ?? ""), undefined, { timeout: 30_000 })
+      .catch(() => undefined);
+    await page.waitForLoadState("load").catch(() => undefined);
+    if (await readLinkedInSession(page) === "authenticated") {
+      return;
+    }
+    await page.waitForTimeout(2_000 * (attempt + 1));
+  }
+  requireAuthenticated(await readLinkedInSession(page), "LinkedIn");
 }
 
 export async function linkedInFilter(page: Page, name: LinkedInFilterName): Promise<Locator> {

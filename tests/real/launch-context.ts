@@ -3,9 +3,18 @@ import { join } from "node:path";
 import { chromium, type BrowserContext } from "@playwright/test";
 import { DIST_DIR, REAL_PROFILE_DIR, VIEWPORT } from "./constants.js";
 
+/**
+ * Best-effort: drop caches that can pin a previous unpacked build. Windows keeps
+ * leveldb handles open briefly after a browser exits, and failing to clear a cache
+ * is never a reason to fail the run.
+ */
 function clearUnpackedExtensionRuntimeCache(profileDir: string): void {
   for (const relative of ["Default/Service Worker", "Default/Extension Scripts", "Default/Extension State"]) {
-    rmSync(join(profileDir, relative), { recursive: true, force: true });
+    try {
+      rmSync(join(profileDir, relative), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // Leave the cache in place; the extension is loaded from dist/ either way.
+    }
   }
 }
 
