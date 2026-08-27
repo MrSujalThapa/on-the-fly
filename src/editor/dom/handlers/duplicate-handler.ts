@@ -10,6 +10,7 @@ import {
   writeStoredTransformState,
 } from "../element-snapshot.js";
 import { OTF_DETACH_ATTR } from "../managed-detach.js";
+import { MANAGED_Z_INDEX_BASELINE, FRONT_LAYER } from "../../transform/layer-order.js";
 import { OTF_MANAGED_ATTR, type AppliedDomEffect, type StoredTransformState } from "../types.js";
 
 export function applyDuplicateOperation(
@@ -40,6 +41,9 @@ export function applyDuplicateOperation(
   element.style.top = `${String(top)}px`;
   element.style.width = `${String(operation.payload.anchorWidth)}px`;
   element.style.height = `${String(operation.payload.anchorHeight)}px`;
+  const snapshotZ = Number.parseInt(element.style.zIndex || "", 10);
+  const layer = Number.isFinite(snapshotZ) ? Math.max(snapshotZ, MANAGED_Z_INDEX_BASELINE + 1) : FRONT_LAYER;
+  element.style.zIndex = String(layer);
 
   const state: StoredTransformState = {
     dx: 0,

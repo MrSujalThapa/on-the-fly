@@ -2,7 +2,7 @@ import type { MoveOperation, ResizeOperation, RotateOperation } from "../../oper
 import { extractBoundingBox } from "../../measurement/bounding-box.js";
 import {
   applyStoredTransformState,
-  applyStoredTransformStateToRect,
+  readLocalLayoutSize,
   readStoredTransformState,
   type ElementSnapshotStore,
   writeStoredTransformState,
@@ -151,25 +151,13 @@ export function applyResizeOperation(
   if (operation.metadata?.finalRect) {
     const finalRect = operation.metadata.finalRect;
     element.style.boxSizing = "border-box";
-    if (element.getAttribute(OTF_DETACH_ATTR) === "true") {
-      const previousSerialized = element.getAttribute(OTF_TRANSFORM_ATTR);
-      realizeIndependentPlacement(element, {
-        ...finalRect,
-        width: operation.payload.width,
-        height: operation.payload.height,
-      }, { zIndex: element.style.zIndex });
-      return [
-        { kind: "transform-state" as const, previousState: previousSerialized },
-        { kind: "size", previousWidth, previousHeight, previousBoxSizing },
-      ];
-    }
-    const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
-    applyStoredTransformStateToRect(element, state, {
-      ...finalRect,
+    const previousSerialized = element.getAttribute(OTF_TRANSFORM_ATTR);
+    realizeIndependentPlacement(element, {
+      x: finalRect.x,
+      y: finalRect.y,
       width: operation.payload.width,
       height: operation.payload.height,
-    });
-
+    }, { zIndex: element.style.zIndex });
     return [
       { kind: "transform-state" as const, previousState: previousSerialized },
       { kind: "size", previousWidth, previousHeight, previousBoxSizing },
@@ -198,8 +186,25 @@ export function applyRotateOperation(
 ): AppliedDomEffect["changes"] {
   const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
   state.rotate = operation.payload.degrees;
-
-  return commitTransformState(element, state, previousSerialized);
+  const local = readLocalLayoutSize(element);
+  const box = operation.metadata?.finalRect ?? {
+    x: element.getBoundingClientRect().x,
+    y: element.getBoundingClientRect().y,
+    width: local.width,
+    height: local.height,
+  };
+  writeStoredTransformState(element, {
+    ...state,
+    width: state.width ?? local.width,
+    height: state.height ?? local.height,
+  });
+  realizeIndependentPlacement(element, {
+    x: box.x,
+    y: box.y,
+    width: state.width ?? local.width,
+    height: state.height ?? local.height,
+  }, { zIndex: element.style.zIndex });
+  return [{ kind: "transform-state" as const, previousState: previousSerialized }];
 }
 
 export function revertTransformStateChange(

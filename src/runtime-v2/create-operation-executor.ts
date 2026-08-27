@@ -297,6 +297,12 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       if ("error" in resolved) return resolved;
       element = resolved.element;
       nodeId = resolved.nodeId;
+      if (operation.type === "hide" && signature) {
+        const durable = deps.visualModel.resolveIdentity({ signature });
+        if (isResolvedVisual(durable) && durable.element !== element) {
+          return failure("live_replay_identity_mismatch", false);
+        }
+      }
       snapshot = captureElementDomSnapshot(element, deps.document);
       descendantStyles = operation.type === "style"
         ? styleRealizationTargets(element, operation)
@@ -320,7 +326,9 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     }
     const actual = rectFromElement(element);
     const expectedRect = expected ?? actual;
-    const hiddenOk = operation.type !== "hide" || (operation.payload.hidden ? element.style.display === "none" : element.style.display !== "none");
+    const hiddenOk = operation.type !== "hide" || (operation.payload.hidden
+      ? element.style.display === "none" && element.getAttribute("data-otf-hidden") === "true"
+      : element.getAttribute("data-otf-hidden") !== "true");
     const rotateOk = operation.type !== "rotate" || readStoredTransformState(element)?.rotate === operation.payload.degrees;
     const styleOk = operation.type !== "style" || (() => {
       const cssProperty = {

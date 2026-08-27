@@ -44,7 +44,7 @@ import { isResolvedVisual } from "./visual-model.js";
 import { projectCanonicalCheckpoint } from "./canonical-checkpoint.js";
 import { buildDuplicateFromClipboardEntry } from "../editor/duplicate/duplicate-element.js";
 import { buildCropOperation, buildHideOperation, buildMoveOperation, buildResizeOperation, buildRotateOperation, buildStyleOperation, buildTextOperation, buildZIndexOperation } from "../editor/transform/operation-factory.js";
-import { applyStoredTransformState, applyStoredTransformStateToRect, readStoredTransformState, writeStoredTransformState } from "../editor/dom/element-snapshot.js";
+import { applyStoredTransformState, applyStoredTransformStateToRect, composeManagedTransform, readLocalLayoutSize, readStoredTransformState, realizeIndependentBox, writeStoredTransformState } from "../editor/dom/element-snapshot.js";
 import { localSizeForRotatedBounds, resizeRectFromCorner, rotatePointAroundCenter, rotatedMemberRect, scaleRects, type ResizeCorner } from "./editor-parity-geometry.js";
 import {
   buildLassoSampleGrid,
@@ -96,7 +96,9 @@ interface PreviewTarget {
   startPointer: { x: number; y: number };
   startRect: IntendedRect;
   styleSnapshot: string | null;
-  committedTransform: string;
+  startState: StoredTransformState;
+  localSize: { width: number; height: number };
+  detached: boolean;
 }
 
 interface MovingGesture {
@@ -194,6 +196,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   let groupCounter = 0;
   let gesture: PointerGesture | null = null;
   let armedLassoMode: ArmedLassoMode = null;
+  let preferredLassoMode: ArmedLassoMode = null;
   let armedCreate: { kind: CreatedElementKind; appearance: CreatedElementAppearance } | null = null;
   let paletteSampling = false;
   const wrapSessions = new Map<string, {
@@ -482,11 +485,21 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   const applyPreview = (dx: number, dy: number): void => {
     if (!gesture || gesture.kind !== "move") return;
     restorePreview();
-    const extra = `translate(${String(dx)}px, ${String(dy)}px)`;
     for (const target of gesture.targets) {
-      target.element.style.transform = target.committedTransform
-        ? `${target.committedTransform} ${extra}`
-        : extra;
+      if (target.detached) {
+        realizeIndependentBox(target.element, {
+          x: target.startRect.x + dx,
+          y: target.startRect.y + dy,
+          width: target.localSize.width,
+          height: target.localSize.height,
+        }, target.startState.rotate);
+        continue;
+      }
+      target.element.style.transform = composeManagedTransform(
+        target.startState.dx + dx,
+        target.startState.dy + dy,
+        target.startState.rotate,
+      );
     }
   };
 
@@ -790,8 +803,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         const desired = memberRects[index];
         if (!desired) return;
         const local = localSizeForRotatedBounds(desired.width, desired.height, target.startState.rotate, target.localSize);
-        const state = { ...target.startState };
-        applyStoredTransformStateToRect(target.element, state, { ...desired, ...local });
+        realizeIndependentBox(target.element, { x: desired.x, y: desired.y, ...local }, target.startState.rotate);
       });
     }
     overlays.refreshFromLiveGeometry();
@@ -935,7 +947,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         startPointer: { x: event.clientX, y: event.clientY },
         startRect: rectFromElement(element),
         styleSnapshot: element.getAttribute("style"),
-        committedTransform: element.style.transform,
+        startState: initialTransformState(element),
+        localSize: readLocalLayoutSize(element),
+        detached: element.getAttribute("data-otf-detached") === "true" || placement.isIndependent(element),
       });
     }
     gesture = {
@@ -1093,7 +1107,6 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const polygon = simplifyPolygon(active.points);
       const additive = active.additive;
       gesture = null;
-      armedLassoMode = null;
       overlays.clearLasso();
       if (isMeaningfulFreeform(polygon)) {
         const started = performance.now();
@@ -1107,15 +1120,16 @@ export function createEditorRuntime(root: Document): EditorRuntime {
           ms: Math.round(performance.now() - started),
         });
       }
+      armedLassoMode = preferredLassoMode;
       refreshToolbar();
       return;
     }
     if (active.kind === "lasso") {
       const armed = armedLassoMode === "rectangle";
       gesture = null;
-      armedLassoMode = null;
       overlays.clearLasso();
       if (!active.active && armed) {
+        armedLassoMode = preferredLassoMode;
         refreshToolbar();
         return;
       }
@@ -1129,6 +1143,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       } else if (!active.shiftKey) {
         runtime.clearSelection();
       }
+      armedLassoMode = preferredLassoMode;
       refreshToolbar();
       return;
     }
@@ -1423,6 +1438,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     },
     armLasso(mode) {
       overlays.closeLassoChooser();
+      preferredLassoMode = mode;
       armedLassoMode = mode;
       refreshToolbar();
     },

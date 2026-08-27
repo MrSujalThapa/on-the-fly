@@ -153,14 +153,39 @@ function applyManagedSize(element: HTMLElement, state: StoredTransformState): vo
   }
 }
 
+/**
+ * Canonical managed transform. CSS applies right-to-left, so
+ * `translate(...) rotate(...)` keeps translation on the viewport axes.
+ */
+export function composeManagedTransform(dx: number, dy: number, rotate: number): string {
+  const translate = dx !== 0 || dy !== 0 ? `translate(${String(dx)}px, ${String(dy)}px)` : "";
+  const rotation = rotate !== 0 ? `rotate(${String(rotate)}deg)` : "";
+  return [translate, rotation].filter(Boolean).join(" ");
+}
+
 function applyManagedRotate(element: HTMLElement, rotate: number): void {
-  element.style.transform = rotate !== 0 ? `rotate(${String(rotate)}deg)` : "";
+  element.style.transform = composeManagedTransform(0, 0, rotate);
+}
+
+export function readLocalLayoutSize(element: HTMLElement): { width: number; height: number } {
+  const stored = readStoredTransformState(element);
+  if (stored && stored.width !== null && stored.width > 1 && stored.height !== null && stored.height > 1) {
+    return { width: stored.width, height: stored.height };
+  }
+  const width = element.offsetWidth;
+  const height = element.offsetHeight;
+  if (width > 1 && height > 1) {
+    return { width, height };
+  }
+  const rect = element.getBoundingClientRect();
+  return { width: rect.width, height: rect.height };
 }
 
 /**
  * Write one independent viewport box onto an existing managed element.
- * Does not reparent or replace the node. Preview and commit share this so
- * resize math and rendered border-box dimensions cannot drift apart.
+ * `viewportRect.width/height` are local (unrotated) border-box sizes.
+ * `viewportRect.x/y` are the desired viewport AABB origin.
+ * Does not reparent. Preview and commit share this path.
  */
 export function realizeIndependentBox(
   element: HTMLElement,
@@ -192,15 +217,16 @@ export function realizeIndependentBox(
     element.style.left = `${String(left + dx)}px`;
     element.style.top = `${String(top + dy)}px`;
   }
-  const sized = element.getBoundingClientRect();
-  const dw = viewportRect.width - sized.width;
-  const dh = viewportRect.height - sized.height;
-  if (dw !== 0 || dh !== 0) {
-    element.style.setProperty("width", `${String(viewportRect.width + dw)}px`, "important");
-    element.style.setProperty("height", `${String(viewportRect.height + dh)}px`, "important");
+  if (Math.abs(rotate) < 0.01) {
+    const sized = element.getBoundingClientRect();
+    const dw = viewportRect.width - sized.width;
+    const dh = viewportRect.height - sized.height;
+    if (dw !== 0 || dh !== 0) {
+      element.style.setProperty("width", `${String(viewportRect.width + dw)}px`, "important");
+      element.style.setProperty("height", `${String(viewportRect.height + dh)}px`, "important");
+    }
   }
-  const live = element.getBoundingClientRect();
-  return { width: live.width, height: live.height };
+  return { width: viewportRect.width, height: viewportRect.height };
 }
 
 export function applyStoredTransformState(
@@ -236,7 +262,7 @@ export function applyStoredTransformState(
 
   ensureTransformableFormattingBox(element);
   element.style.position = state.position;
-  element.style.transform = `translate(${String(state.dx)}px, ${String(state.dy)}px) rotate(${String(state.rotate)}deg)`;
+  element.style.transform = composeManagedTransform(state.dx, state.dy, state.rotate);
   applyManagedSize(element, state);
 }
 

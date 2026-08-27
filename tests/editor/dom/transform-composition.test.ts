@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DomRuntimeAdapter } from "../../../src/editor/dom/dom-runtime-adapter.js";
-import { readStoredTransformState } from "../../../src/editor/dom/element-snapshot.js";
+import { composeManagedTransform, readStoredTransformState } from "../../../src/editor/dom/element-snapshot.js";
 import type { MoveOperation, ResizeOperation, RotateOperation } from "../../../src/editor/operations.js";
 import { createMoveOperation, createResizeOperation, createRotateOperation, PAGE_KEY } from "../fixtures.js";
 import { createTestDocument } from "./test-document.js";
@@ -19,6 +19,11 @@ function targetSignature(text: string) {
 }
 
 describe("transform composition", () => {
+  it("keeps translation on viewport axes when composed with rotation", () => {
+    expect(composeManagedTransform(200, 0, 45)).toBe("translate(200px, 0px) rotate(45deg)");
+    expect(composeManagedTransform(0, 0, 90)).toBe("rotate(90deg)");
+    expect(composeManagedTransform(10, 5, 0)).toBe("translate(10px, 5px)");
+  });
   it("accumulates move operations and restores on sequential reverts", () => {
     const { root } = createTestDocument(`<main><p class="target">Block</p></main>`);
     const adapter = new DomRuntimeAdapter(root);
@@ -65,14 +70,14 @@ describe("transform composition", () => {
     expect(adapter.applyOperation(resize).ok).toBe(true);
     expect(adapter.applyOperation(rotate).ok).toBe(true);
 
-    expect(element.style.transform).toContain("translate(10px, 5px)");
-    expect(element.style.transform).toContain("rotate(30deg)");
+    expect(element.style.transform).toBe("rotate(30deg)");
+    expect(element.getAttribute("data-otf-detached")).toBe("true");
     expect(element.style.width).toBe("140px");
     expect(element.style.height).toBe("90px");
 
     const stored = readStoredTransformState(element);
-    expect(stored?.dx).toBe(10);
-    expect(stored?.dy).toBe(5);
+    expect(stored?.dx).toBe(0);
+    expect(stored?.dy).toBe(0);
     expect(stored?.rotate).toBe(30);
     expect(stored?.width).toBe(140);
     expect(stored?.height).toBe(90);

@@ -11,9 +11,15 @@ export function applyHideOperation(
   const previousDisplay = element.style.display || snapshot.display;
 
   if (operation.payload.hidden) {
-    element.style.display = "none";
+    element.style.setProperty("display", "none", "important");
+    element.setAttribute("data-otf-hidden", "true");
   } else {
-    element.style.display = operation.payload.previousDisplay ?? snapshot.display;
+    element.removeAttribute("data-otf-hidden");
+    if (operation.payload.previousDisplay ?? snapshot.display) {
+      element.style.display = operation.payload.previousDisplay ?? snapshot.display;
+    } else {
+      element.style.removeProperty("display");
+    }
   }
 
   return [{ kind: "display", previousValue: previousDisplay }];
@@ -23,6 +29,7 @@ export function revertDisplayChange(
   element: HTMLElement,
   change: Extract<AppliedDomEffect["changes"][number], { kind: "display" }>,
 ): void {
+  element.removeAttribute("data-otf-hidden");
   if (change.previousValue) {
     element.style.display = change.previousValue;
     return;

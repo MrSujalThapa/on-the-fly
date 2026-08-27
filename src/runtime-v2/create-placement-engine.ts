@@ -1,3 +1,4 @@
+import { readLocalLayoutSize } from "../editor/dom/element-snapshot.js";
 import {
   OTF_DETACH_ATTR,
   originalSiblingLayer,
@@ -62,6 +63,7 @@ export function createPlacementEngine(): PlacementEngine {
 
       if (existing.independent || request.forceIndependent === true || shouldDetach) {
         const { scrollX, scrollY } = pageOffset(request.element);
+        const local = readLocalLayoutSize(request.element);
         return {
           strategy: "detached",
           dx: request.dx,
@@ -79,8 +81,8 @@ export function createPlacementEngine(): PlacementEngine {
             interactionSafeFixed: false,
             detachedLeft: expected.x + scrollX,
             detachedTop: expected.y + scrollY,
-            detachedWidth: request.currentRect.width,
-            detachedHeight: request.currentRect.height,
+            detachedWidth: local.width,
+            detachedHeight: local.height,
             detachedZIndex: originalSiblingLayer(request.element),
           },
         };
