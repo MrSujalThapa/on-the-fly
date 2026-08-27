@@ -76,6 +76,8 @@ export function isAmbiguousVisual(value: VisualResolveResult): value is Ambiguou
 export interface VisualModel {
   pick(clientX: number, clientY: number): VisualNodeId | null;
   adopt(element: HTMLElement): VisualNodeId | null;
+  /** Observational snapshot of identities already owned by this model. */
+  knownIds(): readonly VisualNodeId[];
   get(id: VisualNodeId): VisualNode | null;
   parentOf(id: VisualNodeId): VisualNodeId | null;
   childrenOf(id: VisualNodeId): readonly VisualNodeId[];

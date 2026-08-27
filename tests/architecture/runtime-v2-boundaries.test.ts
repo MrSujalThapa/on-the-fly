@@ -261,6 +261,8 @@ describe("runtime-v2 import boundaries", () => {
       "src/runtime-v2/geometry.ts",
       "src/runtime-v2/placement-engine.ts",
       "src/runtime-v2/editor-runtime.ts",
+      "src/runtime-v2/environment/observation.ts",
+      "src/runtime-v2/environment/OTFEnvironment.ts",
     ]);
     const violations: string[] = [];
     for (const file of files) {

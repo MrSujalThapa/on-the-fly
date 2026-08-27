@@ -6,16 +6,21 @@ import {
 import { clearPageOperations } from "../content/storage-client.js";
 import { computeDocumentPageKey, createPageIdentity } from "../content/page-identity.js";
 import { createEditorRuntime } from "./create-editor-runtime.js";
+import { createOTFEnvironment } from "./environment/OTFEnvironment.js";
 
 declare global {
   interface Window {
     OTF_RUNTIME_V2_ACTIVE?: true;
+    __OTF_ENVIRONMENT__?: import("./environment/environment-types.js").OTFEnvironment;
   }
 }
 
 window.OTF_RUNTIME_V2_ACTIVE = true;
 
 const runtime = createEditorRuntime(document);
+if (typeof __OTF_DIAGNOSTICS_ENABLED__ !== "undefined" && __OTF_DIAGNOSTICS_ENABLED__) {
+  window.__OTF_ENVIRONMENT__ = createOTFEnvironment(document, runtime);
+}
 const pageIdentity = createPageIdentity(document);
 
 void runtime.replay();
