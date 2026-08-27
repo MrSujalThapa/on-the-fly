@@ -36,6 +36,22 @@ function withNodeId(result: VisualResolveResult, nodeId: VisualNodeId): VisualRe
   return { ...result, nodeId };
 }
 
+function ownedElement(root: Document, id: VisualNodeId): HTMLElement | null {
+  const escaped = typeof CSS !== "undefined" && typeof CSS.escape === "function"
+    ? CSS.escape(id)
+    : id.replace(/"/g, "\\\"");
+  const created = Array.from(root.querySelectorAll(`[data-otf-element-id="${escaped}"]`)).filter(
+    (node): node is HTMLElement => node instanceof HTMLElement && node.isConnected && !node.hasAttribute("data-otf-preview"),
+  );
+  if (created.length === 1) {
+    return created[0] ?? null;
+  }
+  const clones = Array.from(root.querySelectorAll(`[data-otf-clone-id="${escaped}"]`)).filter(
+    (node): node is HTMLElement => node instanceof HTMLElement && node.isConnected,
+  );
+  return clones.length === 1 ? clones[0] ?? null : null;
+}
+
 export function createVisualModel(root: Document): VisualModel {
   const nodes = new Map<VisualNodeId, VisualNode>();
   const cache = new Map<VisualNodeId, WeakRef<HTMLElement>>();
@@ -217,6 +233,28 @@ export function createVisualModel(root: Document): VisualModel {
       return nodes.get(id)?.durableIdentity ?? null;
     },
     resolveNode(id) {
+      const owned = ownedElement(root, id);
+      if (owned) {
+        if (!nodes.has(id)) {
+          upsertNode(owned, "unit", null);
+        } else {
+          writeCache(id, owned);
+        }
+        const node = nodes.get(id);
+        return {
+          kind: "resolved",
+          nodeId: id,
+          element: owned,
+          identity: node?.durableIdentity ?? buildDurableIdentity(owned, root),
+          evidence: {
+            strategy: "live-cache",
+            candidateCount: 1,
+            cssPathMatched: true,
+            structureShifted: false,
+            matchedKeys: ["owned-id"],
+          },
+        };
+      }
       const node = nodes.get(id);
       if (!node) {
         return {
@@ -281,7 +319,22 @@ export function createVisualModel(root: Document): VisualModel {
       writeCache(id, element);
     },
     invalidate(id) {
+      const element = cache.get(id)?.deref() ?? null;
       cache.delete(id);
+      if (element) {
+        liveIds.delete(element);
+      }
+      const node = nodes.get(id);
+      if (node?.parentId) {
+        const parent = nodes.get(node.parentId);
+        if (parent) {
+          nodes.set(node.parentId, {
+            ...parent,
+            childIds: parent.childIds.filter((childId) => childId !== id),
+          });
+        }
+      }
+      nodes.delete(id);
     },
   };
 }

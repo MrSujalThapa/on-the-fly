@@ -121,6 +121,11 @@ export function createOperationLedger(): OperationLedger {
       cursor = entries.length;
       persistedRevision = cursor;
     },
+    clear(): void {
+      entries.splice(0, entries.length);
+      cursor = 0;
+      persistedRevision = 0;
+    },
   };
 
   return ledger;

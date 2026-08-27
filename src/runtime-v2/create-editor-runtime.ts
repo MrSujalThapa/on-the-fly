@@ -33,7 +33,7 @@ import { createOverlayCoordinator } from "./create-overlay-coordinator.js";
 import { createPlacementEngine } from "./create-placement-engine.js";
 import { createVisualModel } from "./create-visual-model.js";
 import { DisposableOwner } from "./disposable-owner.js";
-import type { EditorRuntime, PersistResult, ReplayResult } from "./editor-runtime.js";
+import type { EditorRuntime, PersistResult, ReplayResult, ResetResult } from "./editor-runtime.js";
 import type { NormalizedPointer } from "./input-router.js";
 import { rectFromElement, rectsNear } from "./geometry.js";
 import type { BatchExecutionResult, ExecutionResult } from "./operation-executor.js";
@@ -42,12 +42,13 @@ import { freezeCommittedOperation } from "./freeze-operation.js";
 import { identityConsistent, summarizeIdentity } from "./visual-identity.js";
 import { isResolvedVisual } from "./visual-model.js";
 import { projectCanonicalCheckpoint } from "./canonical-checkpoint.js";
-import { buildDuplicateFromClipboardEntry } from "../editor/duplicate/duplicate-element.js";
+import { buildDuplicateFromClipboardEntry, buildDuplicateFromLiveClone } from "../editor/duplicate/duplicate-element.js";
 import { buildCropOperation, buildHideOperation, buildMoveOperation, buildResizeOperation, buildRotateOperation, buildStyleOperation, buildTextOperation, buildZIndexOperation } from "../editor/transform/operation-factory.js";
 import { applyStoredTransformState, applyStoredTransformStateToRect, composeManagedTransform, readLocalLayoutSize, readStoredTransformState, realizeIndependentBox, writeStoredTransformState } from "../editor/dom/element-snapshot.js";
-import { localSizeForRotatedBounds, resizeRectFromCorner, rotatePointAroundCenter, rotatedMemberRect, scaleRects, type ResizeCorner } from "./editor-parity-geometry.js";
+import { planMultiResizeMembers, resizeLocalFromScreenDelta, resizeRectFromCorner, rotatePointAroundCenter, rotatedMemberRect, type ResizeCorner } from "./editor-parity-geometry.js";
 import {
   buildLassoSampleGrid,
+  dropCoveredAncestors,
   LASSO_THRESHOLD_PX,
   meaningfullyIntersects,
   normalizeRect,
@@ -168,10 +169,30 @@ function isLayerOperation(value: { type: string }): value is ZIndexOperation {
   return value.type === "zIndex";
 }
 
+function diagnosticsEnabled(): boolean {
+  return typeof __OTF_DIAGNOSTICS_ENABLED__ !== "undefined" && __OTF_DIAGNOSTICS_ENABLED__;
+}
+
 function logV2(event: string, details?: Record<string, unknown>): void {
-  if (typeof __OTF_DIAGNOSTICS_ENABLED__ !== "undefined" && __OTF_DIAGNOSTICS_ENABLED__) {
-    console.info(`[otf-v2] ${event}`, details ?? {});
+  if (diagnosticsEnabled()) {
+    let payload = "{}";
+    try {
+      payload = JSON.stringify(details ?? {});
+    } catch {
+      payload = "\"unserializable\"";
+    }
+    console.info(`[otf-v2] ${event} ${payload}`);
+    const holder = globalThis as typeof globalThis & { __otfV2Log?: Array<{ event: string; details?: Record<string, unknown> }> };
+    holder.__otfV2Log = [...(holder.__otfV2Log ?? []).slice(-50), { event, ...(details ? { details } : {}) }];
   }
+}
+
+interface ReapplyTrace {
+  readonly seq: number;
+  readonly reason: string;
+  readonly session: number;
+  readonly cursor: number;
+  readonly operations: readonly string[];
 }
 
 export function createEditorRuntime(root: Document): EditorRuntime {
@@ -198,6 +219,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   let armedLassoMode: ArmedLassoMode = null;
   let preferredLassoMode: ArmedLassoMode = null;
   let armedCreate: { kind: CreatedElementKind; appearance: CreatedElementAppearance } | null = null;
+  const setArmedCreate = (next: typeof armedCreate): void => {
+    armedCreate = next;
+    overlays.setPlacementArmed(Boolean(next));
+  };
   let paletteSampling = false;
   const wrapSessions = new Map<string, {
     priorAtoms: readonly SelectionAtom[];
@@ -218,6 +243,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   const pastePartitions = new Map<string, readonly (readonly number[])[]>();
   let operationCounter = 0;
   let replayGeneration = 0;
+  let sessionGeneration = 0;
+  let reapplySeq = 0;
+  const reapplyTrace: ReapplyTrace[] = [];
+  let lastPick: Record<string, unknown> | null = null;
   let saveStatus: "idle" | "saving" | "saved" | "failed" = "idle";
   let lastSaveError: string | undefined;
   let refreshToolbar = (): void => undefined;
@@ -233,6 +262,65 @@ export function createEditorRuntime(root: Document): EditorRuntime {
 
   const pageKey = (): string => computeDocumentPageKey(root);
 
+  const publishDiagnostics = (): void => {
+    if (!diagnosticsEnabled()) return;
+    const host = root.documentElement;
+    const active = ledger.activeOperations();
+    host.setAttribute("data-otf-diag", JSON.stringify({
+      session: sessionGeneration,
+      replayGeneration,
+      started,
+      cursor: ledger.cursor,
+      entries: ledger.entries.length,
+      persistedRevision: ledger.persistedRevision,
+      dirty: ledger.isDirty(),
+      saveStatus,
+      activeCount: active.length,
+      active: active.map((operation) => ({
+        id: operation.id,
+        type: operation.type,
+        nodeId: operation.target.nodeId ?? null,
+        cssPath: operation.target.signature?.cssPath ?? null,
+        text: operation.target.signature?.textFingerprint ?? null,
+      })),
+      selection: selectedIds(),
+      selectionDetail: selectedIds().map((nodeId) => {
+        const element = visualModel.bind(nodeId);
+        if (!element) return { nodeId, bound: false };
+        const box = element.getBoundingClientRect();
+        return {
+          nodeId,
+          bound: true,
+          tag: element.tagName.toLowerCase(),
+          text: (element.textContent ?? "").replace(/\s+/gu, " ").trim().slice(0, 32),
+          rect: [Math.round(box.x), Math.round(box.y), Math.round(box.width), Math.round(box.height)],
+        };
+      }),
+      selectionSource: selection.source,
+      lastPick,
+      gesture: gesture?.kind ?? (transformGesture ? transformGesture.kind : null),
+      armedLasso: armedLassoMode,
+      preferredLasso: preferredLassoMode,
+      armedCreate: armedCreate?.kind ?? null,
+      groups: [...groups.keys()],
+      clipboard: clipboard ? clipboard.items.length : 0,
+      reapply: reapplyTrace.slice(-16),
+    }));
+  };
+
+  const traceReapply = (reason: string, operations: readonly EditorOperation[]): void => {
+    if (!diagnosticsEnabled()) return;
+    reapplySeq += 1;
+    reapplyTrace.push({
+      seq: reapplySeq,
+      reason,
+      session: sessionGeneration,
+      cursor: ledger.cursor,
+      operations: operations.map((operation) => `${operation.type}:${operation.id}`),
+    });
+    if (reapplyTrace.length > 64) reapplyTrace.splice(0, reapplyTrace.length - 64);
+  };
+
   const refreshSave = (): void => {
     if (ledger.isDirty() && saveStatus === "saved") {
       saveStatus = "idle";
@@ -245,6 +333,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         void runtime.save();
       },
     });
+    publishDiagnostics();
   };
 
   const applyUserSelect = (editOwned: boolean): void => {
@@ -311,6 +400,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     else overlays.clear();
     observeSelected();
     refreshToolbar();
+    publishDiagnostics();
   };
 
   const setSelection = (next: RuntimeSelection): void => {
@@ -345,7 +435,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         ids.push(nodeId);
       }
     }
-    return ids;
+    return lassoLeafIds(ids);
   };
 
   const resolveFreeform = (polygon: readonly Point[]): VisualNodeId[] => {
@@ -366,25 +456,24 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         ids.push(nodeId);
       }
     }
-    return dropNestedAncestors(ids);
+    return lassoLeafIds(ids);
   };
 
-  const dropNestedAncestors = (ids: readonly VisualNodeId[]): VisualNodeId[] => {
-    const bound = ids
-      .map((id) => ({ id, element: visualModel.bind(id) }))
-      .filter((entry): entry is { id: VisualNodeId; element: HTMLElement } => Boolean(entry.element));
-    return bound
-      .filter((entry) => !bound.some((other) => other.element !== entry.element && entry.element.contains(other.element)))
-      .map((entry) => entry.id);
-  };
+  const lassoLeafIds = (ids: readonly VisualNodeId[]): VisualNodeId[] =>
+    dropCoveredAncestors(ids.map((id) => {
+      const element = visualModel.bind(id);
+      return element ? { id, element } : null;
+    }).filter((item): item is { id: VisualNodeId; element: HTMLElement } => Boolean(item)));
 
-  const reapplyActive = (): void => {
+  const reapplyActive = (reason = "unknown"): void => {
     const checkpoint = projectCanonicalCheckpoint(ledger.activeOperations());
     if (!checkpoint.ok) {
       logV2("reapply-checkpoint-failed", { owner: "LEDGER", error: checkpoint.error });
       return;
     }
+    traceReapply(reason, checkpoint.operations);
     ignoreMutations = true;
+    const restoredMoves = new Set<string>();
     try {
       for (const operation of checkpoint.operations) {
         if (operation.type === "createElement" || operation.type === "duplicate") {
@@ -447,16 +536,27 @@ export function createEditorRuntime(root: Document): EditorRuntime {
           continue;
         }
         const result = executor.replayMove(reboundOperation as MoveOperation);
+        if (result.ok) restoredMoves.add(operation.id);
         logV2("reapply", {
-          owner: result.ok ? "EXECUTION" : "EXECUTION",
+          owner: "EXECUTION",
           ok: result.ok,
           id: operation.id,
           error: result.ok ? undefined : result.error,
         });
       }
+      // Anchor correction only applies to moves whose DOM effect was actually lost and
+      // restored above. A move that is still intact must not be re-anchored: divergence
+      // from finalRect then comes from legitimate host layout change, not from a lost edit.
       for (const move of checkpoint.operations.filter(isMoveOperation)) {
+        if (!restoredMoves.has(move.id)) continue;
         const expected = move.metadata?.finalRect;
         if (!expected || !move.target.signature) continue;
+        if (checkpoint.operations.some((operation) =>
+          (operation.type === "resize" || operation.type === "rotate") &&
+          operation.target.nodeId === move.target.nodeId
+        )) {
+          continue;
+        }
         const resolved = visualModel.resolveIdentity({ signature: move.target.signature });
         if (!isResolvedVisual(resolved)) continue;
         const current = rectFromElement(resolved.element);
@@ -508,7 +608,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     restorePreview();
     gesture = null;
     armedLassoMode = null;
-    armedCreate = null;
+    setArmedCreate(null);
     overlays.clearLasso();
     overlays.refreshFromLiveGeometry();
     refreshToolbar();
@@ -574,12 +674,22 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       metadata: { sourceCommand, affectedRect: rect, finalRect: rect },
     };
     ignoreMutations = true;
-    const result = executor.executeTransaction({ operations: [operation], expectedRects: new Map([[operation.id, rect]]) });
+    let result: BatchExecutionResult;
+    try {
+      result = executor.executeTransaction({ operations: [operation], expectedRects: new Map([[operation.id, rect]]) });
+    } catch (error) {
+      releaseMutationIgnore();
+      return { ok: false, error: error instanceof Error ? error.message : "create_threw", rolledBack: false };
+    }
     releaseMutationIgnore();
     if (!result.ok) return result;
     const created = result.operations[0];
     const nodeId = created?.target.nodeId;
-    if (nodeId) setSelection(selectionFromAtoms([atomForNode(nodeId)], "click"));
+    if (nodeId) {
+      const live = visualModel.bind(nodeId) ?? root.querySelector<HTMLElement>(`[data-otf-element-id="${nodeId}"]:not([data-otf-preview])`);
+      if (live) visualModel.cache(nodeId, live);
+      setSelection(selectionFromAtoms([atomForNode(nodeId)], "click"));
+    }
     refreshSave();
     overlays.refreshFromLiveGeometry();
     return { ok: true, operation: created ?? operation, verification: result.verifications[0] ?? { ok: true, expected: rect, actual: rect } };
@@ -597,6 +707,58 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         parentId = visualModel.parentOf(parentId);
       }
       return true;
+    });
+  };
+
+  const laterInDocumentFirst = (left: HTMLElement, right: HTMLElement): number => {
+    const position = left.compareDocumentPosition(right);
+    if (position & Node.DOCUMENT_POSITION_FOLLOWING) return 1;
+    if (position & Node.DOCUMENT_POSITION_PRECEDING) return -1;
+    return 0;
+  };
+
+  const logMultiGeometryInvariant = (
+    label: string,
+    planned?: Array<{ nodeId: VisualNodeId; aabb: IntendedRect; local: { width: number; height: number } }>,
+  ): void => {
+    overlays.refreshFromLiveGeometry();
+    const selected = selectedIds();
+    const roots = effectRoots(selected);
+    const selectedRects = visualModel.measure(selected);
+    const rootRects = visualModel.measure(roots);
+    const overlay = overlays.selectionOutlineRect();
+    const unionSelected = unionRects([...selectedRects.values()]);
+    const members = roots.map((nodeId) => {
+      const element = visualModel.bind(nodeId);
+      const rect = rootRects.get(nodeId);
+      const plannedFor = planned?.find((item) => item.nodeId === nodeId);
+      const identity = visualModel.durableIdentityOf(nodeId);
+      return {
+        nodeId,
+        connected: Boolean(element?.isConnected),
+        independent: Boolean(element && placement.isIndependent(element)),
+        managed: element?.getAttribute("data-otf-managed") === "true",
+        tag: element?.tagName ?? null,
+        text: element?.textContent?.trim().slice(0, 48) ?? null,
+        identity: identity?.signature.cssPath ?? null,
+        rect,
+        local: element ? readLocalLayoutSize(element) : null,
+        rotate: element ? readStoredTransformState(element)?.rotate ?? 0 : 0,
+        matchesPlanned: plannedFor && rect ? rectsNear(rect, plannedFor.aabb, 2) : undefined,
+      };
+    });
+    logV2("multi-geometry", {
+      label,
+      selectedCount: selected.length,
+      rootCount: roots.length,
+      selected,
+      roots,
+      overlay,
+      unionSelected,
+      overlayDerived: Boolean(overlay && unionSelected && rectsNear(overlay, unionSelected, 1.5)),
+      partialPromotion: members.some((member) => member.connected && !member.independent)
+        && members.some((member) => member.independent),
+      members,
     });
   };
 
@@ -725,13 +887,95 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   };
 
   const liveLayoutSize = (element: HTMLElement, measured: IntendedRect, rotate: number): { width: number; height: number } => {
-    if (rotate === 0) return { width: measured.width, height: measured.height };
-    const width = element.offsetWidth;
-    const height = element.offsetHeight;
-    return {
-      width: width > 1 ? width : measured.width,
-      height: height > 1 ? height : measured.height,
-    };
+    if (Math.abs(rotate) < 0.01) return { width: measured.width, height: measured.height };
+    return readLocalLayoutSize(element);
+  };
+
+  const commitResizePlans = (
+    plans: Array<{
+      nodeId: VisualNodeId;
+      element: HTMLElement;
+      current: IntendedRect;
+      local: { width: number; height: number };
+      aabb: IntendedRect;
+    }>,
+  ): BatchExecutionResult => {
+    if (plans.length === 0) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
+    const ordered = [...plans].sort((left, right) => laterInDocumentFirst(left.element, right.element));
+    const operations: ResizeOperation[] = [];
+    for (const plan of ordered) {
+      const identity = visualModel.durableIdentityOf(plan.nodeId);
+      if (!identity) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
+      const drafted = buildResizeOperation(
+        { nodeId: plan.nodeId, signature: identity.signature, rect: plan.current },
+        { width: plan.local.width, height: plan.local.height, mode: "box" },
+        { pageKey: pageKey(), sourceCommand: "resize" },
+      );
+      operations.push({
+        ...drafted,
+        id: nextOperationId("resize"),
+        status: "approved",
+        target: { nodeId: plan.nodeId, signature: identity.signature },
+        metadata: { ...drafted.metadata, originalRect: plan.current, finalRect: plan.aabb, affectedRect: plan.aabb },
+      });
+    }
+    const expected = new Map(operations.map((operation) => [operation.id, operation.metadata?.finalRect ?? ordered[0]!.aabb]));
+    ignoreMutations = true;
+    const result = executor.executeTransaction({ operations, expectedRects: expected });
+    releaseMutationIgnore();
+    logV2("resize-commit", {
+      ok: result.ok,
+      error: result.ok ? undefined : result.error,
+      verification: result.ok ? undefined : result.verification,
+      selectedIds: selectedIds(),
+      effectRoots: plans.map((plan) => plan.nodeId),
+      locals: ordered.map((plan) => plan.local),
+      aabbs: ordered.map((plan) => plan.aabb),
+    });
+    if (result.ok) {
+      renderSelection();
+      refreshSave();
+    }
+    logMultiGeometryInvariant("resize-commit", ordered.map((plan) => ({
+      nodeId: plan.nodeId,
+      aabb: plan.aabb,
+      local: plan.local,
+    })));
+    return result;
+  };
+
+  const resizeSelectionFromHandle = (corner: ResizeCorner, dx: number, dy: number): BatchExecutionResult => {
+    const roots = effectRoots(selectedIds());
+    if (roots.length === 0) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
+    const measured = visualModel.measure(roots);
+    const plans: Array<{
+      nodeId: VisualNodeId;
+      element: HTMLElement;
+      current: IntendedRect;
+      local: { width: number; height: number };
+      aabb: IntendedRect;
+    }> = [];
+    for (const nodeId of roots) {
+      const element = visualModel.bind(nodeId);
+      const current = measured.get(nodeId);
+      if (!element || !current) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
+      const rotate = initialTransformState(element).rotate;
+      const local = liveLayoutSize(element, current, rotate);
+      const next = resizeLocalFromScreenDelta(local, current, rotate, corner, dx, dy);
+      plans.push({ nodeId, element, current, local: next.local, aabb: next.aabb });
+      logV2("resize-from-handle", {
+        nodeId,
+        corner,
+        screenDx: dx,
+        screenDy: dy,
+        rotate,
+        localBefore: local,
+        localAfter: next.local,
+        aabbBefore: current,
+        aabbAfter: next.aabb,
+      });
+    }
+    return commitResizePlans(plans);
   };
 
   const restoreTransformPreview = (active = transformGesture): void => {
@@ -792,19 +1036,38 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         });
       }
     } else {
-      const targetUnion = resizeRectFromCorner(
-        active.startUnion,
-        active.kind.slice(-2) as ResizeCorner,
-        pointer.x - active.startPointer.x,
-        pointer.y - active.startPointer.y,
-      );
-      const memberRects = scaleRects(active.startUnion, targetUnion, active.targets.map((target) => target.startRect));
-      active.targets.forEach((target, index) => {
-        const desired = memberRects[index];
-        if (!desired) return;
-        const local = localSizeForRotatedBounds(desired.width, desired.height, target.startState.rotate, target.localSize);
-        realizeIndependentBox(target.element, { x: desired.x, y: desired.y, ...local }, target.startState.rotate);
-      });
+      const corner = active.kind.slice(-2) as ResizeCorner;
+      const dx = pointer.x - active.startPointer.x;
+      const dy = pointer.y - active.startPointer.y;
+      if (active.targets.length > 1) {
+        const targetUnion = resizeRectFromCorner(active.startUnion, corner, dx, dy);
+        const planned = planMultiResizeMembers(
+          active.startUnion,
+          targetUnion,
+          active.targets.map((target) => ({
+            rect: target.startRect,
+            local: target.localSize,
+            rotate: target.startState.rotate,
+          })),
+        );
+        active.targets.forEach((target, index) => {
+          const next = planned[index];
+          if (!next) return;
+          realizeIndependentBox(target.element, { x: next.aabb.x, y: next.aabb.y, ...next.local }, target.startState.rotate);
+        });
+      } else {
+        for (const target of active.targets) {
+          const next = resizeLocalFromScreenDelta(
+            target.localSize,
+            target.startRect,
+            target.startState.rotate,
+            corner,
+            dx,
+            dy,
+          );
+          realizeIndependentBox(target.element, { x: next.aabb.x, y: next.aabb.y, ...next.local }, target.startState.rotate);
+        }
+      }
     }
     overlays.refreshFromLiveGeometry();
   };
@@ -846,12 +1109,14 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const current = Math.atan2(pointer.y - center.y, pointer.x - center.x);
       runtime.rotateSelection((current - initial) * 180 / Math.PI);
     } else {
-      runtime.resizeSelection(resizeRectFromCorner(
-        active.startUnion,
-        active.kind.slice(-2) as ResizeCorner,
-        pointer.x - active.startPointer.x,
-        pointer.y - active.startPointer.y,
-      ));
+      const corner = active.kind.slice(-2) as ResizeCorner;
+      const dx = pointer.x - active.startPointer.x;
+      const dy = pointer.y - active.startPointer.y;
+      if (active.targets.length > 1) {
+        runtime.resizeSelection(resizeRectFromCorner(active.startUnion, corner, dx, dy));
+      } else {
+        resizeSelectionFromHandle(corner, dx, dy);
+      }
     }
   };
 
@@ -962,19 +1227,57 @@ export function createEditorRuntime(root: Document): EditorRuntime {
   };
 
   const onPointerDown = (event: NormalizedPointer): void => {
-    if (event.target instanceof Element && isExtensionRoot(event.target)) {
-      return;
-    }
     if (overlays.isLassoChooserOpen()) {
       overlays.closeLassoChooser();
-      return;
+      if (!armedCreate) return;
     }
-    if (overlays.closeMoreMenu() || overlays.closeComponentPalette()) {
+    if (!armedCreate && (overlays.closeMoreMenu() || overlays.closeComponentPalette())) {
       return;
     }
     if (armedCreate) {
+      overlays.closeMoreMenu();
+      overlays.closeComponentPalette();
+      overlays.closeLassoChooser();
       const preview = updateCreatePreview(armedCreate.kind, armedCreate.appearance, resolvePlacementRect(armedCreate.kind, event.clientX, event.clientY, event.clientX, event.clientY), null);
       gesture = { kind: "create", startPointer: { x: event.clientX, y: event.clientY }, preview };
+      return;
+    }
+    if (event.target instanceof Element && isExtensionRoot(event.target)) {
+      return;
+    }
+    const picked = visualModel.pick(event.clientX, event.clientY);
+    if (diagnosticsEnabled()) {
+      const pickedElement = picked ? visualModel.bind(picked) : null;
+      const box = pickedElement?.getBoundingClientRect();
+      lastPick = {
+        at: [Math.round(event.clientX), Math.round(event.clientY)],
+        nodeId: picked,
+        bound: Boolean(pickedElement),
+        tag: pickedElement?.tagName.toLowerCase() ?? null,
+        text: (pickedElement?.textContent ?? "").replace(/\s+/gu, " ").trim().slice(0, 32),
+        rect: box ? [Math.round(box.x), Math.round(box.y), Math.round(box.width), Math.round(box.height)] : null,
+        topHit: root.elementsFromPoint(event.clientX, event.clientY)
+          .filter((node): node is HTMLElement => node instanceof HTMLElement && !isExtensionRoot(node))
+          .slice(0, 3)
+          .map((node) => `${node.tagName.toLowerCase()}:${(node.textContent ?? "").replace(/\s+/gu, " ").trim().slice(0, 16)}`),
+      };
+    }
+    const pickBelongsToSelection = (): boolean => {
+      if (!picked) return false;
+      const ids = selectedIds();
+      if (ids.includes(picked)) return true;
+      const pickedElement = visualModel.bind(picked);
+      if (!pickedElement) return false;
+      return ids.some((id) => {
+        const selected = visualModel.bind(id);
+        return Boolean(selected && (selected.contains(pickedElement) || pickedElement.contains(selected)));
+      });
+    };
+    const hitSelected = (): boolean => {
+      const selectedRect = unionRects(visualModel.measure(selectedIds()).values());
+      return Boolean(selectedRect && event.clientX >= selectedRect.x && event.clientX <= selectedRect.x + selectedRect.width && event.clientY >= selectedRect.y && event.clientY <= selectedRect.y + selectedRect.height);
+    };
+    if (armedLassoMode && !event.shiftKey && (pickBelongsToSelection() || hitSelected()) && beginMoveGesture(event, picked)) {
       return;
     }
     if (armedLassoMode === "rectangle") {
@@ -998,7 +1301,6 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       overlays.showFreeformLasso(gesture.points);
       return;
     }
-    const picked = visualModel.pick(event.clientX, event.clientY);
     if (event.shiftKey) {
       gesture = {
         kind: "lasso",
@@ -1009,18 +1311,6 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       };
       return;
     }
-
-    const pickBelongsToSelection = (): boolean => {
-      if (!picked) return false;
-      const ids = selectedIds();
-      if (ids.includes(picked)) return true;
-      const pickedElement = visualModel.bind(picked);
-      if (!pickedElement) return false;
-      return ids.some((id) => {
-        const selected = visualModel.bind(id);
-        return Boolean(selected && (selected.contains(pickedElement) || pickedElement.contains(selected)));
-      });
-    };
     if (pickBelongsToSelection() && beginMoveGesture(event, picked)) return;
 
     if (picked) {
@@ -1034,9 +1324,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return;
     }
 
-    const selectedRect = unionRects(visualModel.measure(selectedIds()).values());
-    const hitSelected = Boolean(selectedRect && event.clientX >= selectedRect.x && event.clientX <= selectedRect.x + selectedRect.width && event.clientY >= selectedRect.y && event.clientY <= selectedRect.y + selectedRect.height);
-    if (hitSelected && beginMoveGesture(event)) return;
+    if (hitSelected() && beginMoveGesture(event)) return;
 
     gesture = {
       kind: "lasso",
@@ -1094,7 +1382,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const armed = armedCreate;
       active.preview?.remove();
       gesture = null;
-      armedCreate = null;
+      setArmedCreate(null);
       if (armed) {
         const rect = resolvePlacementRect(armed.kind, active.startPointer.x, active.startPointer.y, event.clientX, event.clientY);
         commitCreatedElement(armed.kind, rect, armed.appearance);
@@ -1151,7 +1439,12 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     gesture = null;
 
     if (active.targets.some((target) => !target.element.isConnected) || Math.hypot(dx, dy) < MOVE_THRESHOLD_PX) {
-      if (active.clickPick && !active.targets.some((target) => target.nodeId === active.clickPick)) {
+      const pickInsideSelectedRoot = Boolean(active.clickPick) && active.targets.some((target) => {
+        if (target.nodeId === active.clickPick) return true;
+        const picked = visualModel.bind(active.clickPick!);
+        return Boolean(picked && target.element.contains(picked));
+      });
+      if (active.clickPick && active.targets.length < 2 && !pickInsideSelectedRoot) {
         setSelection(selectionFromAtoms([atomForNode(active.clickPick)], "click"));
       }
       overlays.refreshFromLiveGeometry();
@@ -1165,6 +1458,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       dx,
       dy,
       pageKey: pageKey(),
+      knownSizes: new Map(active.targets.map((target) => [target.nodeId, target.localSize])),
     });
     releaseMutationIgnore();
     logV2("move", {
@@ -1177,7 +1471,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     });
     renderSelection();
     refreshSave();
-    overlays.refreshFromLiveGeometry();
+    logMultiGeometryInvariant("move-gesture");
     if (!result.ok) {
       logV2("move-failed", { owner: "EXECUTION", error: result.error });
     }
@@ -1205,9 +1499,25 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         event.preventDefault();
         return;
       }
+      if (stylePanelOpen) {
+        cancelStylePreview();
+        stylePanelOpen = false;
+        overlays.closeStylePanel();
+        refreshToolbar();
+        overlays.refreshFromLiveGeometry();
+        event.preventDefault();
+        return;
+      }
+      if (textEditorOpen) {
+        textEditorOpen = false;
+        overlays.closeTextEditor(true);
+        refreshToolbar();
+        event.preventDefault();
+        return;
+      }
       if ((armedLassoMode || armedCreate) && !gesture) {
         armedLassoMode = null;
-        armedCreate = null;
+        setArmedCreate(null);
         refreshToolbar();
         event.preventDefault();
         return;
@@ -1320,7 +1630,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       if (!relevant) {
         return;
       }
-      reapplyActive();
+      reapplyActive("host-mutation");
       overlays.refreshFromLiveGeometry();
     });
     observer.observe(root.documentElement, {
@@ -1351,7 +1661,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         void runtime.replay();
       },
       onDomInvalidated() {
-        reapplyActive();
+        reapplyActive("dom-invalidated");
         overlays.refreshFromLiveGeometry();
       },
     },
@@ -1415,6 +1725,85 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       selection = emptySelection();
       groups.clear();
       groupByMember.clear();
+      publishDiagnostics();
+    },
+    reset(): ResetResult {
+      // Roll the DOM back through the verified inverse path first so host
+      // elements return to their own layout instead of being left detached.
+      let guard = ledger.entries.length + 4;
+      while (ledger.canUndo() && guard > 0) {
+        guard -= 1;
+        if (!runtime.undo().ok) break;
+      }
+      finishTransformGesture(false);
+      cancelGesture();
+      cancelStylePreview();
+      ignoreMutations = true;
+      try {
+        for (const owned of Array.from(root.querySelectorAll<HTMLElement>(
+          "[data-otf-element-id],[data-otf-clone-id],[data-otf-preview]",
+        ))) {
+          owned.remove();
+        }
+        for (const managed of Array.from(root.querySelectorAll<HTMLElement>(
+          `[data-otf-managed],[${OTF_TRANSFORM_ATTR}],[data-otf-detached],[data-otf-hidden]`,
+        ))) {
+          managed.removeAttribute("data-otf-managed");
+          managed.removeAttribute(OTF_TRANSFORM_ATTR);
+          managed.removeAttribute("data-otf-detached");
+          managed.removeAttribute("data-otf-hidden");
+          managed.removeAttribute("data-otf-transform-only");
+          managed.removeAttribute("data-otf-interaction-fixed");
+        }
+      } finally {
+        releaseMutationIgnore();
+      }
+      ledger.clear();
+      selection = emptySelection();
+      groups.clear();
+      groupByMember.clear();
+      wrapSessions.clear();
+      pastePartitions.clear();
+      clipboard = null;
+      armedLassoMode = null;
+      preferredLassoMode = null;
+      setArmedCreate(null);
+      paletteSampling = false;
+      stylePanelOpen = false;
+      textEditorOpen = false;
+      cropMode = false;
+      saveStatus = "idle";
+      lastSaveError = undefined;
+      sessionGeneration += 1;
+      reapplyTrace.splice(0, reapplyTrace.length);
+      overlays.clear();
+      overlays.setCropMode(false);
+      overlays.closeStylePanel();
+      overlays.closeLassoChooser();
+      overlays.closeMoreMenu();
+      overlays.closeComponentPalette();
+      refreshSave();
+      renderSelection();
+      const result: ResetResult = {
+        ok: true,
+        ledgerEntries: ledger.entries.length,
+        activeOperations: ledger.activeOperations().length,
+        selection: selectedIds().length,
+        groups: groups.size,
+        pendingGestures: (gesture ? 1 : 0) + (transformGesture ? 1 : 0),
+        clipboardItems: 0,
+        ownedNodes: root.querySelectorAll("[data-otf-element-id],[data-otf-clone-id]").length,
+        managedNodes: root.querySelectorAll(`[data-otf-managed],[${OTF_TRANSFORM_ATTR}],[data-otf-detached]`).length,
+        session: sessionGeneration,
+      };
+      logV2("reset", { owner: "LEDGER", ...result });
+      publishDiagnostics();
+      return {
+        ...result,
+        ok: result.ledgerEntries === 0 && result.activeOperations === 0 && result.selection === 0 &&
+          result.groups === 0 && result.pendingGestures === 0 && result.ownedNodes === 0 &&
+          result.managedNodes === 0,
+      };
     },
     select(element) {
       const nodeId = visualModel.adopt(element);
@@ -1427,13 +1816,29 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       return nodeId;
     },
     selectRect(rect, mode) {
-      const atoms = resolveLasso(rect).map(atomForNode);
+      const ids = resolveLasso(rect);
+      const atoms = ids.map(atomForNode);
       setSelection(selectionFromAtoms(mode === "add" ? [...selection.atoms, ...atoms] : atoms, "lasso"));
+      logV2("lasso-select", {
+        mode,
+        selectedIds: selectedIds(),
+        effectRoots: effectRoots(selectedIds()),
+        overlay: overlays.selectionOutlineRect(),
+      });
+      logMultiGeometryInvariant("lasso-select");
       return selection;
     },
     selectPolygon(points, mode) {
-      const atoms = resolveFreeform(points).map(atomForNode);
+      const ids = resolveFreeform(points);
+      const atoms = ids.map(atomForNode);
       setSelection(selectionFromAtoms(mode === "add" ? [...selection.atoms, ...atoms] : atoms, "lasso"));
+      logV2("freeform-select", {
+        mode,
+        selectedIds: selectedIds(),
+        effectRoots: effectRoots(selectedIds()),
+        overlay: overlays.selectionOutlineRect(),
+      });
+      logMultiGeometryInvariant("freeform-select");
       return selection;
     },
     armLasso(mode) {
@@ -1455,7 +1860,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     },
     armCreate(kind, appearance) {
       closeCreateChrome();
-      armedCreate = { kind, appearance: appearance ?? sampledAppearanceFor(kind) };
+      setArmedCreate({ kind, appearance: appearance ?? sampledAppearanceFor(kind) });
       refreshToolbar();
     },
     createContainerAroundSelection() {
@@ -1690,32 +2095,45 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     resizeSelection(targetRect) {
       const roots = effectRoots(selectedIds());
       const measured = visualModel.measure(roots);
-      const rects = roots.map((id) => measured.get(id)).filter((rect): rect is IntendedRect => Boolean(rect));
-      const startUnion = unionRects(rects);
-      if (!startUnion || rects.length !== roots.length) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
-      const targets = scaleRects(startUnion, targetRect, rects);
-      const operations: ResizeOperation[] = [];
-      for (const [index, nodeId] of roots.entries()) {
-        const identity = visualModel.durableIdentityOf(nodeId);
-        const current = rects[index];
-        const target = targets[index];
+      const members: Array<{
+        nodeId: VisualNodeId;
+        element: HTMLElement;
+        current: IntendedRect;
+        rotate: number;
+        local: { width: number; height: number };
+      }> = [];
+      for (const nodeId of roots) {
+        const current = measured.get(nodeId);
         const element = visualModel.bind(nodeId);
-        if (!identity || !current || !target || !element) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
-        const state = initialTransformState(element);
-        const local = localSizeForRotatedBounds(target.width, target.height, state.rotate, liveLayoutSize(element, current, state.rotate));
-        const drafted = buildResizeOperation({ nodeId, signature: identity.signature, rect: current }, { width: local.width, height: local.height, mode: "box" }, { pageKey: pageKey(), sourceCommand: "resize" });
-        operations.push({ ...drafted, id: nextOperationId("resize"), status: "approved", target: { nodeId, signature: identity.signature }, metadata: { ...drafted.metadata, originalRect: current, finalRect: target, affectedRect: target } });
+        if (!current || !element) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
+        const rotate = initialTransformState(element).rotate;
+        members.push({
+          nodeId,
+          element,
+          current,
+          rotate,
+          local: liveLayoutSize(element, current, rotate),
+        });
       }
-      const expected = new Map(operations.map((operation) => [operation.id, operation.metadata?.finalRect ?? targetRect]));
-      ignoreMutations = true;
-      const result = executor.executeTransaction({ operations, expectedRects: expected });
-      releaseMutationIgnore();
-      if (result.ok) {
-        renderSelection();
-        overlays.refreshFromLiveGeometry();
-        refreshSave();
-      }
-      return result;
+      const startUnion = unionRects(members.map((member) => member.current));
+      if (!startUnion || members.length !== roots.length) return { ok: false, error: "resize_target_unresolved", rolledBack: false };
+      const planned = planMultiResizeMembers(
+        startUnion,
+        targetRect,
+        members.map((member) => ({ rect: member.current, local: member.local, rotate: member.rotate })),
+      );
+      const plans = members.map((member, index) => {
+        const next = planned[index]!;
+        return { nodeId: member.nodeId, element: member.element, current: member.current, local: next.local, aabb: next.aabb };
+      });
+      logV2("resize-plan", {
+        selectedIds: selectedIds(),
+        effectRoots: roots,
+        startUnion,
+        targetRect,
+        planned: plans.map((plan) => ({ nodeId: plan.nodeId, current: plan.current, local: plan.local, aabb: plan.aabb })),
+      });
+      return commitResizePlans(plans);
     },
     rotateSelection(degrees) {
       const roots = effectRoots(selectedIds());
@@ -1734,7 +2152,13 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         const dx = target.x - current.x;
         const dy = target.y - current.y;
         if (Math.hypot(dx, dy) > 0.01) {
-          const plan = placement.planMove({ element, currentRect: current, dx, dy });
+          const plan = placement.planMove({
+            element,
+            currentRect: current,
+            dx,
+            dy,
+            forceIndependent: !placement.isIndependent(element),
+          });
           const move = buildMoveOperation({ nodeId, signature: identity.signature, rect: current }, dx, dy, { pageKey: pageKey(), sourceCommand: "rotate:move" });
           const committed: MoveOperation = { ...move, id: nextOperationId("move"), status: "approved", payload: { ...move.payload, ...plan.payload }, metadata: { ...move.metadata, originalRect: current, finalRect: plan.expectedRect, affectedRect: plan.expectedRect } };
           operations.push(committed); expected.set(committed.id, plan.expectedRect);
@@ -1743,8 +2167,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         const rotate = buildRotateOperation({ nodeId, signature: identity.signature, rect: target }, existing + degrees, { pageKey: pageKey(), sourceCommand: "rotate" });
         operations.push({ ...rotate, id: nextOperationId("rotate"), status: "approved", target: { nodeId, signature: identity.signature }, metadata: { ...rotate.metadata, originalRect: current, finalRect: target, affectedRect: target } });
       }
+      ignoreMutations = true;
       const result = executor.executeTransaction({ operations, expectedRects: expected });
+      releaseMutationIgnore();
       if (result.ok) { renderSelection(); refreshSave(); }
+      logMultiGeometryInvariant("rotate-commit");
       return result;
     },
     moveSelection(dx, dy): BatchExecutionResult {
@@ -1754,6 +2181,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       releaseMutationIgnore();
       refreshSave();
       renderSelection();
+      logMultiGeometryInvariant("move-commit");
       return result;
     },
     selectParent() {
@@ -1896,11 +2324,17 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         const wrap = wrapSessions.get(transactionKey(operations));
         if (wrap) {
           setSelection(selectionFromAtoms([atomForNode(wrap.containerId)], "click"));
-        }
-        const partitions = pastePartitions.get(transactionKey(operations));
-        if (partitions) {
-          const cloneIds = result.operations.map((operation) => operation.target.nodeId).filter((id): id is VisualNodeId => Boolean(id));
-          setSelection(selectionFromAtoms(restorePasteGroups(cloneIds, partitions), partitions.length ? "group" : "click"));
+        } else if (operations.every((operation) => operation.type === "duplicate" || operation.type === "createElement")) {
+          const restoredIds = result.operations.map((operation) => operation.target.nodeId).filter((id): id is VisualNodeId => Boolean(id));
+          const partitions = pastePartitions.get(transactionKey(operations));
+          if (restoredIds.length > 0) {
+            setSelection(selectionFromAtoms(
+              partitions ? restorePasteGroups(restoredIds, partitions) : restoredIds.map((nodeId) => ({ kind: "node" as const, nodeId })),
+              partitions?.length ? "group" : "click",
+            ));
+          }
+        } else {
+          overlays.refreshFromLiveGeometry();
         }
       }
       refreshSave();
@@ -1915,7 +2349,18 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       lastSaveError = undefined;
       refreshSave();
       const pending = (async (): Promise<PersistResult> => {
-        const active = ledger.activeOperations();
+        const active = [...ledger.activeOperations()];
+        const knownCloneIds = new Set(
+          active.filter((operation): operation is DuplicateOperation => operation.type === "duplicate").map((operation) => operation.payload.cloneId),
+        );
+        for (const element of Array.from(root.querySelectorAll<HTMLElement>("[data-otf-clone-id]"))) {
+          const cloneId = element.getAttribute("data-otf-clone-id")?.trim();
+          if (!cloneId || knownCloneIds.has(cloneId)) continue;
+          const created = buildDuplicateFromLiveClone(element, pageKey(), nextOperationId("duplicate"));
+          if (!created) continue;
+          active.unshift(freezeCommittedOperation(created));
+          knownCloneIds.add(cloneId);
+        }
         const checkpointRevision = ledger.cursor;
         const checkpoint = projectCanonicalCheckpoint(active);
         if (!checkpoint.ok) {
@@ -2016,7 +2461,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       // Edit mode may turn on while this replay is awaiting load. Do not abort
       // an in-flight replay just because `started` flipped; that dropped
       // createElement/duplicate reconstruction after a live-page reload.
-      const superseded = (): boolean => generation !== replayGeneration || ledger.cursor !== startingRevision;
+      const startingSession = sessionGeneration;
+      const superseded = (): boolean =>
+        generation !== replayGeneration ||
+        sessionGeneration !== startingSession ||
+        ledger.cursor !== startingRevision;
       await waitForDocumentReady(root);
       const loaded = await loadPageOperations(pageKey());
       if (superseded()) {
@@ -2065,6 +2514,14 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       });
       if (superseded()) {
         logV2("replay-superseded", { owner: "LEDGER", generation, startingRevision, currentRevision: ledger.cursor });
+        return { ok: true, applied: 0, unresolved: 0, failed: 0 };
+      }
+      const latest = await loadPageOperations(pageKey());
+      if (superseded()) {
+        return { ok: true, applied: 0, unresolved: 0, failed: 0 };
+      }
+      if (latest.length === 0 && loaded.length > 0) {
+        logV2("replay-aborted-cleared", { owner: "LEDGER", generation, hadLoaded: loaded.length });
         return { ok: true, applied: 0, unresolved: 0, failed: 0 };
       }
       const createdResults = created.map((operation) => executor.replayOperation(operation));

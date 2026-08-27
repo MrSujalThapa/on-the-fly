@@ -45,3 +45,16 @@ export function meaningfullyIntersects(candidate: IntendedRect, lasso: IntendedR
   const overlapHeight = Math.max(0, Math.min(candidate.y + candidate.height, lasso.y + lasso.height) - Math.max(candidate.y, lasso.y));
   return (overlapWidth * overlapHeight) / Math.max(1, candidate.width * candidate.height) >= MEANINGFUL_OVERLAP_RATIO;
 }
+
+/**
+ * Lasso/hit-testing can also catch an ancestor collection that merely contains
+ * the intended controls. Keep the nested selectable members; drop ancestors
+ * that fully cover other hits. Click/parent-command selection is unchanged.
+ */
+export function dropCoveredAncestors<T>(
+  items: readonly { id: T; element: HTMLElement }[],
+): T[] {
+  return items
+    .filter((item) => !items.some((other) => other.id !== item.id && item.element.contains(other.element)))
+    .map((item) => item.id);
+}

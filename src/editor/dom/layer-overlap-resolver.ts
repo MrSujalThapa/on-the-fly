@@ -312,6 +312,14 @@ function managedLayerPeer(element: HTMLElement): HTMLElement | null {
     ?? element.closest<HTMLElement>(`[${OTF_MANAGED_ATTR}="true"]`);
 }
 
+/**
+ * A layer command re-stacks the target against the On the Fly objects that
+ * overlap it. Only managed peers qualify: verifying against arbitrary host
+ * nodes picked out of the hit stack (LinkedIn embeds zero-area tracking
+ * iframes and full-bleed overlays) failed the command for stacking contests
+ * the user never asked about, and pushed in-flow elements into an
+ * layout-destroying independent promotion to try to win them.
+ */
 function findVisualBlocker(
   selected: HTMLElement,
   paintHosts: Set<HTMLElement>,
@@ -320,10 +328,7 @@ function findVisualBlocker(
   document: Document,
 ): HTMLElement | null {
   void command;
-  const independent = selected.getAttribute(OTF_DETACH_ATTR) === "true";
-  const points = sampleInnerPoints(rect);
-  let fallback: HTMLElement | null = null;
-  for (const point of points) {
+  for (const point of sampleInnerPoints(rect)) {
     const stack = getFilteredElementsFromPoint(document, point.x, point.y);
     for (const element of stack) {
       if (isPaintParticipant(element, selected, paintHosts)) {
@@ -333,11 +338,10 @@ function findVisualBlocker(
       if (peer && peer !== selected && !selected.contains(peer) && !peer.contains(selected)) {
         return peer;
       }
-      fallback ??= element;
     }
   }
 
-  return independent ? null : fallback;
+  return null;
 }
 
 function computeTargetLayer(

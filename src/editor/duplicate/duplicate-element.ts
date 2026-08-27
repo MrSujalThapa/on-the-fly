@@ -163,6 +163,69 @@ export function buildDuplicateFromClipboardEntry(
   return { operation, cloneTarget };
 }
 
+export function buildDuplicateFromLiveClone(
+  element: HTMLElement,
+  pageKey: PageKey,
+  operationId: string,
+): DuplicateOperation | null {
+  const cloneId = element.getAttribute(OTF_CLONE_ATTR)?.trim();
+  if (!cloneId || !isSafeToClone(element)) {
+    return null;
+  }
+  const view = element.ownerDocument.defaultView;
+  const rect = element.getBoundingClientRect();
+  const scrollX = view?.scrollX ?? 0;
+  const scrollY = view?.scrollY ?? 0;
+  const sanitized = sanitizeElementForClone(element);
+  sanitized.setAttribute(OTF_CLONE_ATTR, cloneId);
+  const signature = buildElementSignature(sanitized, {
+    root: element.ownerDocument,
+    ...(view
+      ? {
+          viewport: {
+            width: element.ownerDocument.documentElement.clientWidth,
+            height: element.ownerDocument.documentElement.clientHeight,
+          },
+        }
+      : {}),
+  });
+  signature.cssPath = `[${OTF_CLONE_ATTR}="${cloneId}"]`;
+  return {
+    id: operationId,
+    type: "duplicate",
+    pageKey,
+    target: { nodeId: cloneId, signature },
+    payload: {
+      cloneId,
+      html: sanitized.outerHTML,
+      parentCssPath: "body",
+      offsetDx: 0,
+      offsetDy: 0,
+      sourceCssPath: `[${OTF_CLONE_ATTR}="${cloneId}"]`,
+      anchorLeft: rect.left + scrollX,
+      anchorTop: rect.top + scrollY,
+      anchorWidth: rect.width,
+      anchorHeight: rect.height,
+      styleSnapshot: captureStyleSnapshot(element),
+    },
+    createdAt: Date.now(),
+    source: "manual",
+    status: "approved",
+    metadata: {
+      targetSummary: summarizeElementSignature(signature),
+      affectedRect: measurementRectToAffectedRect({
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      }),
+      originalRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      finalRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      sourceCommand: "duplicate",
+    },
+  };
+}
+
 export function isSafeToClone(element: HTMLElement): boolean {
   const tag = element.tagName.toLowerCase();
   if (BLOCKED_TAGS.has(tag)) {

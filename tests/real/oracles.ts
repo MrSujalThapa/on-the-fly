@@ -116,8 +116,25 @@ export async function captureStepSnapshot(page: Page, target: Locator): Promise<
 }
 
 export async function dragHandle(page: Page, handle: string, dx: number, dy: number): Promise<boolean> {
-  const box = await getTransformHandleRect(page, handle);
+  const viewport = page.viewportSize();
+  let box = await getTransformHandleRect(page, handle);
   if (!box) return false;
+  if (viewport) {
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    const pad = 64;
+    const offX = cx < pad || cx > viewport.width - pad;
+    const offY = cy < pad || cy > viewport.height - pad;
+    if (offX || offY) {
+      await page.evaluate(({ scrollX, scrollY }) => window.scrollBy(scrollX, scrollY), {
+        scrollX: offX ? cx - viewport.width / 2 : 0,
+        scrollY: offY ? cy - viewport.height / 2 : 0,
+      });
+      await page.waitForTimeout(150);
+      box = await getTransformHandleRect(page, handle);
+      if (!box) return false;
+    }
+  }
   const x = box.x + box.width / 2;
   const y = box.y + box.height / 2;
   await page.mouse.move(x, y);

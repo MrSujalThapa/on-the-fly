@@ -167,7 +167,19 @@ function applyManagedRotate(element: HTMLElement, rotate: number): void {
   element.style.transform = composeManagedTransform(0, 0, rotate);
 }
 
+const independentLocalSize = new WeakMap<HTMLElement, { width: number; height: number }>();
+
+export function rememberIndependentLocalSize(element: HTMLElement, width: number, height: number): void {
+  if (width > 1 && height > 1) {
+    independentLocalSize.set(element, { width, height });
+  }
+}
+
 export function readLocalLayoutSize(element: HTMLElement): { width: number; height: number } {
+  const remembered = independentLocalSize.get(element);
+  if (remembered && remembered.width > 1 && remembered.height > 1) {
+    return { width: remembered.width, height: remembered.height };
+  }
   const stored = readStoredTransformState(element);
   if (stored && stored.width !== null && stored.width > 1 && stored.height !== null && stored.height > 1) {
     return { width: stored.width, height: stored.height };
@@ -210,6 +222,7 @@ export function realizeIndependentBox(
   element.style.flexShrink = "0";
   element.style.alignSelf = "auto";
   applyManagedRotate(element, rotate);
+  rememberIndependentLocalSize(element, viewportRect.width, viewportRect.height);
   const actual = element.getBoundingClientRect();
   const dx = viewportRect.x - actual.x;
   const dy = viewportRect.y - actual.y;

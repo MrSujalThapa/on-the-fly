@@ -1,13 +1,32 @@
 import { readStoredTransformState, writeStoredTransformState, applyStoredTransformState, realizeIndependentBox } from "./element-snapshot.js";
-import { MANAGED_Z_INDEX_BASELINE } from "../transform/layer-order.js";
+import { FRONT_LAYER } from "../transform/layer-order.js";
 import { OTF_INTERACTION_FIXED_ATTR, OTF_MANAGED_ATTR, OTF_TRANSFORM_ONLY_ATTR, type StoredTransformState } from "./types.js";
 import type { MoveOperation } from "../operations.js";
 
 export const OTF_DETACH_ATTR = "data-otf-detached";
 
+/**
+ * Body-managed elements must paint above site chrome (sticky filter bars,
+ * nav). Sibling index tokens (1, 2, 3…) lose that race after reparenting.
+ */
+export const INDEPENDENT_LAYER = FRONT_LAYER;
+
 export function originalSiblingLayer(element: HTMLElement): string {
   const siblings = element.parentElement ? Array.from(element.parentElement.children) : [];
   return String(1 + Math.max(0, siblings.indexOf(element)));
+}
+
+export function resolveIndependentZIndex(element: HTMLElement, requested?: string): string {
+  const inline = Number.parseInt(element.style.zIndex || "", 10);
+  const asked = Number.parseInt(requested ?? "", 10);
+  const current = Math.max(
+    Number.isFinite(inline) ? inline : Number.NEGATIVE_INFINITY,
+    Number.isFinite(asked) ? asked : Number.NEGATIVE_INFINITY,
+  );
+  if (Number.isFinite(current) && current >= INDEPENDENT_LAYER) {
+    return String(current);
+  }
+  return String(INDEPENDENT_LAYER);
 }
 
 export function markTransformOnlyMove(element: HTMLElement): void {
@@ -22,7 +41,6 @@ export function isTransformOnlyMove(element: HTMLElement): boolean {
 }
 
 const OUTSIDE_PARENT_TOLERANCE_PX = 2;
-const INDEPENDENT_BASE_LAYER = String(MANAGED_Z_INDEX_BASELINE + 1);
 
 export function realizeIndependentPlacement(
   element: HTMLElement,
@@ -48,8 +66,7 @@ export function realizeIndependentPlacement(
     position: "absolute",
   };
   writeStoredTransformState(element, nextState);
-  const layer = options?.zIndex ?? element.style.zIndex;
-  element.style.zIndex = layer && layer !== "auto" ? layer : INDEPENDENT_BASE_LAYER;
+  element.style.zIndex = resolveIndependentZIndex(element, options?.zIndex);
 }
 
 export interface DetachPlacement {
@@ -251,10 +268,7 @@ export function promoteElementToManagedLayer(
   const placement: DetachPlacement = {
     left: rect.left + scrollX,
     top: rect.top + scrollY,
-    zIndex: (() => {
-      const current = element.style.zIndex || getComputedStyle(element).zIndex;
-      return current && current !== "auto" ? current : INDEPENDENT_BASE_LAYER;
-    })(),
+    zIndex: resolveIndependentZIndex(element, getComputedStyle(element).zIndex),
     width: `${String(rect.width)}px`,
     height: `${String(rect.height)}px`,
   };
@@ -363,8 +377,7 @@ export function applyPersistedDetachPlacement(
     element.style.left = `${String(correctedLeft)}px`;
     element.style.top = `${String(correctedTop)}px`;
   }
-  const zIndex = operation.payload.detachedZIndex;
-  element.style.zIndex = zIndex && zIndex !== "auto" ? zIndex : INDEPENDENT_BASE_LAYER;
+  element.style.zIndex = resolveIndependentZIndex(element, operation.payload.detachedZIndex);
 }
 
 /**

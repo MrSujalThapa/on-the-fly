@@ -1,29 +1,35 @@
-import type { Page } from "@playwright/test";
-import { expect } from "./harness.js";
+import type { CDPSession, Page } from "@playwright/test";
+import {
+  cdpAttr,
+  cdpBox,
+  describeOtfHost,
+  findCdpNode,
+  type CdpNode,
+} from "../e2e/helpers/otf-cdp.js";
+import { expect, dismissJumpMenu } from "./harness.js";
 
-interface NodeInfo {
-  nodeId: number;
-  attributes?: string[];
-  children?: NodeInfo[];
-  shadowRoots?: NodeInfo[];
+function find(node: CdpNode, className?: string, data?: [string, string]): CdpNode | null {
+  return findCdpNode(node, (candidate) => {
+    const classes = (cdpAttr(candidate, "class") ?? "").split(/\s+/u);
+    const classOk = !className || classes.includes(className);
+    const dataOk = !data || cdpAttr(candidate, data[0]) === data[1];
+    return classOk && dataOk;
+  });
 }
 
-function attr(node: NodeInfo, name: string): string | null {
-  const values = node.attributes ?? [];
-  for (let i = 0; i < values.length; i += 2) if (values[i] === name) return values[i + 1] ?? null;
-  return null;
-}
-
-function find(node: NodeInfo, className?: string, data?: [string, string]): NodeInfo | null {
-  const classes = (attr(node, "class") ?? "").split(/\s+/u);
-  const classOk = !className || classes.includes(className);
-  const dataOk = !data || attr(node, data[0]) === data[1];
-  if (classOk && dataOk) return node;
-  for (const child of [...(node.children ?? []), ...(node.shadowRoots ?? [])]) {
-    const hit = find(child, className, data);
-    if (hit) return hit;
+async function resolveObjectId(cdp: CDPSession, node: CdpNode): Promise<string | null> {
+  let nodeId = node.nodeId;
+  if (!nodeId && node.backendNodeId) {
+    const pushed = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
+      backendNodeIds: [node.backendNodeId],
+    });
+    nodeId = pushed.nodeIds[0];
   }
-  return null;
+  if (!nodeId) {
+    return null;
+  }
+  const resolved = await cdp.send("DOM.resolveNode", { nodeId }).catch(() => null);
+  return resolved?.object.objectId ?? null;
 }
 
 export async function chromeNode(page: Page, className?: string, data?: [string, string]): Promise<{
@@ -33,58 +39,42 @@ export async function chromeNode(page: Page, className?: string, data?: [string,
   height: number;
 } | null> {
   const cdp = await page.context().newCDPSession(page);
-  const document = await cdp.send("DOM.getDocument", { depth: -1, pierce: true });
-  const node = find(document.root, className, data);
-  if (!node || attr(node, "hidden") !== null) {
+  try {
+    const host = await describeOtfHost(cdp);
+    if (!host) {
+      return null;
+    }
+    const node = find(host, className, data);
+    if (!node || cdpAttr(node, "hidden") !== null) {
+      return null;
+    }
+    const box = await cdpBox(cdp, node);
+    return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
+  } finally {
     await cdp.detach();
-    return null;
   }
-  const model = await cdp.send("DOM.getBoxModel", { nodeId: node.nodeId }).catch(() => null);
-  if (!model) {
-    await cdp.detach();
-    return null;
-  }
-  const q = model.model.border;
-  const x0 = q[0];
-  const y0 = q[1];
-  const x1 = q[2];
-  const y2 = q[5];
-  const x2 = q[4];
-  if (x0 === undefined || y0 === undefined || x1 === undefined || y2 === undefined || x2 === undefined) {
-    await cdp.detach();
-    return null;
-  }
-  const box = { x: (x0 + x2) / 2, y: (y0 + y2) / 2, width: x1 - x0, height: y2 - y0 };
-  await cdp.detach();
-  return box;
 }
 
 export async function invokeChrome(page: Page, className?: string, data?: [string, string]): Promise<boolean> {
   const cdp = await page.context().newCDPSession(page);
-  const document = await cdp.send("DOM.getDocument", { depth: -1, pierce: true });
-  const node = find(document.root, className, data);
-  if (!node) {
+  try {
+    const host = await describeOtfHost(cdp);
+    if (!host) {
+      return false;
+    }
+    const node = find(host, className, data);
+    if (!node) {
+      return false;
+    }
+    const objectId = await resolveObjectId(cdp, node);
+    if (!objectId) {
+      return false;
+    }
+    await cdp.send("Runtime.callFunctionOn", { objectId, functionDeclaration: "function () { this.click(); }" });
+    return true;
+  } finally {
     await cdp.detach();
-    return false;
   }
-  const resolved = await cdp.send("DOM.resolveNode", { nodeId: node.nodeId }).catch(() => null);
-  const objectId = resolved?.object.objectId;
-  if (!objectId) {
-    await cdp.detach();
-    return false;
-  }
-  await cdp.send("Runtime.callFunctionOn", { objectId, functionDeclaration: "function () { this.click(); }" });
-  await cdp.detach();
-  return true;
-}
-
-async function dismissJumpMenu(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const close = Array.from(document.querySelectorAll("button")).find((button) =>
-      /close jump menu/i.test(`${button.getAttribute("aria-label") ?? ""} ${button.textContent ?? ""}`),
-    );
-    close?.click();
-  });
 }
 
 export async function openToolbar(page: Page): Promise<void> {
@@ -122,6 +112,37 @@ export async function createKindFromToolbar(page: Page, kind: string, x: number,
   await page.mouse.down();
   await page.mouse.move(x + 80, y + 48, { steps: 8 });
   await page.mouse.up();
+}
+
+export async function applyOpacityFromToolbar(page: Page, value: string): Promise<void> {
+  await openToolbar(page);
+  expect(await invokeChrome(page, "otf-tool-btn", ["data-command-id", "style-panel"])).toBe(true);
+  await expect.poll(() => chromeNode(page, "otf-style-panel")).not.toBeNull();
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    const host = await describeOtfHost(cdp);
+    expect(host, "opacity host missing").not.toBeNull();
+    if (!host) {
+      return;
+    }
+    const node = find(host, undefined, ["data-style-field", "opacity"]);
+    expect(node, "opacity field missing").not.toBeNull();
+    if (!node) {
+      return;
+    }
+    const objectId = await resolveObjectId(cdp, node);
+    expect(objectId).toBeTruthy();
+    if (objectId) {
+      await cdp.send("Runtime.callFunctionOn", {
+        objectId,
+        functionDeclaration: `function (next) { this.value = next; this.dispatchEvent(new Event("input", { bubbles: true })); }`,
+        arguments: [{ value }],
+      });
+    }
+  } finally {
+    await cdp.detach();
+  }
+  expect(await invokeChrome(page, undefined, ["data-style-apply", ""])).toBe(true);
 }
 
 export async function invokeLayerCommand(page: Page, command: "front" | "back"): Promise<void> {

@@ -342,4 +342,37 @@ describe("created elements", () => {
       runtime.stop();
     }
   });
+
+  it("armed create places from a chrome hit and leaves the created element selected", () => {
+    const { document } = createTestDocument("");
+    patchRects(document);
+    document.elementsFromPoint = (x, y) => paintAt(document, x, y);
+    const runtime = createEditorRuntime(document);
+    runtime.start();
+    runtime.armCreate("rectangle");
+    const host = document.getElementById("on-the-fly-root-host");
+    expect(host?.getAttribute("data-otf-placement-armed")).toBe("true");
+    const view = document.defaultView;
+    expect(host).not.toBeNull();
+    expect(view).toBeTruthy();
+    if (!host || !view) {
+      runtime.stop();
+      return;
+    }
+    host.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true, composed: true, button: 0, clientX: 200, clientY: 180, pointerId: 11,
+    }));
+    view.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true, composed: true, button: 0, clientX: 280, clientY: 228, pointerId: 11,
+    }));
+    view.dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true, composed: true, button: 0, clientX: 280, clientY: 228, pointerId: 11,
+    }));
+    const created = document.querySelector("[data-otf-element-id]:not([data-otf-preview])");
+    expect(created).not.toBeNull();
+    expect(runtime.selectedNodeIds()).toHaveLength(1);
+    expect(runtime.overlays.selectionOutlineRect()).not.toBeNull();
+    expect(host.getAttribute("data-otf-placement-armed")).toBeNull();
+    runtime.stop();
+  });
 });

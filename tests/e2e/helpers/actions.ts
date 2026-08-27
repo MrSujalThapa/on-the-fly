@@ -19,7 +19,11 @@ export async function openFixture(page: Page, name: string): Promise<void> {
 
 export async function enableEditMode(context: BrowserContext, page: Page): Promise<void> {
   await page.bringToFront();
-  const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
+  const worker = context
+    .serviceWorkers()
+    .find((entry) => entry.url().startsWith("chrome-extension://"))
+    ?? context.serviceWorkers()[0]
+    ?? (await context.waitForEvent("serviceworker"));
   const result = await worker.evaluate(async () => {
     const tabs = await chrome.tabs.query({ lastFocusedWindow: true });
     const tab = tabs.find((entry) => entry.active && typeof entry.id === "number") ?? tabs[0];
@@ -119,7 +123,11 @@ export async function loadPersistedOperations(
   context: BrowserContext,
   page: Page,
 ): Promise<Array<Record<string, unknown>>> {
-  const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
+  const worker = context
+    .serviceWorkers()
+    .find((entry) => entry.url().startsWith("chrome-extension://"))
+    ?? context.serviceWorkers()[0]
+    ?? (await context.waitForEvent("serviceworker"));
   const pageKey = await page.evaluate(() => `${location.origin}${location.pathname.replace(/\/+$/u, "") || "/"}`);
   return worker.evaluate(async (key) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {

@@ -18,6 +18,23 @@ export interface PersistResult {
   readonly failureKind?: "LEDGER" | "PERSISTENCE" | "IDENTITY" | "EXECUTION";
 }
 
+/**
+ * Post-conditions of `EditorRuntime.reset`. Every field must be zero/empty for
+ * the runtime to be considered a clean session.
+ */
+export interface ResetResult {
+  readonly ok: boolean;
+  readonly ledgerEntries: number;
+  readonly activeOperations: number;
+  readonly selection: number;
+  readonly groups: number;
+  readonly pendingGestures: number;
+  readonly clipboardItems: number;
+  readonly ownedNodes: number;
+  readonly managedNodes: number;
+  readonly session: number;
+}
+
 export interface ReplayResult {
   readonly ok: boolean;
   readonly applied: number;
@@ -41,6 +58,12 @@ export interface EditorRuntime {
   readonly lifecycle: RuntimeLifecycle;
   start(): void;
   stop(): void;
+  /**
+   * Discards every piece of in-session editing state and starts a new session
+   * generation. Operations from the previous session can no longer be
+   * reapplied by host mutations after this returns.
+   */
+  reset(): ResetResult;
   select(element: HTMLElement): VisualNodeId | null;
   toggleSelection(element: HTMLElement): VisualNodeId | null;
   selectRect(rect: IntendedRect, mode: "add" | "replace"): RuntimeSelection;

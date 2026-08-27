@@ -113,7 +113,7 @@ function applyMoveToFinalRect(
       y: finalRect.y,
       width: operation.payload.detachedWidth ?? finalRect.width,
       height: operation.payload.detachedHeight ?? finalRect.height,
-    }, { zIndex: operation.payload.detachedZIndex ?? element.style.zIndex });
+    }, operation.payload.detachedZIndex ? { zIndex: operation.payload.detachedZIndex } : undefined);
     return [
       { kind: "transform-state" as const, previousState: previousSerialized },
     ];
@@ -157,7 +157,7 @@ export function applyResizeOperation(
       y: finalRect.y,
       width: operation.payload.width,
       height: operation.payload.height,
-    }, { zIndex: element.style.zIndex });
+    });
     return [
       { kind: "transform-state" as const, previousState: previousSerialized },
       { kind: "size", previousWidth, previousHeight, previousBoxSizing },
@@ -186,6 +186,12 @@ export function applyRotateOperation(
 ): AppliedDomEffect["changes"] {
   const { state, previousSerialized } = ensureTransformState(element, snapshotStore);
   state.rotate = operation.payload.degrees;
+  const independent =
+    element.getAttribute(OTF_DETACH_ATTR) === "true" ||
+    element.parentElement === element.ownerDocument.body;
+  if (!independent) {
+    return commitTransformState(element, state, previousSerialized);
+  }
   const local = readLocalLayoutSize(element);
   const box = operation.metadata?.finalRect ?? {
     x: element.getBoundingClientRect().x,
@@ -193,17 +199,19 @@ export function applyRotateOperation(
     width: local.width,
     height: local.height,
   };
+  const width = state.width ?? local.width;
+  const height = state.height ?? local.height;
   writeStoredTransformState(element, {
     ...state,
-    width: state.width ?? local.width,
-    height: state.height ?? local.height,
+    width,
+    height,
   });
   realizeIndependentPlacement(element, {
     x: box.x,
     y: box.y,
-    width: state.width ?? local.width,
-    height: state.height ?? local.height,
-  }, { zIndex: element.style.zIndex });
+    width,
+    height,
+  });
   return [{ kind: "transform-state" as const, previousState: previousSerialized }];
 }
 

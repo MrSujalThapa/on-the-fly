@@ -36,4 +36,6 @@ export interface OperationLedger {
   confirmRedoTransaction(): readonly EditorOperation[];
   markPersisted(revision?: number): void;
   hydratePersisted(operations: readonly EditorOperation[]): void;
+  /** Drops history and redo tail. Used only by a full session reset. */
+  clear(): void;
 }

@@ -58,6 +58,14 @@ describe("VisualModel identity", () => {
     expect(model.bind("clone-a")).toBe(first);
     expect(model.adopt(second)).toBeNull();
     expect(model.bind("clone-a")).toBe(first);
+    first.remove();
+    model.invalidate("clone-a");
+    expect(model.bind("clone-a")).toBe(second);
+    const decoy = document.createElement("h1");
+    decoy.textContent = "decoy";
+    root.append(decoy);
+    model.cache("clone-a", decoy);
+    expect(model.bind("clone-a")).toBe(second);
   });
 
   it("promotes clone descendants to the clone entity root", () => {
@@ -282,6 +290,79 @@ describe("VisualModel hierarchy", () => {
     expect(fromTitle?.binding).toBe(title);
     expect(fromFooter?.binding).toBe(footer);
     expect(fromImage?.parentBinding).toBe(image.parentElement);
+  });
+
+  it("promotes a line-box fragment to the nearest interactive control, not the card", () => {
+    const { root } = createTestDocument(`
+      <article class="card">
+        <a href="/in/example">
+          <span class="name">Jamie Doe</span>
+          <p class="headline">Student at Humber College</p>
+          <p class="location">Brampton, Ontario</p>
+        </a>
+        <button type="button">Follow</button>
+      </article>
+    `);
+    const card = root.querySelector("article");
+    const link = root.querySelector("a");
+    const headline = root.querySelector(".headline");
+    const follow = root.querySelector("button");
+    if (
+      !(card instanceof HTMLElement) ||
+      !(link instanceof HTMLElement) ||
+      !(headline instanceof HTMLElement) ||
+      !(follow instanceof HTMLElement)
+    ) {
+      return;
+    }
+    stubRect(card, { x: 148, y: 76, width: 225, height: 210 });
+    stubRect(link, { x: 164, y: 178, width: 193, height: 68 });
+    stubRect(headline, { x: 164, y: 211, width: 193, height: 16 });
+    stubRect(follow, { x: 164, y: 250, width: 72, height: 28 });
+    const fromHeadline = discoverFromPath([headline, link, card]);
+    expect(fromHeadline?.binding).toBe(link);
+    expect(fromHeadline?.binding).not.toBe(headline);
+    expect(fromHeadline?.binding).not.toBe(card);
+    expect(discoverFromElement(headline)?.binding).toBe(link);
+    expect(discoverFromElement(follow)?.binding).toBe(follow);
+  });
+
+  it("does not promote a filter pill to the filter bar", () => {
+    const { root } = createTestDocument(`
+      <div role="radiogroup">
+        <button role="radio">All</button>
+        <button role="radio"><span>Mentions</span></button>
+      </div>
+    `);
+    const group = root.querySelector("[role='radiogroup']");
+    const mentions = root.querySelectorAll("button")[1];
+    const label = mentions?.querySelector("span");
+    if (!(group instanceof HTMLElement) || !(mentions instanceof HTMLElement) || !(label instanceof HTMLElement)) {
+      return;
+    }
+    stubRect(group, { x: 20, y: 40, width: 420, height: 32 });
+    stubRect(mentions, { x: 260, y: 40, width: 92, height: 32 });
+    stubRect(label, { x: 268, y: 48, width: 76, height: 16 });
+    const fromLabel = discoverFromPath([label, mentions, group]);
+    expect(fromLabel?.binding).toBe(mentions);
+    expect(fromLabel?.binding).not.toBe(group);
+    expect(discoverFromElement(mentions)?.binding).toBe(mentions);
+  });
+
+  it("does not promote a standalone text line to a surrounding section", () => {
+    const { root } = createTestDocument(`
+      <section>
+        <p>Student at Humber College</p>
+      </section>
+    `);
+    const section = root.querySelector("section");
+    const line = root.querySelector("p");
+    if (!(section instanceof HTMLElement) || !(line instanceof HTMLElement)) {
+      return;
+    }
+    stubRect(section, { x: 0, y: 0, width: 800, height: 600 });
+    stubRect(line, { x: 20, y: 40, width: 193, height: 16 });
+    expect(discoverFromPath([line, section])?.binding).toBe(line);
   });
 
   it("does not treat the collection as the default unit", () => {

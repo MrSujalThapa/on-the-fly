@@ -74,6 +74,13 @@ function overlayStyles(doc: Document): HTMLStyleElement {
     }
     .${SAVE_BUTTON_CLASS}[hidden] { display: none !important; }
     .otf-overlay-layer { position: fixed; inset: 0; z-index: 5; pointer-events: none; }
+    :host([data-otf-placement-armed="true"]) .otf-curved-toolbar,
+    :host([data-otf-placement-armed="true"]) .otf-curved-toolbar *,
+    :host([data-otf-placement-armed="true"]) .otf-more-menu,
+    :host([data-otf-placement-armed="true"]) .otf-component-palette,
+    :host([data-otf-placement-armed="true"]) .otf-lasso-chooser {
+      pointer-events: none !important;
+    }
     .${OUTLINE_CLASS} {
       position: fixed;
       box-sizing: border-box;
@@ -550,6 +557,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       else host.removeAttribute("data-otf-freeform-stats");
     },
     refreshFromLiveGeometry() {
+      painted = null;
       render(true);
     },
     clear() {
@@ -590,6 +598,11 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     setToolbarVisible(visible) {
       toolbarVisible = visible;
       syncToolbar(measureSelected().union);
+    },
+    setPlacementArmed(armed) {
+      if (!host) return;
+      if (armed) host.setAttribute("data-otf-placement-armed", "true");
+      else host.removeAttribute("data-otf-placement-armed");
     },
     openStylePanel(values) {
       toolbar?.toggleStylePanel(true, values);

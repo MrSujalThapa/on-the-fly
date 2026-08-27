@@ -1,4 +1,13 @@
 import { expect, type Locator, type Page } from "@playwright/test";
+import {
+  cdpAttr,
+  cdpBox,
+  cdpClassList,
+  countCdpByClass,
+  findCdpByClass,
+  findCdpNode,
+  withOtfHost,
+} from "./otf-cdp.js";
 
 export interface GeometryRect {
   x: number;
@@ -87,128 +96,43 @@ export function expectUnchanged(
   }
 }
 
-interface CdpNode {
-  nodeId: number;
-  attributes?: string[];
-  children?: CdpNode[];
-  shadowRoots?: CdpNode[];
-  contentDocument?: CdpNode;
-}
-
-function classListOf(node: CdpNode): string[] {
-  const attributes = node.attributes ?? [];
-  for (let index = 0; index < attributes.length; index += 2) {
-    if (attributes[index] === "class") {
-      return (attributes[index + 1] ?? "").split(/\s+/u).filter(Boolean);
-    }
-  }
-  return [];
-}
-
-function findNodeByClass(node: CdpNode, className: string): CdpNode | null {
-  if (classListOf(node).includes(className)) {
-    return node;
-  }
-  for (const child of node.children ?? []) {
-    const hit = findNodeByClass(child, className);
-    if (hit) {
-      return hit;
-    }
-  }
-  for (const shadow of node.shadowRoots ?? []) {
-    const hit = findNodeByClass(shadow, className);
-    if (hit) {
-      return hit;
-    }
-  }
-  if (node.contentDocument) {
-    return findNodeByClass(node.contentDocument, className);
-  }
-  return null;
-}
-
 export async function getOverlayRect(page: Page): Promise<GeometryRect | null> {
-  const session = await page.context().newCDPSession(page);
-  try {
-    const document = await session.send("DOM.getDocument", { depth: -1, pierce: true });
-    const root: CdpNode = document.root;
-    const outline = findNodeByClass(root, "otf-selection-outline");
+  return withOtfHost(page, async (session, host) => {
+    if (!host) {
+      return null;
+    }
+    const outline = findCdpByClass(host, "otf-selection-outline");
     if (!outline) {
       return null;
     }
-    const model = await session.send("DOM.getBoxModel", { nodeId: outline.nodeId });
-    const quad = model.model.border.length >= 8 ? model.model.border : model.model.content;
-    if (quad.length < 8) {
-      return null;
-    }
-    const xs = [quad[0], quad[2], quad[4], quad[6]].filter((value): value is number => value !== undefined);
-    const ys = [quad[1], quad[3], quad[5], quad[7]].filter((value): value is number => value !== undefined);
-    const left = Math.min(...xs);
-    const right = Math.max(...xs);
-    const top = Math.min(...ys);
-    const bottom = Math.max(...ys);
-    return {
-      x: left,
-      y: top,
-      width: right - left,
-      height: bottom - top,
-      top,
-      left,
-      right,
-      bottom,
-    };
-  } catch {
-    return null;
-  } finally {
-    await session.detach();
-  }
+    return cdpBox(session, outline);
+  }, null);
 }
 
 export async function getTransformHandleRect(page: Page, handle: string): Promise<GeometryRect | null> {
-  const session = await page.context().newCDPSession(page);
-  try {
-    const document = await session.send("DOM.getDocument", { depth: -1, pierce: true });
-    const find = (node: CdpNode): CdpNode | null => {
-      if (classListOf(node).includes("otf-transform-handle") && attrOf(node, "data-handle") === handle) return node;
-      for (const child of [...(node.children ?? []), ...(node.shadowRoots ?? [])]) { const hit = find(child); if (hit) return hit; }
-      return node.contentDocument ? find(node.contentDocument) : null;
-    };
-    const target = find(document.root);
-    if (!target) return null;
-    const model = await session.send("DOM.getBoxModel", { nodeId: target.nodeId });
-    const quad = model.model.border;
-    const xs = [quad[0], quad[2], quad[4], quad[6]] as number[];
-    const ys = [quad[1], quad[3], quad[5], quad[7]] as number[];
-    const left = Math.min(...xs); const right = Math.max(...xs); const top = Math.min(...ys); const bottom = Math.max(...ys);
-    return { x: left, y: top, width: right-left, height: bottom-top, left, right, top, bottom };
-  } finally { await session.detach(); }
-}
-
-function attrOf(node: CdpNode, name: string): string | null {
-  const attributes = node.attributes ?? [];
-  for (let index = 0; index < attributes.length; index += 2) {
-    if (attributes[index] === name) {
-      return attributes[index + 1] ?? null;
+  return withOtfHost(page, async (session, host) => {
+    if (!host) {
+      return null;
     }
-  }
-  return null;
+    const target = findCdpNode(
+      host,
+      (node) => cdpClassList(node).includes("otf-transform-handle") && cdpAttr(node, "data-handle") === handle,
+    );
+    if (!target) {
+      return null;
+    }
+    return cdpBox(session, target);
+  }, null);
 }
 
 export async function getIndicatorMode(page: Page): Promise<string | null> {
-  const session = await page.context().newCDPSession(page);
-  try {
-    const document = await session.send("DOM.getDocument", { depth: -1, pierce: true });
-    const root: CdpNode = document.root;
-    const indicator = findNodeByClass(root, "otf-indicator");
-    if (!indicator) {
+  return withOtfHost(page, async (_session, host) => {
+    if (!host) {
       return null;
     }
-    return attrOf(indicator, "data-mode");
-  } catch {
-    return null;
-  } finally {
-    await session.detach();
-  }
+    const indicator = findCdpByClass(host, "otf-indicator");
+    return indicator ? cdpAttr(indicator, "data-mode") : null;
+  }, null);
 }
 
 export async function waitForReplaySettle(page: Page): Promise<void> {
@@ -259,60 +183,21 @@ export interface OverlayPipeline {
 }
 
 export async function getOverlayPipeline(page: Page): Promise<OverlayPipeline> {
-  const session = await page.context().newCDPSession(page);
-  try {
-    const document = await session.send("DOM.getDocument", { depth: -1, pierce: true });
-    const root: CdpNode = document.root;
-    const outlines: CdpNode[] = [];
-    const collect = (node: CdpNode): void => {
-      if (classListOf(node).includes("otf-selection-outline")) {
-        outlines.push(node);
-      }
-      for (const child of node.children ?? []) {
-        collect(child);
-      }
-      for (const shadow of node.shadowRoots ?? []) {
-        collect(shadow);
-      }
-      if (node.contentDocument) {
-        collect(node.contentDocument);
-      }
-    };
-    collect(root);
-    const outline = outlines[0] ?? null;
-    if (!outline) {
-      return { model: null, renderer: null, rendered: null, space: null, outlineCount: 0 };
+  const empty: OverlayPipeline = { model: null, renderer: null, rendered: null, space: null, outlineCount: 0 };
+  return withOtfHost(page, async (session, host) => {
+    if (!host) {
+      return empty;
     }
-    const model = parsePackedRect(attrOf(outline, "data-otf-model"));
-    const renderer = parsePackedRect(attrOf(outline, "data-otf-renderer"));
-    const space = attrOf(outline, "data-otf-space");
-    const box = await session.send("DOM.getBoxModel", { nodeId: outline.nodeId });
-    const quad = box.model.border.length >= 8 ? box.model.border : box.model.content;
-    const xs = [quad[0], quad[2], quad[4], quad[6]].filter((value): value is number => value !== undefined);
-    const ys = [quad[1], quad[3], quad[5], quad[7]].filter((value): value is number => value !== undefined);
-    const left = Math.min(...xs);
-    const right = Math.max(...xs);
-    const top = Math.min(...ys);
-    const bottom = Math.max(...ys);
+    const outline = findCdpByClass(host, "otf-selection-outline");
+    if (!outline) {
+      return empty;
+    }
     return {
-      model,
-      renderer,
-      rendered: {
-        x: left,
-        y: top,
-        width: right - left,
-        height: bottom - top,
-        top,
-        left,
-        right,
-        bottom,
-      },
-      space,
-      outlineCount: outlines.length,
+      model: parsePackedRect(cdpAttr(outline, "data-otf-model")),
+      renderer: parsePackedRect(cdpAttr(outline, "data-otf-renderer")),
+      rendered: await cdpBox(session, outline),
+      space: cdpAttr(outline, "data-otf-space"),
+      outlineCount: countCdpByClass(host, "otf-selection-outline"),
     };
-  } catch {
-    return { model: null, renderer: null, rendered: null, space: null, outlineCount: 0 };
-  } finally {
-    await session.detach();
-  }
+  }, empty);
 }

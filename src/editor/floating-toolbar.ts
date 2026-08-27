@@ -468,7 +468,7 @@ export class FloatingToolbar {
     if (this.textEditorOpen) this.closeTextEditor(true);
     this.closeMoreMenu();
     this.closeComponentPalette();
-    if (!this.lassoChooserEl || !this.toolbarEl || this.toolbarEl.hidden) return;
+    if (!this.lassoChooserEl || !this.toolbarEl) return;
     this.lassoChooserEl.hidden = false;
     this.lassoChooserOpen = true;
     this.positionLassoChooser();
@@ -496,7 +496,7 @@ export class FloatingToolbar {
     if (this.textEditorOpen) this.closeTextEditor(true);
     this.closeLassoChooser();
     this.closeComponentPalette();
-    if (!this.moreMenuEl || !this.toolbarEl || this.toolbarEl.hidden) return;
+    if (!this.moreMenuEl || !this.toolbarEl) return;
     this.setMoreWrapEnabled(this.wrapEnabled);
     this.moreMenuEl.hidden = false;
     this.moreMenuOpen = true;
@@ -523,7 +523,7 @@ export class FloatingToolbar {
     if (this.textEditorOpen) this.closeTextEditor(true);
     this.closeLassoChooser();
     this.closeMoreMenu();
-    if (!this.paletteEl || !this.toolbarEl || this.toolbarEl.hidden) return;
+    if (!this.paletteEl || !this.toolbarEl) return;
     this.paletteEl.hidden = false;
     this.paletteOpen = true;
     this.setPaletteSampling(options.sampling);

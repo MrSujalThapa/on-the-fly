@@ -90,6 +90,7 @@ describe("PlacementEngine", () => {
     expect(plan.payload.detachedTop).toBe(130);
     expect(plan.payload.detachedWidth).toBe(80);
     expect(plan.payload.detachedHeight).toBe(30);
+    expect(Number.parseInt(plan.payload.detachedZIndex ?? "0", 10)).toBeGreaterThan(100);
   });
 
   it("uses the same independent placement when a standalone link leaves its container", () => {

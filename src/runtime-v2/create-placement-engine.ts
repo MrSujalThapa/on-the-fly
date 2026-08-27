@@ -1,7 +1,7 @@
-import { readLocalLayoutSize } from "../editor/dom/element-snapshot.js";
+import { readLocalLayoutSize, readStoredTransformState } from "../editor/dom/element-snapshot.js";
 import {
   OTF_DETACH_ATTR,
-  originalSiblingLayer,
+  resolveIndependentZIndex,
   shouldDetachForPredictedRect,
 } from "../editor/dom/managed-detach.js";
 import { isInteractionSafeFixed } from "../editor/dom/interactive-fixed-placement.js";
@@ -18,6 +18,22 @@ function translateRect(rect: IntendedRect, dx: number, dy: number): IntendedRect
     y: rect.y + dy,
     width: rect.width,
     height: rect.height,
+  };
+}
+
+function aabbFromLocalSize(
+  origin: { x: number; y: number },
+  local: { width: number; height: number },
+  rotate: number,
+): IntendedRect {
+  const radians = (rotate * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(radians));
+  const sin = Math.abs(Math.sin(radians));
+  return {
+    x: origin.x,
+    y: origin.y,
+    width: local.width * cos + local.height * sin,
+    height: local.width * sin + local.height * cos,
   };
 }
 
@@ -64,6 +80,12 @@ export function createPlacementEngine(): PlacementEngine {
       if (existing.independent || request.forceIndependent === true || shouldDetach) {
         const { scrollX, scrollY } = pageOffset(request.element);
         const local = readLocalLayoutSize(request.element);
+        const rotate = readStoredTransformState(request.element)?.rotate ?? 0;
+        const expected = aabbFromLocalSize(
+          { x: request.currentRect.x + request.dx, y: request.currentRect.y + request.dy },
+          local,
+          rotate,
+        );
         return {
           strategy: "detached",
           dx: request.dx,
@@ -83,7 +105,7 @@ export function createPlacementEngine(): PlacementEngine {
             detachedTop: expected.y + scrollY,
             detachedWidth: local.width,
             detachedHeight: local.height,
-            detachedZIndex: originalSiblingLayer(request.element),
+            detachedZIndex: resolveIndependentZIndex(request.element),
           },
         };
       }

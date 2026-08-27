@@ -53,6 +53,7 @@ export interface OperationExecutor {
     dx: number;
     dy: number;
     pageKey: PageKey;
+    knownSizes?: ReadonlyMap<VisualNodeId, { width: number; height: number }>;
   }): BatchExecutionResult;
   executeLayer(input: {
     nodeId: VisualNodeId;

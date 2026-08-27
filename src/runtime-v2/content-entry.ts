@@ -23,6 +23,15 @@ pageIdentity.subscribe(() => {
   void runtime.replay();
 });
 
+if (__OTF_DIAGNOSTICS_ENABLED__) {
+  // Diagnostics builds let the acceptance harness drive the real reset API and
+  // read its post-conditions without depending on a navigation.
+  document.addEventListener("otf-diagnostics-reset", () => {
+    const result = runtime.reset();
+    document.documentElement.setAttribute("data-otf-diag-reset", JSON.stringify(result));
+  });
+}
+
 function applyEditMode(enabled: boolean): void {
   if (enabled) {
     runtime.start();
@@ -45,6 +54,7 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
           sendResponse({ ok: false, error: "clear_persist_failed" });
           return;
         }
+        runtime.reset();
         runtime.stop();
         document.defaultView?.location.reload();
         sendResponse({ ok: true });

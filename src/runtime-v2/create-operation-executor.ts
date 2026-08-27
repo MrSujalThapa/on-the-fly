@@ -8,7 +8,7 @@ import { applyCreateElementOperation } from "../editor/dom/handlers/create-eleme
 import { applyCropOperation } from "../editor/dom/handlers/crop-handler.js";
 import { applyStyleOperation, styleRealizationTargets } from "../editor/dom/handlers/style-handler.js";
 import { applyTextOperation, renderedVisibleText } from "../editor/dom/handlers/text-handler.js";
-import { readStoredTransformState } from "../editor/dom/element-snapshot.js";
+import { readStoredTransformState, rememberIndependentLocalSize } from "../editor/dom/element-snapshot.js";
 import { ElementSnapshotStore } from "../editor/dom/element-snapshot.js";
 import {
   captureElementDomSnapshot,
@@ -21,13 +21,15 @@ import type { VisualNodeId } from "../editor/ids.js";
 import { freezeCommittedOperation } from "./freeze-operation.js";
 import { rectFromElement, rectsNear } from "./geometry.js";
 import type { OperationLedger } from "./operation-ledger.js";
-import type {
-  BatchExecutionResult,
-  ExecutionFailure,
-  ExecutionResult,
-  OperationExecutor,
-  VisualVerification,
+import {
+  MOVE_GEOMETRY_TOLERANCE_PX,
+  type BatchExecutionResult,
+  type ExecutionFailure,
+  type ExecutionResult,
+  type OperationExecutor,
+  type VisualVerification,
 } from "./operation-executor.js";
+import { aabbFromLocalSize } from "./editor-parity-geometry.js";
 import type { IntendedRect, PlacementEngine } from "./placement-engine.js";
 import type { DurableVisualIdentity, VisualModel } from "./visual-model.js";
 import { isResolvedVisual } from "./visual-model.js";
@@ -47,7 +49,13 @@ export interface OperationExecutorDeps {
 
 function debugLayer(message: string, data?: unknown): void {
   if (typeof __OTF_DIAGNOSTICS_ENABLED__ !== "undefined" && __OTF_DIAGNOSTICS_ENABLED__) {
-    console.info(`[otf-v2] ${message}`, data ?? {});
+    let payload = "{}";
+    try {
+      payload = JSON.stringify(data ?? {});
+    } catch {
+      payload = "\"unserializable\"";
+    }
+    console.info(`[otf-v2] ${message} ${payload}`);
   }
 }
 
@@ -89,6 +97,22 @@ export function identityFromMove(operation: MoveOperation): DurableVisualIdentit
     return null;
   }
   return { signature };
+}
+
+function lastIndependentSize(
+  operations: readonly EditorOperation[],
+  nodeId: VisualNodeId,
+  known?: { width: number; height: number },
+): { width: number; height: number } | null {
+  let resizeSize: { width: number; height: number } | null = null;
+  for (const operation of operations) {
+    if (operation.target.nodeId !== nodeId) continue;
+    if (operation.type === "resize") {
+      resizeSize = { width: operation.payload.width, height: operation.payload.height };
+    }
+  }
+  const chosen = resizeSize ?? known;
+  return chosen && chosen.width > 1 && chosen.height > 1 ? chosen : null;
 }
 
 function toTarget(nodeId: VisualNodeId, identity: DurableVisualIdentity, rect: IntendedRect): TransformTarget {
@@ -190,6 +214,9 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
 
     try {
       applyMoveOperation(input.element, input.operation, snapshotStore);
+      if (!rectsNear(rectFromElement(input.element), input.expected)) {
+        applyMoveOperation(input.element, input.operation, snapshotStore);
+      }
     } catch (error) {
       const rolledBack = rollbackApplied();
       return failure(error instanceof Error ? error.message : "apply_threw", rolledBack);
@@ -345,9 +372,32 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     })();
     const textOk = operation.type !== "text" || renderedVisibleText(element) === operation.payload.value.replace(/[\t\n\f\r ]+/g, " ").trim();
     const cropOk = operation.type !== "crop" || element.getAttribute("data-otf-crop") === JSON.stringify(operation.payload);
-    const geometryOk = operation.type === "resize" || operation.type === "duplicate" || operation.type === "createElement"
-      ? rectsNear(actual, expected ?? (operation.type === "createElement" ? operation.payload.rect : expectedRect))
-      : true;
+    const resizeGeometryOk = operation.type !== "resize" || (() => {
+      const payloadW = operation.payload.width;
+      const payloadH = operation.payload.height;
+      const usedW = element.offsetWidth > 1 ? element.offsetWidth : actual.width;
+      const usedH = element.offsetHeight > 1 ? element.offsetHeight : actual.height;
+      const widthRealized = Math.abs(usedW - payloadW) <= MOVE_GEOMETRY_TOLERANCE_PX;
+      const heightRealized = Math.abs(usedH - payloadH) <= MOVE_GEOMETRY_TOLERANCE_PX;
+      const widthOk = widthRealized || usedW >= payloadW - MOVE_GEOMETRY_TOLERANCE_PX;
+      const heightOk = heightRealized || usedH >= payloadH - MOVE_GEOMETRY_TOLERANCE_PX;
+      const localOk = (widthRealized || heightRealized) && widthOk && heightOk;
+      const rotate = readStoredTransformState(element)?.rotate ?? 0;
+      const derived = aabbFromLocalSize(
+        { x: actual.x, y: actual.y },
+        { width: usedW, height: usedH },
+        rotate,
+      );
+      const worldSizeOk =
+        Math.abs(actual.width - derived.width) <= MOVE_GEOMETRY_TOLERANCE_PX &&
+        Math.abs(actual.height - derived.height) <= MOVE_GEOMETRY_TOLERANCE_PX;
+      const originOk = Math.abs(rotate) > 0.5 || !expected
+        || (
+          Math.abs(actual.x - expected.x) <= MOVE_GEOMETRY_TOLERANCE_PX &&
+          Math.abs(actual.y - expected.y) <= MOVE_GEOMETRY_TOLERANCE_PX
+        );
+      return localOk && worldSizeOk && originOk;
+    })();
     const identitySignature = operation.target.signature ?? signature;
     const identityOk = operation.type === "duplicate"
       ? Array.from(deps.document.querySelectorAll("[data-otf-clone-id]")).filter(
@@ -358,6 +408,11 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
           (candidate) => candidate.getAttribute("data-otf-element-id") === operation.payload.elementId,
         ).length === 1
       : Boolean(identitySignature && verifyIdentity(nodeId, { signature: identitySignature }, element));
+    const geometryOk = operation.type === "resize"
+      ? resizeGeometryOk
+      : operation.type === "duplicate" || operation.type === "createElement"
+        ? identityOk
+        : true;
     if (!element.isConnected || !identityOk || !hiddenOk || !rotateOk || !styleOk || !textOk || !cropOk || !geometryOk) {
       if (snapshot) rollback(element, snapshot); else element.remove();
       const reason = !element.isConnected ? "disconnected"
@@ -398,6 +453,14 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
   return {
     executeTransaction(input): BatchExecutionResult {
       if (input.operations.length === 0) return failure("empty_batch", false);
+      for (const operation of input.operations) {
+        if (operation.type === "duplicate" || operation.type === "createElement") continue;
+        const signature = operation.target.signature;
+        if (!signature) return failure("missing_signature", false);
+        const resolved = resolveOrFail(operation.target.nodeId ?? null, { signature });
+        if ("error" in resolved) return resolved;
+        if (!resolved.element.isConnected) return failure("disconnected_batch_target", false);
+      }
       const applied: Array<{ operation: EditorOperation; result: ExecutionResult }> = [];
       for (const operation of input.operations) {
         const result = applyGeneric(operation, input.expectedRects?.get(operation.id), true);
@@ -421,6 +484,10 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         return resolved;
       }
 
+      const known = lastIndependentSize(deps.ledger.activeOperations(), input.nodeId);
+      if (known) {
+        rememberIndependentLocalSize(resolved.element, known.width, known.height);
+      }
       const currentRect = rectFromElement(resolved.element);
       const plan = deps.placement.planMove({
         element: resolved.element,
@@ -458,6 +525,14 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         if ("error" in resolved) return resolved;
         if (resolvedElements.has(resolved.element)) return failure("duplicate_live_element", false);
         resolvedElements.add(resolved.element);
+        const known = lastIndependentSize(
+          deps.ledger.activeOperations(),
+          nodeId,
+          input.knownSizes?.get(nodeId),
+        );
+        if (known) {
+          rememberIndependentLocalSize(resolved.element, known.width, known.height);
+        }
         const currentRect = rectFromElement(resolved.element);
         const plan = deps.placement.planMove({
           element: resolved.element,
@@ -488,6 +563,10 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
 
       try {
         for (const item of prepared) applyMoveOperation(item.element, item.operation, snapshotStore);
+        for (const item of prepared) {
+          if (rectsNear(rectFromElement(item.element), item.expected)) continue;
+          applyMoveOperation(item.element, item.operation, snapshotStore);
+        }
       } catch (error) {
         return failure(error instanceof Error ? error.message : "apply_threw", rollbackBatch());
       }
@@ -531,7 +610,12 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
           this.revertCommitted(operation);
         }
       };
-      if (!deps.placement.isIndependent(resolved.element)) {
+      // A stacking command must not move anything. Try to satisfy it in place
+      // first; only an in-flow element that provably cannot win its stacking
+      // contest is promoted to independent placement, because promotion pulls
+      // the element out of its row and reflows its siblings underneath it.
+      let plan = resolveLayerPlan(resolved.element, input.command, snapshotStore, { onDebug: debugLayer });
+      if (plan.verification !== "pass" && !deps.placement.isIndependent(resolved.element)) {
         const currentRect = rectFromElement(resolved.element);
         const independentPlan = deps.placement.planMove({
           element: resolved.element,
@@ -563,8 +647,8 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
           return independentResult;
         }
         promoted.push(independentResult.operation);
+        plan = resolveLayerPlan(resolved.element, input.command, snapshotStore, { onDebug: debugLayer });
       }
-      const plan = resolveLayerPlan(resolved.element, input.command, snapshotStore, { onDebug: debugLayer });
       if (plan.verification !== "pass") {
         rollbackPromotion();
         return failure(plan.reason ?? "layer_verification_failed", promoted.length > 0);

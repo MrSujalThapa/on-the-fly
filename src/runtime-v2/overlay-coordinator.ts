@@ -32,6 +32,7 @@ export interface OverlayCoordinator {
   configureToolbar(callbacks: FloatingToolbarCallbacks): void;
   setToolbarCommands(commands: readonly FloatingToolbarCommandState[], activeStates?: Record<string, boolean>): void;
   setToolbarVisible(visible: boolean): void;
+  setPlacementArmed(armed: boolean): void;
   openStylePanel(values: Partial<StylePanelValues>): void;
   closeStylePanel(): void;
   openTextEditor(initialText: string): void;

@@ -1,3 +1,4 @@
+import { OTF_ROOT_HOST_ID } from "../editor/measurement/constants.js";
 import { isExtensionRoot } from "../editor/measurement/scan-guards.js";
 import { DisposableOwner } from "./disposable-owner.js";
 import type {
@@ -42,6 +43,9 @@ export function createInputRouter(root: Document): InputRouter {
     return target instanceof Element && isExtensionRoot(target);
   };
 
+  const isPlacementArmed = (): boolean =>
+    root.getElementById(OTF_ROOT_HOST_ID)?.getAttribute("data-otf-placement-armed") === "true";
+
   const editorChromeCapturesKeyboard = (target: EventTarget | null): boolean =>
     target instanceof Element &&
     target.closest('[data-otf-keyboard-capture="true"]') !== null;
@@ -57,7 +61,7 @@ export function createInputRouter(root: Document): InputRouter {
       if (!(event instanceof PointerEvent) || event.button !== 0) {
         return;
       }
-      if (inEditorChrome(event.target) || editorChromeCapturesKeyboard(event.target)) {
+      if (!isPlacementArmed() && (inEditorChrome(event.target) || editorChromeCapturesKeyboard(event.target))) {
         return;
       }
       if (mode === "interact") {
