@@ -284,6 +284,15 @@ interface CandidateScore {
   consistent: boolean;
 }
 
+function signatureTargetsOwnedDom(signature: ElementSignature): boolean {
+  return /^\[data-otf-(?:clone|element)-id=["'][^"']+["']\]/u.test(signature.cssPath)
+    || /(?:^|;)otf(?:Clone|Element)Id=/u.test(signature.datasetFingerprint ?? "");
+}
+
+function isInsideOwnedDom(element: HTMLElement): boolean {
+  return element.closest("[data-otf-clone-id],[data-otf-element-id]") !== null;
+}
+
 function textOf(element: HTMLElement): string {
   const aria = element.getAttribute("aria-label");
   if (aria) {
@@ -318,7 +327,11 @@ function evaluateCandidate(
   pool: HTMLElement[],
 ): CandidateScore {
   const matchedKeys: string[] = [];
-  let contradicted = false;
+  // Host-page identities and extension-owned identities occupy separate
+  // namespaces. A duplicate deliberately retains the source's semantic DOM,
+  // so allowing it into a host candidate pool makes tombstones ambiguous (or
+  // lets a stale positional path bind to the clone) after sibling reflow.
+  let contradicted = !signatureTargetsOwnedDom(signature) && isInsideOwnedDom(element);
   if (element.tagName.toLowerCase() !== signature.tagName.toLowerCase()) {
     contradicted = true;
   }
@@ -513,11 +526,16 @@ export function resolveDurableIdentity(
   const signature = identity.signature;
   const pathMatches = queryCssPath(root, signature.cssPath);
   const pathSet = new Set(pathMatches);
+  const targetsOwnedDom = signatureTargetsOwnedDom(signature);
   const pool = [
     ...pathMatches,
     ...gatherByStableKeys(root, signature),
     ...gatherByStructure(root, signature),
-  ].filter((element, index, all) => all.indexOf(element) === index && element.isConnected);
+  ].filter((element, index, all) =>
+    all.indexOf(element) === index
+    && element.isConnected
+    && (targetsOwnedDom || !isInsideOwnedDom(element))
+  );
 
   const scored = pool.map((element) => evaluateCandidate(element, signature, pathSet, pool));
   const viable = scored.filter((entry) => entry.consistent);

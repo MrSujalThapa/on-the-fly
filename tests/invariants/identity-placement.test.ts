@@ -3,6 +3,7 @@ import { pageKeyFromUrl } from "../../src/content/page-identity.js";
 import { buildCssPath, buildUniqueCssPath } from "../../src/editor/measurement/signature-builder.js";
 import { createPlacementEngine } from "../../src/runtime-v2/create-placement-engine.js";
 import { createVisualModel } from "../../src/runtime-v2/create-visual-model.js";
+import { buildDurableIdentity, resolveDurableIdentity } from "../../src/runtime-v2/visual-identity.js";
 import { createTestDocument } from "../editor/dom/test-document.js";
 import { layoutElement } from "../editor/measurement/layout-helpers.js";
 
@@ -74,6 +75,27 @@ describe("identity", () => {
     expect(model.bind(childId)).toBe(child);
     expect(model.durableIdentityOf(childId)?.signature.cssPath).toMatch(/^\[data-otf-clone-id="clone-a"\] >/u);
     expect(model.bind("clone-a")).toBe(clone);
+  });
+
+  it("resolves a shifted host identity without competing against owned clones", () => {
+    const { document, root } = createTestDocument(
+      `<nav><button>My posts</button><button>Mentions</button></nav>`,
+    );
+    const nav = root.querySelector("nav");
+    const myPosts = root.querySelector("button:first-child");
+    const mentions = root.querySelector("button:last-child");
+    if (!(nav instanceof HTMLElement) || !(myPosts instanceof HTMLElement) || !(mentions instanceof HTMLElement)) return;
+    const identity = buildDurableIdentity(mentions, document);
+    for (const cloneId of ["clone-a", "clone-b"]) {
+      const clone = mentions.cloneNode(true) as HTMLElement;
+      clone.setAttribute("data-otf-clone-id", cloneId);
+      nav.append(clone);
+    }
+    myPosts.remove();
+
+    const result = resolveDurableIdentity(document, identity);
+    expect(result.kind).toBe("resolved");
+    if (result.kind === "resolved") expect(result.element).toBe(mentions);
   });
 
   it("ignores trailing slashes when deriving a page key", () => {
