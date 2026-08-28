@@ -7,14 +7,12 @@ export type CanonicalCheckpoint =
   | { readonly ok: true; readonly operations: EditorOperation[] }
   | { readonly ok: false; readonly error: string };
 
-const CLONE_DATA_PREFIX = "otfCloneId=";
-const CREATED_DATA_PREFIX = "otfElementId=";
-
 function cloneIdFromOperation(operation: EditorOperation): string | null {
   if (operation.type === "duplicate") return operation.payload.cloneId;
   const signature = operation.target.signature;
-  const dataset = signature?.datasetFingerprint;
-  if (dataset?.startsWith(CLONE_DATA_PREFIX)) return dataset.slice(CLONE_DATA_PREFIX.length) || null;
+  const dataset = signature?.datasetFingerprint ?? "";
+  const dataMatch = /(?:^|;)otfCloneId=([^;]*)/u.exec(dataset);
+  if (dataMatch?.[1]) return dataMatch[1];
   const cssMatch = /\[data-otf-clone-id=["']([^"']+)["']\]/u.exec(signature?.cssPath ?? "");
   return cssMatch?.[1] ?? null;
 }
@@ -22,8 +20,9 @@ function cloneIdFromOperation(operation: EditorOperation): string | null {
 function createdIdFromOperation(operation: EditorOperation): string | null {
   if (operation.type === "createElement") return operation.payload.elementId;
   const signature = operation.target.signature;
-  const dataset = signature?.datasetFingerprint;
-  if (dataset?.startsWith(CREATED_DATA_PREFIX)) return dataset.slice(CREATED_DATA_PREFIX.length) || null;
+  const dataset = signature?.datasetFingerprint ?? "";
+  const dataMatch = /(?:^|;)otfElementId=([^;]*)/u.exec(dataset);
+  if (dataMatch?.[1]) return dataMatch[1];
   const cssMatch = /\[data-otf-element-id=["']([^"']+)["']\]/u.exec(signature?.cssPath ?? "");
   return cssMatch?.[1] ?? null;
 }
@@ -201,9 +200,9 @@ export function projectCanonicalCheckpoint(
   const sessionKeys = new Map<string, string>();
   const checkpointKey = (operation: EditorOperation): string | null => {
     const createdId = createdIdFromOperation(operation);
-    if (createdId) return created.has(createdId) ? `created:${createdId}` : null;
+    if (createdId) return `created:${createdId}`;
     const cloneId = cloneIdFromOperation(operation);
-    if (cloneId) return duplicates.has(cloneId) ? `clone:${cloneId}` : null;
+    if (cloneId) return `clone:${cloneId}`;
     const durable = durableMoveKey(operation as MoveOperation);
     if (!durable) return null;
     const nodeId = operation.target.nodeId;
@@ -221,7 +220,17 @@ export function projectCanonicalCheckpoint(
   const crops = new Map<string, CropOperation>();
   const texts = new Map<string, TextOperation>();
   const styles = new Map<string, StyleOperation>();
+  const lastVisualByKey = new Map<string, { rect: { x: number; y: number; width: number; height: number }; at: number; area: number }>();
   const rest: EditorOperation[] = [];
+  const recordVisual = (key: string | null, operation: EditorOperation): void => {
+    const rect = operation.metadata?.finalRect ?? operation.metadata?.affectedRect;
+    if (!key || !rect) return;
+    const at = operation.createdAt;
+    const area = Math.abs(rect.width * rect.height);
+    const previous = lastVisualByKey.get(key);
+    if (previous && (at < previous.at || (at === previous.at && area < previous.area))) return;
+    lastVisualByKey.set(key, { rect, at, area });
+  };
 
   for (const operation of operations) {
     if (operation.type === "duplicate" || operation.type === "createElement") {
@@ -241,9 +250,11 @@ export function projectCanonicalCheckpoint(
       if (operation.type === "resize") {
         const first = resizes.get(key);
         resizes.set(key, first ? composeFinalState(first, operation) : operation);
+        recordVisual(key, operation);
       } else if (operation.type === "rotate") {
         const first = rotates.get(key);
         rotates.set(key, first ? composeFinalState(first, operation) : operation);
+        recordVisual(key, operation);
       } else {
         const first = hides.get(key);
         hides.set(key, first ? composeFinalState(first, operation) : operation);
@@ -298,37 +309,33 @@ export function projectCanonicalCheckpoint(
     } else {
       moves.set(key, { continuity, operations: [operation] });
     }
+    recordVisual(key, operation);
   }
 
   const canonicalMovesByKey = new Map(
     [...moves.entries()].map(([key, group]) => [key, composeMove(group.operations)] as const),
   );
   for (const [key, move] of canonicalMovesByKey) {
+    const visualRect = lastVisualByKey.get(key)?.rect ?? move.metadata?.finalRect;
+    if (!visualRect || !move.payload.detached) continue;
     const rotation = rotates.get(key);
-    const visualRect = move.metadata?.finalRect;
-    if (!rotation || !visualRect || rotation.payload.degrees === 0) continue;
     const resize = resizes.get(key);
-    const rotationOrigin = rotation.metadata?.originalRect;
+    const rotationOrigin = rotation?.metadata?.originalRect;
     const localWidth = resize?.payload.width ?? move.payload.detachedWidth ?? rotationOrigin?.width;
     const localHeight = resize?.payload.height ?? move.payload.detachedHeight ?? rotationOrigin?.height;
     if (!localWidth || !localHeight) continue;
-    const finalRect = {
-      x: visualRect.x + (visualRect.width - localWidth) / 2,
-      y: visualRect.y + (visualRect.height - localHeight) / 2,
-      width: localWidth,
-      height: localHeight,
-    };
-    const scrollX = move.payload.detachedLeft === undefined ? 0 : move.payload.detachedLeft - visualRect.x;
-    const scrollY = move.payload.detachedTop === undefined ? 0 : move.payload.detachedTop - visualRect.y;
     canonicalMovesByKey.set(key, freezeCommittedOperation({
       ...move,
       payload: {
         ...move.payload,
-        ...(move.payload.detachedLeft === undefined ? {} : { detachedLeft: finalRect.x + scrollX }),
-        ...(move.payload.detachedTop === undefined ? {} : { detachedTop: finalRect.y + scrollY }),
-        ...(move.payload.detached ? { detachedWidth: localWidth, detachedHeight: localHeight } : {}),
+        detachedWidth: localWidth,
+        detachedHeight: localHeight,
       },
-      metadata: { ...move.metadata, finalRect, affectedRect: finalRect },
+      metadata: {
+        ...move.metadata,
+        finalRect: visualRect,
+        affectedRect: visualRect,
+      },
     }));
   }
   const sortEntries = <T>(entries: Iterable<readonly [string, T]>): T[] =>
@@ -338,6 +345,9 @@ export function projectCanonicalCheckpoint(
     const placementRect = canonicalMovesByKey.get(key)?.metadata?.finalRect;
     const sizeRect = resize.metadata?.finalRect ?? resize.metadata?.affectedRect;
     if (!placementRect || !sizeRect) return resize;
+    const rotated = Math.abs(sizeRect.width - resize.payload.width) > 4
+      || Math.abs(sizeRect.height - resize.payload.height) > 4;
+    if (rotated) return resize;
     const finalRect = {
       x: placementRect.x,
       y: placementRect.y,

@@ -91,19 +91,60 @@ export class OperationStore {
   }
 
   private openDatabase(): Promise<IDBDatabase> {
-    this.dbPromise ??= new Promise<IDBDatabase>((resolve, reject) => {
+    this.dbPromise ??= this.openDatabaseFresh();
+    return this.dbPromise;
+  }
+
+  private openDatabaseFresh(): Promise<IDBDatabase> {
+    return new Promise<IDBDatabase>((resolve, reject) => {
       const request = this.factory.open(this.dbName, OTF_DB_VERSION);
       request.onupgradeneeded = () => {
         upgradeSchema(request.result);
       };
       request.onsuccess = () => {
-        resolve(request.result);
+        const db = request.result;
+        if (hasCompleteSchema(db)) {
+          resolve(db);
+          return;
+        }
+        // A version-less open (or a blocked delete) can leave v1 with no
+        // stores. Opening the same version never re-runs onupgradeneeded, so
+        // drop it and recreate the real schema.
+        db.close();
+        const drop = this.factory.deleteDatabase(this.dbName);
+        drop.onsuccess = () => {
+          this.openDatabaseFresh().then(resolve, reject);
+        };
+        drop.onerror = () => {
+          reject(drop.error ?? new Error("indexeddb_recreate_failed"));
+        };
+        drop.onblocked = () => {
+          reject(new Error("indexeddb_recreate_blocked"));
+        };
       };
       request.onerror = () => {
         reject(request.error ?? new Error("indexeddb_open_failed"));
       };
     });
-    return this.dbPromise;
+  }
+
+  private resetConnection(): void {
+    this.dbPromise = null;
+  }
+
+  private async withDatabase<T>(fn: (db: IDBDatabase) => Promise<T>): Promise<T> {
+    try {
+      return await fn(await this.openDatabase());
+    } catch (error) {
+      if (!isMissingStoreError(error)) throw error;
+      try {
+        (await this.dbPromise)?.close();
+      } catch {
+        // The cached connection is already dead.
+      }
+      this.resetConnection();
+      return fn(await this.openDatabase());
+    }
   }
 
   /** Replaces all stored operations for a page (used by undo/clear sync). */
@@ -168,13 +209,14 @@ export class OperationStore {
 
   /** Returns the number of stored operations for a page. */
   async countOperations(pageKey: PageKey): Promise<number> {
-    const db = await this.openDatabase();
-    const tx = db.transaction(STORE.OPERATIONS, "readonly");
-    const count = await promisifyRequest<number>(
-      tx.objectStore(STORE.OPERATIONS).index("pageKey").count(pageKey),
-    );
-    await awaitTransaction(tx);
-    return count;
+    return this.withDatabase(async (db) => {
+      const tx = db.transaction(STORE.OPERATIONS, "readonly");
+      const count = await promisifyRequest<number>(
+        tx.objectStore(STORE.OPERATIONS).index("pageKey").count(pageKey),
+      );
+      await awaitTransaction(tx);
+      return count;
+    });
   }
 
   /**
@@ -185,7 +227,7 @@ export class OperationStore {
     pageKey: PageKey,
     operations: EditorOperation[],
   ): Promise<{ totalCount: number; trimmed: number }> {
-    const db = await this.openDatabase();
+    return this.withDatabase(async (db) => {
     const { origin, normalizedPath } = derivePageInfo(pageKey);
     const timestamp = this.now();
     const customizationId = defaultCustomizationId(pageKey);
@@ -231,11 +273,12 @@ export class OperationStore {
 
     await awaitTransaction(tx);
     return { totalCount: finalOps.length, trimmed };
+    });
   }
 
   /** Loads approved operations for a page, ordered by sequence (replay order). */
   async loadOperations(pageKey: PageKey): Promise<EditorOperation[]> {
-    const db = await this.openDatabase();
+    return this.withDatabase(async (db) => {
     const tx = db.transaction(STORE.OPERATIONS, "readonly");
     const stored = await promisifyRequest(
       tx.objectStore(STORE.OPERATIONS).index("pageKey").getAll(pageKey) as IDBRequest<
@@ -249,6 +292,7 @@ export class OperationStore {
       .sort((left, right) => left.sequence - right.sequence)
       .map(toEditorOperation)
       .filter(isPersistableOperation);
+    });
   }
 
   /** Reads all local stores for export. */
@@ -400,6 +444,24 @@ export class OperationStore {
 
 function isPersistableOperation(operation: EditorOperation): boolean {
   return operation.status === "approved" && validateOperation(operation).ok;
+}
+
+function hasCompleteSchema(db: IDBDatabase): boolean {
+  return (
+    db.objectStoreNames.contains(STORE.SITES) &&
+    db.objectStoreNames.contains(STORE.PAGES) &&
+    db.objectStoreNames.contains(STORE.CUSTOMIZATIONS) &&
+    db.objectStoreNames.contains(STORE.OPERATIONS) &&
+    db.objectStoreNames.contains(STORE.ASSETS)
+  );
+}
+
+function isMissingStoreError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.name === "NotFoundError" ||
+    /object store(?:s)? was not found/iu.test(error.message)
+  );
 }
 
 function upgradeSchema(db: IDBDatabase): void {

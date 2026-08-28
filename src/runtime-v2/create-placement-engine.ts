@@ -21,22 +21,6 @@ function translateRect(rect: IntendedRect, dx: number, dy: number): IntendedRect
   };
 }
 
-function aabbFromLocalSize(
-  origin: { x: number; y: number },
-  local: { width: number; height: number },
-  rotate: number,
-): IntendedRect {
-  const radians = (rotate * Math.PI) / 180;
-  const cos = Math.abs(Math.cos(radians));
-  const sin = Math.abs(Math.sin(radians));
-  return {
-    x: origin.x,
-    y: origin.y,
-    width: local.width * cos + local.height * sin,
-    height: local.width * sin + local.height * cos,
-  };
-}
-
 function readExisting(element: HTMLElement, request: MovePlacementRequest) {
   return {
     independent:
@@ -45,6 +29,12 @@ function readExisting(element: HTMLElement, request: MovePlacementRequest) {
       element.getAttribute(OTF_DETACH_ATTR) === "true" ||
       isInteractionSafeFixed(element),
   };
+}
+
+function hasForeignTransform(element: HTMLElement): boolean {
+  if (readStoredTransformState(element)) return false;
+  const transform = element.ownerDocument.defaultView?.getComputedStyle(element).transform;
+  return Boolean(transform && transform !== "none");
 }
 
 function pageOffset(element: HTMLElement): { scrollX: number; scrollY: number } {
@@ -71,21 +61,20 @@ export function createPlacementEngine(): PlacementEngine {
       }).independent;
     },
     planMove(request: MovePlacementRequest): MovePlacementPlan {
+      // MOVE is a world-axis translation of the live AABB. Recomputing that
+      // AABB from local size + rotate diverges when the rendered box cannot
+      // match the remembered local size (content min-size, overflow), and
+      // verification then rolls the MOVE back to a no-op.
       const expected = translateRect(request.currentRect, request.dx, request.dy);
       const existing = readExisting(request.element, request);
       const shouldDetach =
         !existing.independent &&
-        shouldDetachForPredictedRect(request.element, [request.element], expected);
+        (shouldDetachForPredictedRect(request.element, [request.element], expected) ||
+          hasForeignTransform(request.element));
 
       if (existing.independent || request.forceIndependent === true || shouldDetach) {
         const { scrollX, scrollY } = pageOffset(request.element);
         const local = readLocalLayoutSize(request.element);
-        const rotate = readStoredTransformState(request.element)?.rotate ?? 0;
-        const expected = aabbFromLocalSize(
-          { x: request.currentRect.x + request.dx, y: request.currentRect.y + request.dy },
-          local,
-          rotate,
-        );
         return {
           strategy: "detached",
           dx: request.dx,

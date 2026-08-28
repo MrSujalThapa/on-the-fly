@@ -181,6 +181,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
   let cropSubjectId: VisualNodeId | undefined;
   const scrollCleanups: Array<() => void> = [];
   const nestedScrollCleanups: Array<() => void> = [];
+  let liveFollow = true;
 
   const cancelLoop = (): void => {
     if (rafId !== 0) {
@@ -321,7 +322,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
     if (selected.length === 0) {
       return;
     }
-    render(true);
+    if (liveFollow) render(true);
     const view = deps.document.defaultView;
     if (view) {
       rafId = view.requestAnimationFrame(loop);
@@ -432,7 +433,7 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       deps.document.documentElement.append(host);
       const view = deps.document.defaultView;
       const onScrollOrResize = (): void => {
-        render(true);
+        if (liveFollow) render(true);
       };
       if (view) {
         view.addEventListener("scroll", onScrollOrResize, true);
@@ -557,8 +558,16 @@ export function createOverlayCoordinator(deps: OverlayCoordinatorDeps): OverlayC
       else host.removeAttribute("data-otf-freeform-stats");
     },
     refreshFromLiveGeometry() {
+      if (!liveFollow) return;
       painted = null;
       render(true);
+    },
+    setLiveFollow(enabled) {
+      liveFollow = enabled;
+      if (enabled) {
+        painted = null;
+        render(true);
+      }
     },
     clear() {
       selected = [];

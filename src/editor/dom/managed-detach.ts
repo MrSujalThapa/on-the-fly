@@ -1,4 +1,4 @@
-import { readStoredTransformState, writeStoredTransformState, applyStoredTransformState, realizeIndependentBox } from "./element-snapshot.js";
+import { readComputedRotationDeg, readStoredTransformState, writeStoredTransformState, applyStoredTransformState, realizeIndependentBox } from "./element-snapshot.js";
 import { FRONT_LAYER } from "../transform/layer-order.js";
 import { OTF_INTERACTION_FIXED_ATTR, OTF_MANAGED_ATTR, OTF_TRANSFORM_ONLY_ATTR, type StoredTransformState } from "./types.js";
 import type { MoveOperation } from "../operations.js";
@@ -55,7 +55,7 @@ export function realizeIndependentPlacement(
   element.setAttribute(OTF_MANAGED_ATTR, "true");
   element.removeAttribute(OTF_INTERACTION_FIXED_ATTR);
   element.removeAttribute(OTF_TRANSFORM_ONLY_ATTR);
-  const rotate = readStoredTransformState(element)?.rotate ?? 0;
+  const rotate = readStoredTransformState(element)?.rotate ?? readComputedRotationDeg(element);
   const live = realizeIndependentBox(element, viewportRect, rotate);
   const nextState: StoredTransformState = {
     dx: 0,

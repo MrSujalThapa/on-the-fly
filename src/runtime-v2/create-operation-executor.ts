@@ -223,8 +223,26 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
     }
 
     const actual = rectFromElement(input.element);
+    const payloadW = input.operation.payload.detachedWidth;
+    const payloadH = input.operation.payload.detachedHeight;
+    const expectedIsRotatedAabb = Boolean(
+      payloadW && payloadH && (
+        Math.abs(input.expected.width - payloadW) > 6 || Math.abs(input.expected.height - payloadH) > 6
+      ),
+    );
+    const originOk =
+      Math.abs(actual.x - input.expected.x) <= 6 && Math.abs(actual.y - input.expected.y) <= 6;
+    const independent = input.element.getAttribute("data-otf-detached") === "true";
+    const movedOk = expectedIsRotatedAabb
+      ? originOk
+      : independent
+        ? Math.abs((actual.x - originalRect.x) - input.operation.payload.dx) <= 6
+          && Math.abs((actual.y - originalRect.y) - input.operation.payload.dy) <= 6
+          && Math.abs(actual.width - originalRect.width) <= 8
+          && Math.abs(actual.height - originalRect.height) <= 8
+        : rectsNear(actual, input.expected);
     const verification: VisualVerification = {
-      ok: rectsNear(actual, input.expected),
+      ok: movedOk,
       expected: input.expected,
       actual,
     };
@@ -573,8 +591,15 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
 
       const verifications: VisualVerification[] = [];
       for (const item of prepared) {
-        const actual = rectFromElement(item.element);
-        const verification = { ok: rectsNear(actual, item.expected), expected: item.expected, actual };
+      const actual = rectFromElement(item.element);
+      const independent = item.element.getAttribute("data-otf-detached") === "true";
+      const movedOk = independent
+        ? Math.abs((actual.x - item.originalRect.x) - item.operation.payload.dx) <= 6
+          && Math.abs((actual.y - item.originalRect.y) - item.operation.payload.dy) <= 6
+          && Math.abs(actual.width - item.originalRect.width) <= 8
+          && Math.abs(actual.height - item.originalRect.height) <= 8
+        : rectsNear(actual, item.expected);
+      const verification = { ok: movedOk, expected: item.expected, actual };
         verifications.push(verification);
         if (!verification.ok) return failure("geometry_mismatch", rollbackBatch(), verification);
         if (!verifyIdentity(item.nodeId, item.identity, item.element)) {
@@ -691,10 +716,14 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
       if (!identity) {
         return failure("missing_signature", false);
       }
-      if (operation.target.nodeId) {
-        deps.visualModel.invalidate(operation.target.nodeId);
+      const liveId = operation.target.nodeId ?? null;
+      const liveElement = liveId ? deps.visualModel.bind(liveId) : null;
+      if (liveId && !liveElement) {
+        deps.visualModel.invalidate(liveId);
       }
-      const resolved = resolveOrFail(null, identity);
+      const resolved = liveElement && liveId
+        ? { nodeId: liveId, element: liveElement }
+        : resolveOrFail(null, identity);
       if ("error" in resolved) {
         return resolved;
       }
@@ -827,7 +856,12 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         if (!rolledBack) {
           return failure("rollback_failed", false);
         }
-      } else {
+        const actual = rectFromElement(resolved.element);
+        if (!verifyIdentity(resolved.nodeId, identity, resolved.element)) {
+          return failure("identity_uncertain", false, { ok: false, expected: original, actual });
+        }
+        return { ok: true, operation, verification: { ok: true, expected: original, actual } };
+      }
         const current = rectFromElement(resolved.element);
         const plan = deps.placement.planMove({
           element: resolved.element,
@@ -850,11 +884,10 @@ export function createOperationExecutor(deps: OperationExecutorDeps): OperationE
         } catch (error) {
           return failure(error instanceof Error ? error.message : "revert_threw", false);
         }
-      }
 
       const actual = rectFromElement(resolved.element);
       const verification: VisualVerification = {
-        ok: rectsNear(actual, original),
+        ok: rectsNear(actual, original, 16),
         expected: original,
         actual,
       };

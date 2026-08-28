@@ -108,6 +108,24 @@ function applyMoveToFinalRect(
 
   if (operation.payload.detached && !operation.payload.interactionSafeFixed && !isLegacyTransformOnlyMovePayload(operation)) {
     const previousSerialized = element.getAttribute(OTF_TRANSFORM_ATTR);
+    if (element.getAttribute(OTF_DETACH_ATTR) === "true") {
+      const current = extractBoundingBox(element);
+      const dx = finalRect.x - current.x;
+      const dy = finalRect.y - current.y;
+      const view = element.ownerDocument.defaultView;
+      const left = (Number.parseFloat(element.style.left) || current.x + (view?.scrollX ?? 0)) + dx;
+      const top = (Number.parseFloat(element.style.top) || current.y + (view?.scrollY ?? 0)) + dy;
+      element.style.left = `${String(left)}px`;
+      element.style.top = `${String(top)}px`;
+      const actual = element.getBoundingClientRect();
+      const corrX = finalRect.x - actual.x;
+      const corrY = finalRect.y - actual.y;
+      if (corrX !== 0 || corrY !== 0) {
+        element.style.left = `${String(left + corrX)}px`;
+        element.style.top = `${String(top + corrY)}px`;
+      }
+      return [{ kind: "transform-state" as const, previousState: previousSerialized }];
+    }
     realizeIndependentPlacement(element, {
       x: finalRect.x,
       y: finalRect.y,
@@ -193,12 +211,7 @@ export function applyRotateOperation(
     return commitTransformState(element, state, previousSerialized);
   }
   const local = readLocalLayoutSize(element);
-  const box = operation.metadata?.finalRect ?? {
-    x: element.getBoundingClientRect().x,
-    y: element.getBoundingClientRect().y,
-    width: local.width,
-    height: local.height,
-  };
+  const live = element.getBoundingClientRect();
   const width = state.width ?? local.width;
   const height = state.height ?? local.height;
   writeStoredTransformState(element, {
@@ -207,8 +220,8 @@ export function applyRotateOperation(
     height,
   });
   realizeIndependentPlacement(element, {
-    x: box.x,
-    y: box.y,
+    x: live.x,
+    y: live.y,
     width,
     height,
   });

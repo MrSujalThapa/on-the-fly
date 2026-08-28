@@ -154,6 +154,24 @@ function applyManagedSize(element: HTMLElement, state: StoredTransformState): vo
 }
 
 /**
+ * Rotation already painted by the page stylesheet, in degrees. Used when the
+ * element has not yet been adopted into a managed transform so resize/move
+ * math sees the same axes the user sees.
+ */
+export function readComputedRotationDeg(element: HTMLElement): number {
+  const view = element.ownerDocument.defaultView;
+  const transform = view?.getComputedStyle(element).transform;
+  if (!transform || transform === "none") return 0;
+  const values = transform.match(/matrix(?:3d)?\(([^)]+)\)/u)?.[1]?.split(",");
+  if (!values || values.length < 4) return 0;
+  const a = Number(values[0]);
+  const b = Number(values[1]);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+  const degrees = Math.atan2(b, a) * (180 / Math.PI);
+  return Math.abs(degrees) < 0.05 ? 0 : degrees;
+}
+
+/**
  * Canonical managed transform. CSS applies right-to-left, so
  * `translate(...) rotate(...)` keeps translation on the viewport axes.
  */

@@ -44,7 +44,7 @@ import { isResolvedVisual } from "./visual-model.js";
 import { projectCanonicalCheckpoint } from "./canonical-checkpoint.js";
 import { buildDuplicateFromClipboardEntry, buildDuplicateFromLiveClone } from "../editor/duplicate/duplicate-element.js";
 import { buildCropOperation, buildHideOperation, buildMoveOperation, buildResizeOperation, buildRotateOperation, buildStyleOperation, buildTextOperation, buildZIndexOperation } from "../editor/transform/operation-factory.js";
-import { applyStoredTransformState, applyStoredTransformStateToRect, composeManagedTransform, readLocalLayoutSize, readStoredTransformState, realizeIndependentBox, writeStoredTransformState } from "../editor/dom/element-snapshot.js";
+import { applyStoredTransformState, applyStoredTransformStateToRect, composeManagedTransform, readComputedRotationDeg, readLocalLayoutSize, readStoredTransformState, realizeIndependentBox, writeStoredTransformState } from "../editor/dom/element-snapshot.js";
 import { planMultiResizeMembers, resizeLocalFromScreenDelta, resizeRectFromCorner, rotatePointAroundCenter, rotatedMemberRect, type ResizeCorner } from "./editor-parity-geometry.js";
 import {
   buildLassoSampleGrid,
@@ -383,6 +383,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     resizeObserver?.disconnect();
     if (!root.defaultView) return;
     resizeObserver = new ResizeObserver(() => {
+      if (transformGesture) return;
       overlays.refreshFromLiveGeometry();
     });
     for (const nodeId of selectedIds()) {
@@ -401,6 +402,14 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     observeSelected();
     refreshToolbar();
     publishDiagnostics();
+  };
+
+  const dropUnboundSelection = (): void => {
+    const bound = selectedIds().filter((id) => Boolean(visualModel.bind(id)));
+    if (bound.length === selectedIds().length) return;
+    setSelection(bound.length > 0
+      ? selectionFromAtoms(bound.map((id) => atomForNode(id)), selection.source)
+      : emptySelection());
   };
 
   const setSelection = (next: RuntimeSelection): void => {
@@ -587,12 +596,11 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     restorePreview();
     for (const target of gesture.targets) {
       if (target.detached) {
-        realizeIndependentBox(target.element, {
-          x: target.startRect.x + dx,
-          y: target.startRect.y + dy,
-          width: target.localSize.width,
-          height: target.localSize.height,
-        }, target.startState.rotate);
+        const view = target.element.ownerDocument.defaultView;
+        const left = (Number.parseFloat(target.element.style.left) || target.startRect.x + (view?.scrollX ?? 0)) + dx;
+        const top = (Number.parseFloat(target.element.style.top) || target.startRect.y + (view?.scrollY ?? 0)) + dy;
+        target.element.style.left = `${String(left)}px`;
+        target.element.style.top = `${String(top)}px`;
         continue;
       }
       target.element.style.transform = composeManagedTransform(
@@ -881,7 +889,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       dy: 0,
       width: null,
       height: null,
-      rotate: 0,
+      rotate: readComputedRotationDeg(element),
       position: computed.position === "static" ? "relative" : computed.position,
     };
   };
@@ -1092,6 +1100,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     restoreTransformPreview(active);
     active.dispose();
     transformGesture = null;
+    overlays.setLiveFollow(true);
     if (!commit || !exactBindings) {
       overlays.refreshFromLiveGeometry();
       return;
@@ -1107,7 +1116,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       const center = { x: active.startUnion.x + active.startUnion.width / 2, y: active.startUnion.y + active.startUnion.height / 2 };
       const initial = Math.atan2(active.startPointer.y - center.y, active.startPointer.x - center.x);
       const current = Math.atan2(pointer.y - center.y, pointer.x - center.x);
-      runtime.rotateSelection((current - initial) * 180 / Math.PI);
+      const degrees = (current - initial) * 180 / Math.PI;
+      logV2("rotate-gesture", { degrees, start: active.startPointer, end: pointer, union: active.startUnion });
+      runtime.rotateSelection(degrees);
     } else {
       const corner = active.kind.slice(-2) as ResizeCorner;
       const dx = pointer.x - active.startPointer.x;
@@ -1166,7 +1177,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     };
     let disposed = false;
     const onMove = (move: PointerEvent): void => {
-      if (transformGesture === active) scheduleTransformPreview({ x: move.clientX, y: move.clientY });
+      if (transformGesture === active) {
+        active.lastPointer = { x: move.clientX, y: move.clientY };
+        scheduleTransformPreview(active.lastPointer);
+      }
     };
     const cleanup = (): void => {
       if (disposed) return;
@@ -1192,6 +1206,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     };
     active.dispose = cleanup;
     transformGesture = active;
+    overlays.setLiveFollow(false);
     if (kind.startsWith("crop-")) logV2("crop-gesture-start", { roots, startUnion, pointer: active.startPointer });
     view.addEventListener("pointermove", onMove, true);
     view.addEventListener("pointerup", onUp, true);
@@ -1204,7 +1219,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     const elements = new Set<HTMLElement>();
     for (const nodeId of roots) {
       const element = visualModel.bind(nodeId);
-      if (!element || elements.has(element)) return false;
+      if (!element || elements.has(element)) continue;
       elements.add(element);
       targets.push({
         nodeId,
@@ -1462,12 +1477,13 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     });
     releaseMutationIgnore();
     logV2("move", {
-      owner: result.ok ? "EXECUTION" : "EXECUTION",
+      owner: "EXECUTION",
       ok: result.ok,
       dx,
       dy,
       nodeIds: active.targets.map((target) => target.nodeId),
       error: result.ok ? undefined : result.error,
+      verification: result.ok ? undefined : ("verification" in result ? result.verification : undefined),
     });
     renderSelection();
     refreshSave();
@@ -1623,21 +1639,22 @@ export function createEditorRuntime(root: Document): EditorRuntime {
           }
         }
         if (record.type === "attributes") {
-          return record.attributeName === "style" || record.attributeName === OTF_TRANSFORM_ATTR;
+          return record.attributeName === "style" || record.attributeName === "class" || record.attributeName === OTF_TRANSFORM_ATTR;
         }
         return record.type === "childList";
       });
       if (!relevant) {
         return;
       }
-      reapplyActive("host-mutation");
-      overlays.refreshFromLiveGeometry();
+      const classOnly = records.every((record) => record.type === "attributes" && record.attributeName === "class");
+      if (!classOnly) reapplyActive("host-mutation");
+      renderSelection();
     });
     observer.observe(root.documentElement, {
       subtree: true,
       childList: true,
       attributes: true,
-      attributeFilter: ["style", OTF_TRANSFORM_ATTR],
+      attributeFilter: ["style", "class", OTF_TRANSFORM_ATTR],
       characterData: false,
     });
     owner().observe(observer);
@@ -2138,39 +2155,47 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     rotateSelection(degrees) {
       const roots = effectRoots(selectedIds());
       const measured = visualModel.measure(roots);
-      const rects = roots.map((id) => measured.get(id)).filter((rect): rect is IntendedRect => Boolean(rect));
-      const union = unionRects(rects);
-      if (!union || rects.length !== roots.length) return { ok: false, error: "rotate_target_unresolved", rolledBack: false };
+      const members = roots.map((nodeId) => {
+        const current = measured.get(nodeId);
+        const element = visualModel.bind(nodeId);
+        const identity = visualModel.durableIdentityOf(nodeId);
+        if (!current || !element || !identity) return null;
+        return { nodeId, current, element, identity };
+      });
+      if (members.some((member) => member === null) || members.length !== roots.length) {
+        return { ok: false, error: "rotate_target_unresolved", rolledBack: false };
+      }
+      const resolved = members.filter((member): member is NonNullable<typeof member> => Boolean(member));
+      resolved.sort((left, right) => laterInDocumentFirst(left.element, right.element));
+      const union = unionRects(resolved.map((member) => member.current));
+      if (!union) return { ok: false, error: "rotate_target_unresolved", rolledBack: false };
       const operations: EditorOperation[] = [];
       const expected = new Map<string, IntendedRect>();
-      for (const [index, nodeId] of roots.entries()) {
-        const identity = visualModel.durableIdentityOf(nodeId);
-        const current = rects[index];
-        const element = visualModel.bind(nodeId);
-        if (!identity || !current || !element) return { ok: false, error: "rotate_target_unresolved", rolledBack: false };
-        const target = rotatedMemberRect(current, union, degrees);
-        const dx = target.x - current.x;
-        const dy = target.y - current.y;
+      for (const member of resolved) {
+        const target = rotatedMemberRect(member.current, union, degrees);
+        const dx = target.x - member.current.x;
+        const dy = target.y - member.current.y;
         if (Math.hypot(dx, dy) > 0.01) {
           const plan = placement.planMove({
-            element,
-            currentRect: current,
+            element: member.element,
+            currentRect: member.current,
             dx,
             dy,
-            forceIndependent: !placement.isIndependent(element),
+            forceIndependent: !placement.isIndependent(member.element),
           });
-          const move = buildMoveOperation({ nodeId, signature: identity.signature, rect: current }, dx, dy, { pageKey: pageKey(), sourceCommand: "rotate:move" });
-          const committed: MoveOperation = { ...move, id: nextOperationId("move"), status: "approved", payload: { ...move.payload, ...plan.payload }, metadata: { ...move.metadata, originalRect: current, finalRect: plan.expectedRect, affectedRect: plan.expectedRect } };
+          const move = buildMoveOperation({ nodeId: member.nodeId, signature: member.identity.signature, rect: member.current }, dx, dy, { pageKey: pageKey(), sourceCommand: "rotate:move" });
+          const committed: MoveOperation = { ...move, id: nextOperationId("move"), status: "approved", payload: { ...move.payload, ...plan.payload }, metadata: { ...move.metadata, originalRect: member.current, finalRect: plan.expectedRect, affectedRect: plan.expectedRect } };
           operations.push(committed); expected.set(committed.id, plan.expectedRect);
         }
-        const existing = readStoredTransformState(element)?.rotate ?? 0;
-        const rotate = buildRotateOperation({ nodeId, signature: identity.signature, rect: target }, existing + degrees, { pageKey: pageKey(), sourceCommand: "rotate" });
-        operations.push({ ...rotate, id: nextOperationId("rotate"), status: "approved", target: { nodeId, signature: identity.signature }, metadata: { ...rotate.metadata, originalRect: current, finalRect: target, affectedRect: target } });
+        const existing = readStoredTransformState(member.element)?.rotate ?? 0;
+        const rotate = buildRotateOperation({ nodeId: member.nodeId, signature: member.identity.signature, rect: target }, existing + degrees, { pageKey: pageKey(), sourceCommand: "rotate" });
+        operations.push({ ...rotate, id: nextOperationId("rotate"), status: "approved", target: { nodeId: member.nodeId, signature: member.identity.signature }, metadata: { ...rotate.metadata, originalRect: member.current, finalRect: target, affectedRect: target } });
       }
       ignoreMutations = true;
       const result = executor.executeTransaction({ operations, expectedRects: expected });
       releaseMutationIgnore();
       if (result.ok) { renderSelection(); refreshSave(); }
+      logV2("rotate-commit-result", { ok: result.ok, error: result.ok ? undefined : result.error, degrees, count: operations.length });
       logMultiGeometryInvariant("rotate-commit");
       return result;
     },
@@ -2309,6 +2334,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       logV2("undo", { ok: result.ok, error: result.ok ? undefined : result.error, operationIds: operations.map((operation) => operation.id) });
       refreshSave();
       overlays.refreshFromLiveGeometry();
+      dropUnboundSelection();
       return result;
     },
     redo() {
@@ -2339,6 +2365,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       }
       refreshSave();
       overlays.refreshFromLiveGeometry();
+      dropUnboundSelection();
       return result;
     },
     async save(): Promise<PersistResult> {
@@ -2743,6 +2770,7 @@ export function createEditorRuntime(root: Document): EditorRuntime {
       if (pending.size > 0) runtime.styleSelection(pending);
       stylePanelOpen = false;
       refreshToolbar();
+      renderSelection();
     },
     onStylePanelReset() {
       cancelStylePreview();

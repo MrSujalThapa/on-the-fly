@@ -24,6 +24,7 @@ export interface OverlayCoordinator {
   setPaletteSampling(sampling: boolean): void;
   setLassoDiagnostics(stats: Record<string, number> | null): void;
   refreshFromLiveGeometry(): void;
+  setLiveFollow(enabled: boolean): void;
   clear(): void;
   selectionOutlineRect(): IntendedRect | null;
   setHandlePointerDown(handler: ((kind: "resize-nw" | "resize-ne" | "resize-sw" | "resize-se" | "rotate" | "crop-nw" | "crop-ne" | "crop-sw" | "crop-se", event: PointerEvent) => void) | null): void;
