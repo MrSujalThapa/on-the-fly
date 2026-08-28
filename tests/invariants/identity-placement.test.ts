@@ -59,13 +59,20 @@ describe("identity", () => {
     expect(model.bind("clone-a")).toBe(first);
   });
 
-  it("promotes clone descendants to the clone entity root", () => {
-    const { document, root } = createTestDocument('<section data-otf-clone-id="clone-a"><h1>Title</h1></section>');
+  it("keeps clone descendants distinct and scopes their durable path to the clone", () => {
+    const { document, root } = createTestDocument('<section data-otf-clone-id="clone-a"><button>Title</button></section>');
     const clone = root.querySelector("section");
-    const heading = root.querySelector("h1");
-    if (!(clone instanceof HTMLElement) || !(heading instanceof HTMLElement)) return;
+    const child = root.querySelector("button");
+    if (!(clone instanceof HTMLElement) || !(child instanceof HTMLElement)) return;
+    stubRect(clone, { x: 40, y: 80, width: 240, height: 80 });
+    stubRect(child, { x: 60, y: 100, width: 100, height: 32 });
     const model = createVisualModel(document);
-    expect(model.adopt(heading)).toBe("clone-a");
+    const childId = model.adopt(child);
+    expect(childId).not.toBeNull();
+    if (!childId) return;
+    expect(childId).not.toBe("clone-a");
+    expect(model.bind(childId)).toBe(child);
+    expect(model.durableIdentityOf(childId)?.signature.cssPath).toMatch(/^\[data-otf-clone-id="clone-a"\] >/u);
     expect(model.bind("clone-a")).toBe(clone);
   });
 

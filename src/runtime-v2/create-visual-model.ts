@@ -26,9 +26,8 @@ function capabilitiesFor(role: VisualRole): VisualCapabilities {
   return { movable: role === "unit" || role === "collection" || role === "section" };
 }
 
-function cloneEntityRoot(element: HTMLElement): HTMLElement {
+function ownedSelectionBinding(element: HTMLElement): HTMLElement {
   return element.closest<HTMLElement>("[data-otf-element-id]")
-    ?? element.closest<HTMLElement>("[data-otf-clone-id]")
     ?? element;
 }
 
@@ -171,7 +170,7 @@ export function createVisualModel(root: Document): VisualModel {
   return {
     pick(clientX, clientY) {
       const stack = root.elementsFromPoint(clientX, clientY).map((element) =>
-        element instanceof HTMLElement ? cloneEntityRoot(element) : element,
+        element instanceof HTMLElement ? ownedSelectionBinding(element) : element,
       ).filter((element, index, all) => all.indexOf(element) === index);
       const usable = stack.filter((node) => !(node instanceof Element) || !isExtensionRoot(node));
       return materialize(discoverFromPath(usable));
@@ -180,7 +179,7 @@ export function createVisualModel(root: Document): VisualModel {
       if (!element.isConnected || isExtensionRoot(element)) {
         return null;
       }
-      const binding = cloneEntityRoot(element);
+      const binding = ownedSelectionBinding(element);
       const discovered = discoverFromElement(binding);
       if (discovered) {
         return materialize(discovered);

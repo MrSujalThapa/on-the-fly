@@ -150,6 +150,8 @@ function parseDatasetFingerprint(value: string | undefined): Array<[string, stri
 export function buildDurableIdentity(element: HTMLElement, root: ParentNode): DurableVisualIdentity {
   const createdId = element.getAttribute("data-otf-element-id")?.trim();
   const cloneId = element.getAttribute("data-otf-clone-id")?.trim();
+  const cloneRoot = element.closest<HTMLElement>("[data-otf-clone-id]");
+  const containingCloneId = cloneRoot?.getAttribute("data-otf-clone-id")?.trim();
   const signature = buildPersistableElementSignature(element, { root });
   const uniquePath = buildUniqueCssPath(element, root);
   const data = datasetFingerprint(element);
@@ -160,6 +162,8 @@ export function buildDurableIdentity(element: HTMLElement, root: ParentNode): Du
     ? `[data-otf-element-id="${createdId.replace(/"/g, "\\\"")}"]`
     : cloneId
       ? `[data-otf-clone-id="${cloneId.replace(/"/g, "\\\"")}"]`
+      : containingCloneId && cloneRoot
+        ? `[data-otf-clone-id="${containingCloneId.replace(/"/g, "\\\"")}"] > ${buildUniqueCssPath(element, cloneRoot)}`
       : uniquePath;
   return {
     signature: {
@@ -517,6 +521,25 @@ export function resolveDurableIdentity(
 
   const scored = pool.map((element) => evaluateCandidate(element, signature, pathSet, pool));
   const viable = scored.filter((entry) => entry.consistent);
+
+  // A clone id is extension-owned and unique. Its descendant path is therefore
+  // a durable clone-scoped identity, even when the source contains an otherwise
+  // identical descendant with the same text/classes.
+  if (/^\[data-otf-clone-id=["'][^"']+["']\]\s*>/u.test(signature.cssPath)) {
+    const scoped = scored.filter((entry) => entry.cssPathMatched && entry.consistent);
+    if (scoped.length === 1 && scoped[0]) {
+      return resultFor(identity, "resolved", {
+        element: scoped[0].element,
+        evidence: evidence({
+          strategy: "stable-path",
+          cssPathMatched: true,
+          structureShifted: scoped[0].shifted,
+          matchedKeys: scoped[0].matchedKeys,
+          candidateCount: pool.length,
+        }),
+      });
+    }
+  }
 
   const strong = viable.filter((entry) => entry.strongUnique);
   if (strong.length === 1 && strong[0]) {

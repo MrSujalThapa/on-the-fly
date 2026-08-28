@@ -17,6 +17,18 @@ function cloneIdFromOperation(operation: EditorOperation): string | null {
   return cssMatch?.[1] ?? null;
 }
 
+function cloneCheckpointKey(operation: EditorOperation): string | null {
+  const cloneId = cloneIdFromOperation(operation);
+  if (!cloneId) return null;
+  const cssPath = operation.target.signature?.cssPath ?? "";
+  const rootPattern = new RegExp(`^\\[data-otf-clone-id=["']${cloneId.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}["']\\]$`, "u");
+  if (rootPattern.test(cssPath)) return `clone:${cloneId}`;
+  const separator = cssPath.indexOf("] > ");
+  return separator >= 0
+    ? `clone:${cloneId}|descendant:${cssPath.slice(separator + 4)}`
+    : `clone:${cloneId}|descendant:${cssPath}`;
+}
+
 function createdIdFromOperation(operation: EditorOperation): string | null {
   if (operation.type === "createElement") return operation.payload.elementId;
   const signature = operation.target.signature;
@@ -201,8 +213,8 @@ export function projectCanonicalCheckpoint(
   const checkpointKey = (operation: EditorOperation): string | null => {
     const createdId = createdIdFromOperation(operation);
     if (createdId) return `created:${createdId}`;
-    const cloneId = cloneIdFromOperation(operation);
-    if (cloneId) return `clone:${cloneId}`;
+    const cloneKey = cloneCheckpointKey(operation);
+    if (cloneKey) return cloneKey;
     const durable = durableMoveKey(operation as MoveOperation);
     if (!durable) return null;
     const nodeId = operation.target.nodeId;

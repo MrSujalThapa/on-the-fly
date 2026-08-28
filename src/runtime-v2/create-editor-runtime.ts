@@ -507,7 +507,9 @@ export function createEditorRuntime(root: Document): EditorRuntime {
         const cached = operation.target.nodeId
           ? visualModel.resolveNode(operation.target.nodeId)
           : null;
-        const resolved = cached && isResolvedVisual(cached) && identityConsistent(cached.element, identity)
+        const resolved = operation.type === "hide"
+          ? visualModel.resolveIdentity(identity)
+          : cached && isResolvedVisual(cached) && identityConsistent(cached.element, identity)
           ? cached
           : visualModel.resolveIdentity(identity);
         if (!isResolvedVisual(resolved)) {
@@ -1454,12 +1456,10 @@ export function createEditorRuntime(root: Document): EditorRuntime {
     gesture = null;
 
     if (active.targets.some((target) => !target.element.isConnected) || Math.hypot(dx, dy) < MOVE_THRESHOLD_PX) {
-      const pickInsideSelectedRoot = Boolean(active.clickPick) && active.targets.some((target) => {
-        if (target.nodeId === active.clickPick) return true;
-        const picked = visualModel.bind(active.clickPick!);
-        return Boolean(picked && target.element.contains(picked));
-      });
-      if (active.clickPick && active.targets.length < 2 && !pickInsideSelectedRoot) {
+      const pickedDifferentNode = Boolean(active.clickPick) && active.targets.every(
+        (target) => target.nodeId !== active.clickPick,
+      );
+      if (active.clickPick && active.targets.length < 2 && pickedDifferentNode) {
         setSelection(selectionFromAtoms([atomForNode(active.clickPick)], "click"));
       }
       overlays.refreshFromLiveGeometry();
