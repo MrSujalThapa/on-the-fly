@@ -306,10 +306,21 @@ export function resolveBlockerPaintHost(
   return branch;
 }
 
-function managedLayerPeer(element: HTMLElement): HTMLElement | null {
+function sameVisualPeer(left: HTMLElement, right: HTMLElement): boolean {
+  if (left.tagName !== right.tagName) return false;
+  const leftText = left.textContent.replace(/\s+/gu, " ").trim();
+  const rightText = right.textContent.replace(/\s+/gu, " ").trim();
+  if (!leftText || leftText !== rightText) return false;
+  const a = extractBoundingBox(left);
+  const b = extractBoundingBox(right);
+  return Math.abs(a.width - b.width) <= 4 && Math.abs(a.height - b.height) <= 4;
+}
+
+function managedLayerPeer(element: HTMLElement, selected: HTMLElement): HTMLElement | null {
   return element.closest<HTMLElement>("[data-otf-element-id]")
     ?? element.closest<HTMLElement>(`[${OTF_DETACH_ATTR}="true"]`)
-    ?? element.closest<HTMLElement>(`[${OTF_MANAGED_ATTR}="true"]`);
+    ?? element.closest<HTMLElement>(`[${OTF_MANAGED_ATTR}="true"]`)
+    ?? (selected.hasAttribute("data-otf-clone-id") && sameVisualPeer(element, selected) ? element : null);
 }
 
 /**
@@ -334,7 +345,7 @@ function findVisualBlocker(
       if (isPaintParticipant(element, selected, paintHosts)) {
         continue;
       }
-      const peer = managedLayerPeer(element);
+      const peer = managedLayerPeer(element, selected);
       if (peer && peer !== selected && !selected.contains(peer) && !peer.contains(selected)) {
         return peer;
       }

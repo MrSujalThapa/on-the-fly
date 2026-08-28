@@ -431,7 +431,7 @@ export class FloatingToolbar {
         commit();
         return;
       }
-      if (event.key === "Enter" && !wasMultiLine && !event.shiftKey) {
+      if (event.key === "Enter" && !(event.shiftKey && wasMultiLine)) {
         event.preventDefault();
         commit();
         return;

@@ -18,9 +18,10 @@ window.OTF_RUNTIME_V2_ACTIVE = true;
 const runtime = createEditorRuntime(document);
 const pageIdentity = createPageIdentity(document);
 
-void runtime.replay();
+let editModeRequested = false;
+let replayReady = runtime.replay();
 pageIdentity.subscribe(() => {
-  void runtime.replay();
+  replayReady = runtime.replay();
 });
 
 if (__OTF_DIAGNOSTICS_ENABLED__) {
@@ -32,17 +33,19 @@ if (__OTF_DIAGNOSTICS_ENABLED__) {
   });
 }
 
-function applyEditMode(enabled: boolean): void {
-  if (enabled) {
-    runtime.start();
+async function applyEditMode(enabled: boolean): Promise<void> {
+  editModeRequested = enabled;
+  if (!enabled) {
+    runtime.stop();
     return;
   }
-  runtime.stop();
+  await replayReady;
+  if (editModeRequested) runtime.start();
 }
 
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if (isEditModeChangedMessage(message)) {
-    applyEditMode(message.enabled);
+    void applyEditMode(message.enabled);
     sendResponse({ ok: true });
     return true;
   }
@@ -78,6 +81,6 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   return undefined;
 });
 
-applyEditMode(false);
+void applyEditMode(false);
 
 export {};
