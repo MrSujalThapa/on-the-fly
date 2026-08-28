@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Runtime V2 structural fixture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #f4f5f7;
+        color: #1d2226;
+      }
+
+      main {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        max-width: 1120px;
+      }
+
+      .panel {
+        background: #ffffff;
+        border: 1px solid #d9dcdf;
+        border-radius: 8px;
+        padding: 16px;
+      }
+
+      .panel > h2 {
+        margin: 0 0 12px;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #66727d;
+      }
+
+      /* B — flex row of pills. */
+      .pill-nav {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: nowrap;
+      }
+
+      /* A — interactive control wrapping an inner text fragment. */
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        height: 30px;
+        padding: 0 14px;
+        border: 1px solid #46647c;
+        border-radius: 15px;
+        background: #eef3f8;
+        color: #1d3d5c;
+        font-size: 14px;
+        font-weight: 600;
+        text-decoration: none;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+
+      .pill-label {
+        display: inline-block;
+        line-height: 18px;
+      }
+
+      /* F — text fragment whose box overflows its own control box. */
+      .pill-overflow {
+        height: 26px;
+        overflow: visible;
+      }
+
+      .pill-overflow .pill-label {
+        line-height: 42px;
+        font-size: 15px;
+      }
+
+      /* E — boxless wrappers that still appear in the hit path. */
+      .contents-block,
+      .contents-inline {
+        display: contents;
+      }
+
+      /* C — interactive link containing several stacked text nodes. */
+      .profile {
+        display: block;
+        width: 260px;
+        padding: 12px 14px;
+        border: 1px solid #cfd6dc;
+        border-radius: 8px;
+        background: #fbfcfd;
+        color: #1d2226;
+        text-decoration: none;
+      }
+
+      .profile-name {
+        display: block;
+        font-size: 17px;
+        font-weight: 700;
+      }
+
+      .profile-title {
+        display: block;
+        font-size: 14px;
+        color: #46545f;
+      }
+
+      .profile-meta {
+        display: block;
+        font-size: 12px;
+        color: #6a7681;
+      }
+
+      /* D — notification/card-like blocks. */
+      .card-list {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .card {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        padding: 14px;
+        border: 1px solid #dfe3e6;
+        border-radius: 8px;
+        background: #ffffff;
+      }
+
+      .card-avatar {
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        background: #c9d6e2;
+        flex: 0 0 auto;
+      }
+
+      .card-body {
+        display: block;
+      }
+
+      .card-title {
+        display: block;
+        font-size: 15px;
+        font-weight: 600;
+      }
+
+      .card-text {
+        display: block;
+        font-size: 13px;
+        color: #55616b;
+        max-width: 520px;
+      }
+
+      /* G — nested interactive/non-interactive wrappers. */
+      .wrap-outer {
+        padding: 10px;
+        background: transparent;
+      }
+
+      .wrap-inner {
+        padding: 8px;
+        background: transparent;
+      }
+
+      .nested-action {
+        display: inline-flex;
+        align-items: center;
+        padding: 8px 16px;
+        border: 1px solid #2f5d3a;
+        border-radius: 6px;
+        background: #e8f4ec;
+        color: #1e3f28;
+        font-size: 14px;
+        cursor: pointer;
+      }
+
+      /* H — sizing/positioning/stacking/overflow constraints. */
+      .constraint-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: flex-start;
+      }
+
+      .auto-width {
+        width: auto;
+        padding: 10px 12px;
+        border: 1px solid #b9c4cd;
+        background: #f0f4f8;
+        font-size: 13px;
+      }
+
+      .min-content {
+        width: min-content;
+        padding: 10px 12px;
+        border: 1px solid #b9c4cd;
+        background: #f7f0ea;
+        font-size: 13px;
+      }
+
+      .flex-row {
+        display: flex;
+        gap: 8px;
+        width: 420px;
+      }
+
+      .flex-grow {
+        flex: 1 1 auto;
+        padding: 10px 12px;
+        border: 1px solid #b9c4cd;
+        background: #eef7f0;
+        font-size: 13px;
+      }
+
+      .flex-fixed {
+        flex: 0 0 120px;
+        padding: 10px 12px;
+        border: 1px solid #b9c4cd;
+        background: #f4eef7;
+        font-size: 13px;
+      }
+
+      .relative-box {
+        position: relative;
+        top: 4px;
+        left: 6px;
+        padding: 10px 12px;
+        border: 1px solid #b9c4cd;
+        background: #f7f7ea;
+        font-size: 13px;
+      }
+
+      .pre-transformed {
+        transform: rotate(-6deg);
+        padding: 10px 12px;
+        border: 1px solid #b9c4cd;
+        background: #eaf0f7;
+        font-size: 13px;
+      }
+
+      .stack-host {
+        position: relative;
+        width: 260px;
+        height: 90px;
+      }
+
+      .stacked {
+        position: absolute;
+        width: 150px;
+        height: 54px;
+        padding: 8px;
+        border: 1px solid #97a4ae;
+        font-size: 13px;
+      }
+
+      .stacked-low {
+        left: 0;
+        top: 0;
+        z-index: 1;
+        background: #dbe6f0;
+      }
+
+      .stacked-high {
+        left: 70px;
+        top: 24px;
+        z-index: 2;
+        background: #f0e2db;
+      }
+
+      .overflow-host {
+        width: 200px;
+        height: 70px;
+        overflow: hidden;
+        border: 1px solid #b9c4cd;
+        background: #ffffff;
+      }
+
+      .overflow-child {
+        width: 260px;
+        padding: 10px;
+        background: #e6eef5;
+        font-size: 13px;
+      }
+
+      .wide {
+        min-width: 320px;
+      }
+
+      .spacer {
+        height: 220px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="panel" id="pill-panel">
+        <h2>Filter row</h2>
+        <nav class="pill-nav" id="pill-nav">
+          <a class="pill" href="#alpha" data-fx="pill-alpha"><span class="pill-label">Alpha</span></a>
+          <a class="pill" href="#beta" data-fx="pill-beta"><span class="pill-label">Beta</span></a>
+          <button class="pill" type="button" data-fx="pill-gamma"><span class="pill-label">Gamma</span></button>
+          <a class="pill pill-overflow" href="#delta" data-fx="pill-delta"><span class="pill-label">Delta</span></a>
+        </nav>
+      </section>
+
+      <section class="panel" id="profile-panel">
+        <h2>Profile</h2>
+        <div class="contents-block">
+          <a class="profile" href="#profile" data-fx="profile">
+            <span class="contents-inline"><span class="profile-name">Jordan Vega</span></span>
+            <span class="profile-title">Staff Engineer, Platform</span>
+            <span class="profile-meta">Portland, OR &middot; 812 connections</span>
+          </a>
+        </div>
+      </section>
+
+      <section class="panel" id="card-panel">
+        <h2>Cards</h2>
+        <div class="card-list" id="card-list">
+          <article class="card" data-fx="card-one">
+            <div class="card-avatar"></div>
+            <div class="card-body">
+              <span class="card-title">Deployment finished</span>
+              <span class="card-text">Build 4820 shipped to the staging channel eleven minutes ago.</span>
+            </div>
+          </article>
+          <article class="card" data-fx="card-two">
+            <div class="card-avatar"></div>
+            <div class="card-body">
+              <span class="card-title">Three review comments</span>
+              <span class="card-text">Two files still need an owner sign-off before this can merge.</span>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel" id="nested-panel">
+        <h2>Nested wrappers</h2>
+        <div class="wrap-outer">
+          <div class="wrap-inner">
+            <button class="nested-action" type="button" data-fx="nested">
+              <span class="contents-inline"><em>Nested action</em></span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="constraint-panel">
+        <h2>Sizing constraints</h2>
+        <div class="constraint-grid">
+          <div class="auto-width" data-fx="auto-width">auto width block</div>
+          <div class="min-content" data-fx="min-content">min content sizing</div>
+          <div class="flex-row">
+            <div class="flex-grow" data-fx="flex-grow">flex grow</div>
+            <div class="flex-fixed" data-fx="flex-fixed">fixed</div>
+          </div>
+          <div class="relative-box" data-fx="relative">relative positioned</div>
+          <div class="pre-transformed" data-fx="pre-transformed">pre-rotated host</div>
+          <div class="stack-host">
+            <div class="stacked stacked-low" data-fx="stacked-low">z-index 1</div>
+            <div class="stacked stacked-high" data-fx="stacked-high">z-index 2</div>
+          </div>
+          <div class="overflow-host" data-fx="overflow-host">
+            <div class="overflow-child" data-fx="overflow-child">clipped child content</div>
+          </div>
+        </div>
+      </section>
+
+      <div class="spacer"></div>
+    </main>
+
+    <script>
+      // Host-mutation controls. The editor must survive these the same way it
+      // survives a framework rerender on a live site.
+      (() => {
+        const byFx = (name) => document.querySelector(`[data-fx="${name}"]`);
+        let siblingSeq = 0;
+
+        const stripEditorState = (root) => {
+          for (const node of [root, ...root.querySelectorAll("*")]) {
+            if (!(node instanceof HTMLElement)) continue;
+            node.removeAttribute("style");
+            for (const attribute of Array.from(node.attributes)) {
+              if (attribute.name.startsWith("data-otf")) node.removeAttribute(attribute.name);
+            }
+          }
+        };
+
+        window.__fx = {
+          /** Replace a subtree with a fresh clone, discarding editor-applied inline state. */
+          replaceSubtree(name) {
+            const target = byFx(name);
+            if (!target) return false;
+            const fresh = target.cloneNode(true);
+            stripEditorState(fresh);
+            target.replaceWith(fresh);
+            return true;
+          },
+
+          /** Detach and reinsert a node at the same position. */
+          removeReinsert(name) {
+            const target = byFx(name);
+            if (!target) return false;
+            const parent = target.parentElement;
+            const next = target.nextSibling;
+            if (!parent) return false;
+            target.remove();
+            parent.insertBefore(target, next);
+            return true;
+          },
+
+          /** Append a new pill, changing sibling structure and reflowing the row. */
+          addSibling() {
+            const nav = document.getElementById("pill-nav");
+            if (!nav) return false;
+            siblingSeq += 1;
+            const pill = document.createElement("a");
+            pill.className = "pill";
+            pill.href = `#extra-${siblingSeq}`;
+            pill.dataset.fx = `pill-extra-${siblingSeq}`;
+            pill.dataset.fxExtra = "1";
+            const label = document.createElement("span");
+            label.className = "pill-label";
+            label.textContent = `Extra ${siblingSeq}`;
+            pill.append(label);
+            nav.append(pill);
+            return true;
+          },
+
+          removeSibling() {
+            const extra = document.querySelector('[data-fx-extra="1"]');
+            if (!extra) return false;
+            extra.remove();
+            return true;
+          },
+
+          /** Rebuild the whole pill row: childList mutation plus sibling reordering. */
+          rerenderRow() {
+            const nav = document.getElementById("pill-nav");
+            if (!nav) return false;
+            const fresh = nav.cloneNode(true);
+            stripEditorState(fresh);
+            nav.replaceWith(fresh);
+            return true;
+          },
+
+          /** Widen a block so every later sibling in its flow reflows. */
+          reflowSiblings() {
+            const target = byFx("auto-width");
+            if (!target) return false;
+            target.classList.toggle("wide");
+            return true;
+          },
+
+          /** Insert then remove a node, the churn pattern of a live feed. */
+          churnCards() {
+            const list = document.getElementById("card-list");
+            if (!list) return false;
+            const placeholder = document.createElement("article");
+            placeholder.className = "card";
+            placeholder.dataset.fxTransient = "1";
+            placeholder.innerHTML =
+              '<div class="card-avatar"></div><div class="card-body"><span class="card-title">Transient</span><span class="card-text">Inserted then removed.</span></div>';
+            list.prepend(placeholder);
+            placeholder.remove();
+            return true;
+          },
+        };
+      })();
+    </script>
+  </body>
+</html>

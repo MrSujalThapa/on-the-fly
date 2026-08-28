@@ -12,6 +12,7 @@ export default tseslint.config(
       "vitest.config.ts",
       "playwright.config.ts",
       "playwright.real.config.ts",
+      "playwright.local.config.ts",
     ],
   },
   eslint.configs.recommended,

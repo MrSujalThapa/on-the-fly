@@ -26,8 +26,7 @@ export function classifyLinkedInSession(input: {
   if (
     pathname.includes("/login") ||
     pathname.includes("/uas/login") ||
-    pathname.includes("/checkpoint/lg") ||
-    pathname.includes("/checkpoint/challenges")
+    pathname.includes("/checkpoint/")
   ) {
     return "login-required";
   }

@@ -97,6 +97,37 @@ export function expectUnchanged(
 }
 
 export async function getOverlayRect(page: Page): Promise<GeometryRect | null> {
+  const live = await page.evaluate(() => {
+    const host = document.getElementById("on-the-fly-root-host");
+    const outline = host?.shadowRoot?.querySelector(".otf-selection-outline");
+    if (!(outline instanceof HTMLElement)) return null;
+    const packed = outline.dataset.otfModel ?? outline.dataset.otfRenderer;
+    if (packed) {
+      const parts = packed.split(",").map((part) => Number(part));
+      if (parts.length === 4 && parts.every((part) => Number.isFinite(part))) {
+        const x = parts[0] ?? 0;
+        const y = parts[1] ?? 0;
+        const width = parts[2] ?? 0;
+        const height = parts[3] ?? 0;
+        if (width >= 1 && height >= 1) {
+          return { x, y, width, height, top: y, left: x, right: x + width, bottom: y + height };
+        }
+      }
+    }
+    const box = outline.getBoundingClientRect();
+    if (box.width < 1 || box.height < 1) return null;
+    return {
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height,
+      top: box.top,
+      left: box.left,
+      right: box.right,
+      bottom: box.bottom,
+    };
+  }).catch(() => null);
+  if (live) return live;
   return withOtfHost(page, async (session, host) => {
     if (!host) {
       return null;
