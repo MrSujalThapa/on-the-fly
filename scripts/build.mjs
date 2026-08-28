@@ -15,7 +15,7 @@ const localDevAgentEnabled =
 const localAgentServerUrl = process.env.LOCAL_AGENT_SERVER_URL ?? "";
 // Opt-in only: every build is silent unless OTF_DIAGNOSTICS=true is passed.
 const diagnosticsEnabled = process.env.OTF_DIAGNOSTICS === "true";
-const runtimeV2Enabled = process.env.OTF_RUNTIME_V2 === "true";
+const runtimeV2Enabled = process.env.OTF_RUNTIME_V2 !== "false";
 
 /** @type {import('esbuild').BuildOptions['define']} */
 const define = {
@@ -53,9 +53,7 @@ function writeIcons() {
 async function build() {
   ensureDir(distDir);
 
-  const contentEntry = runtimeV2Enabled
-    ? join(srcDir, "runtime-v2/content-entry.ts")
-    : join(srcDir, "content/content-script.ts");
+  const contentEntry = join(srcDir, "runtime-v2/content-entry.ts");
 
   await esbuild.build({
     entryPoints: {

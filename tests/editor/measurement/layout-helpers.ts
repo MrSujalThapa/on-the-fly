@@ -1,8 +1,13 @@
-import type { MeasurementRect } from "../../../src/editor/measurement/types.js";
+export interface LayoutRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 export function layoutElement(
   element: HTMLElement,
-  rect: MeasurementRect,
+  rect: LayoutRect,
 ): void {
   element.style.display = "block";
   element.style.width = `${String(rect.width)}px`;
@@ -23,7 +28,7 @@ export function layoutElement(
 
 export function layoutManagedElement(
   element: HTMLElement,
-  base: MeasurementRect,
+  base: LayoutRect,
 ): void {
   element.getBoundingClientRect = () => {
     if (element.style.position === "fixed" || element.style.position === "absolute") {
